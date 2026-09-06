@@ -383,6 +383,39 @@ class HermesWsClientTest {
     }
 
     @Test
+    fun testLegacySessionWriteCannotCrossProfileDuringRegistration() {
+        val socket = mockk<WebSocket>(relaxed = true)
+        val (scope, _) = scopedWriteFixture(socket)
+        val activeProfile = MutableStateFlow(scope.serverProfileId)
+        every { AuthManager.activeProfileId } returns activeProfile
+        HermesWsClient.send(WsMethods.SESSION_CREATE, onSent = { activeProfile.value = "other" })
+        verify(exactly = 0) { socket.send(any<String>()) }
+        activeProfile.value = scope.serverProfileId
+        HermesWsClient.send(WsMethods.SESSION_CREATE, mapOf("profile" to "other"))
+        verify(exactly = 0) { socket.send(any<String>()) }
+        val sent = mutableListOf<String>()
+        every { socket.send(any<String>()) } answers {
+            activeProfile.value = "other"
+            sent.add(firstArg())
+            true
+        }
+        HermesWsClient.send(WsMethods.SESSION_CREATE)
+        assertEquals(1, sent.size)
+        assertEquals(
+            "profile-a",
+            Json
+                .parseToJsonElement(
+                    sent.single(),
+                ).jsonObject["params"]
+                ?.jsonObject
+                ?.get("profile")
+                ?.jsonPrimitive
+                ?.content,
+        )
+        assertEquals(0, mockWebServer.requestCount)
+    }
+
+    @Test
     fun testScopedWriteRejectsWrongDestinationAndUnknownMethodBeforeWire() {
         val socket = mockk<WebSocket>(relaxed = true)
         val (scope, listener) = scopedWriteFixture(socket)
@@ -542,9 +575,15 @@ class HermesWsClientTest {
                 .declaredConstructors
                 .single()
                 .apply { isAccessible = true }
+        val scope = ConnectionScope("synthetic", null, null, "test", generation)
+
+        @Suppress("UNCHECKED_CAST")
+        val scopeFlow = field("_connectionScope").get(HermesWsClient) as MutableStateFlow<ConnectionScope?>
+        scopeFlow.value = scope
+        field("connectionBaseUrl").set(HermesWsClient, AuthManager.getBaseUrl())
         return constructor.newInstance(
             generation,
-            ConnectionScope("synthetic", null, null, "test", generation),
+            scope,
         ) as WebSocketListener
     }
 
@@ -599,6 +638,7 @@ class HermesWsClientTest {
     fun testFailedSocketWriteNeverQueuesForReconnect() {
         val staleSocket = mockk<WebSocket>(relaxed = true)
         every { staleSocket.send(any<String>()) } returns false
+        diagnosticListener(staleSocket)
 
         val socketField = HermesWsClient::class.java.getDeclaredField("webSocket")
         socketField.isAccessible = true
@@ -716,6 +756,7 @@ class HermesWsClientTest {
         (connectedField.get(HermesWsClient) as java.util.concurrent.atomic.AtomicBoolean).set(true)
         val oldSocket = mockk<WebSocket>(relaxed = true)
         every { oldSocket.send(any<String>()) } returns true
+        diagnosticListener(oldSocket)
         val socketField = HermesWsClient::class.java.getDeclaredField("webSocket")
         socketField.isAccessible = true
         socketField.set(HermesWsClient, oldSocket)
@@ -837,6 +878,7 @@ class HermesWsClientTest {
     fun testOversizedRejectedMessageIsNotQueued() {
         val staleSocket = mockk<WebSocket>(relaxed = true)
         every { staleSocket.send(any<String>()) } returns false
+        diagnosticListener(staleSocket)
 
         val socketField = HermesWsClient::class.java.getDeclaredField("webSocket")
         socketField.isAccessible = true
@@ -878,6 +920,7 @@ class HermesWsClientTest {
         val pressuredSocket = mockk<WebSocket>(relaxed = true)
         every { pressuredSocket.send(any<String>()) } returns false
         every { pressuredSocket.queueSize() } returns 1024L
+        diagnosticListener(pressuredSocket)
 
         val socketField = HermesWsClient::class.java.getDeclaredField("webSocket")
         socketField.isAccessible = true
@@ -929,6 +972,7 @@ class HermesWsClientTest {
         backoffField.isAccessible = true
         backoffField.setLong(HermesWsClient, 1_000L)
 
+        diagnosticListener(pressuredSocket)
         HermesWsClient.send(WsMethods.PROMPT_SUBMIT, mapOf("session_id" to "s1", "text" to "hello"))
 
         val listenerClass = Class.forName("com.m57.hermescontrol.data.ws.HermesWsClient\$WsListenerImpl")
@@ -1042,6 +1086,7 @@ class HermesWsClientTest {
             HermesWsClient.disconnect(clearPendingMessages = true)
             false
         }
+        diagnosticListener(staleSocket)
 
         val socketField = HermesWsClient::class.java.getDeclaredField("webSocket")
         socketField.isAccessible = true

@@ -924,6 +924,19 @@ object HermesWsClient {
             onSent?.invoke(id)
             val ws = webSocket
             if (ws != null && connected.get()) {
+                val scope = _connectionScope.value
+                if (!OfflineSendPolicy.mayQueue(method) &&
+                    (
+                        scope == null || !matchesCurrentScope(scope) ||
+                            (
+                                method in WsMethods.PROFILE_SCOPED_METHODS &&
+                                    decoratedParams["profile"] != scope.serverProfileId
+                            )
+                    )
+                ) {
+                    rejectNotSent(id, replyPendingBeforeSend)
+                    return@synchronized
+                }
                 // Never replay send(true): the server may have executed it even if its response is lost.
                 if (!ws.send(json)) {
                     if (webSocket !== ws || !acceptQueuedMessages.get()) {
