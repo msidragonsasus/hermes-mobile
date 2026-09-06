@@ -1493,7 +1493,8 @@ class ChatViewModel(
     fun sendMessage(text: String) {
         if (text.isBlank() && _uiState.value.pendingAttachments.isEmpty()) return
         val trimmed = text.trim()
-        if (trimmed.startsWith("/", ignoreCase = true)) {
+        // PR06a: restored drafts contain literal prompt text, including /queue payloads.
+        if (editingDraftId == null && trimmed.startsWith("/", ignoreCase = true)) {
             if (isModelPickerCommand(trimmed)) {
                 openModelPicker()
             } else {
@@ -1546,6 +1547,8 @@ class ChatViewModel(
             _uiState.value.outgoingDrafts.firstOrNull {
                 it.id == editingDraftId && it.state == DraftState.DRAFT && it.targetKey == scope.draftTargetKey()
             }
+        val effectiveQueued = existing?.queued ?: queued
+        val effectiveRedirect = redirect && !effectiveQueued
         editingDraftId = null
         val draft =
             OutgoingDraft(
@@ -1559,6 +1562,7 @@ class ChatViewModel(
                 text = text,
                 attachments = attachments,
                 createdAt = existing?.createdAt ?: System.currentTimeMillis(),
+                queued = effectiveQueued,
             )
         val generation = sessionGeneration
         _uiState.update { it.copy(activeDraftIds = it.activeDraftIds + draft.id) }
@@ -1583,7 +1587,8 @@ class ChatViewModel(
                 // Session creation may finish while the durable save is suspended. Recheck above;
                 // only this same connected scope may dispatch after its creation ACK.
                 releasePendingInitialPrompt()
-                pendingInitialPrompt = PendingPrompt(draft, wasStreaming, message, queued, redirect, generation)
+                pendingInitialPrompt =
+                    PendingPrompt(draft, wasStreaming, message, effectiveQueued, effectiveRedirect, generation)
                 return@launch
             }
             if (sessionScope != scope) {
@@ -1591,7 +1596,16 @@ class ChatViewModel(
                 finishDraftAttempt(draft.id)
                 return@launch
             }
-            dispatchPrompt(draft, wasStreaming, storageId, runtimeId, message, queued, redirect, generation)
+            dispatchPrompt(
+                draft,
+                wasStreaming,
+                storageId,
+                runtimeId,
+                message,
+                effectiveQueued,
+                effectiveRedirect,
+                generation,
+            )
         }
     }
 

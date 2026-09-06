@@ -19,6 +19,7 @@ data class OutgoingDraft(
     val attachments: List<Attachment>,
     val createdAt: Long,
     val state: DraftState = DraftState.DRAFT,
+    val queued: Boolean = false,
 ) {
     /** Stable across socket generations and process recreation, distinct across profiles. */
     val targetKey: String

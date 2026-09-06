@@ -22,7 +22,7 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
 | PR03 | 完了 `5136a02` | 関連unit Debug/Release各46件、SQLCipher移行・保全・起動停止UIのemulator 3件成功 |
 | PR04 | 完了 `7bf9270` | 単一socketの固定scope/event/read境界。既存WebSocket 54件、新contract 6件。自己レビューで固定所属とno-queueを確認 |
 | PR05 | 完了 `ad29751` | scopeごとのread probe、Unknown/Blocked区別、API専用offline decoder。追加4件。live writeはdisabled |
-| PR06a | 実装中 `b6d161d` / `8491e8e` / `39116b9` / `ffef902` / `51c1379` / `c7fa9a1` | queue禁止・暗号化draft・固定scope submit・Chat下書きUI・通知返信を検証。commandのscope確認も実施。下書き復元の本文・queue保持と統合レビューは残作業 |
+| PR06a | 実装済み `b6d161d` / `8491e8e` / `39116b9` / `ffef902` / `51c1379` / `c7fa9a1` / `b1d55a9` | queue禁止・暗号化draft・固定scope submit・Chat下書きUI・通知返信を検証。commandのscope・下書き復元の本文/queue保持も確認。全体統合ゲートはPR11で実施 |
 | PR06b | 未着手 | 固定要求とACK、once/deny、失効と古い応答 |
 | PR07〜08b | 未着手 | 既存27画面を保持してregistry/復元/4-tabを統合 |
 | PR09a〜09b | 未着手 | 実イベントの観測範囲と正確なAttention通知 |
@@ -183,3 +183,16 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
 - 証跡: `../pr06a-command-{Debug,Release}-final.log`、
   `../pr06a-command-offline-final.log`、`../phase1-validation/pr06a-command-*-results`。
   ktlintと差分チェック成功。実Hermes接続は実施していない。
+## PR06a 下書き復元の送信方法
+
+- 復元した下書きはスラッシュで始まっても本文として送る。`/queue /help`の本文を
+  `/help`コマンドとして再解釈することを防ぎ、同じdraft IDをACK後だけ削除する。
+- `OutgoingDraft.queued`を既定falseの任意JSON項目として保持する。旧payloadを読めること、
+  repository再生成後もtrueが残ることを検証した。Room schema/table変更はない。
+  queued draftの手動再送でredirectへ変換しない。旧版へのdowngradeは今回検証していない。
+- Debug/Release各13件、failure/error/skip 0。本文のliteral送信・送信1回・queue=true・
+  command/redirect呼び出し0・ACK後draft削除を検証。ktlint/差分チェック成功。
+  証跡: `../pr06a-draft-restore-final.log`と
+  `../phase1-validation/pr06a-draft-restore-{Debug,Release}-results`。
+- 直前のコマンド変更は`b1d55a9`。offline表示追加後のcommand classは両variant各21件成功。
+  PR06aの実装単位はここまで。Phase 1全体・実接続・最終全品質ゲートの完了は示していない。

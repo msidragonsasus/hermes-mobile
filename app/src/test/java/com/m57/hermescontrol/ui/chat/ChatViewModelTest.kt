@@ -373,6 +373,27 @@ class ChatViewModelTest {
         }
 
     @Test
+    fun draft_restoredQueuePayloadStartingWithSlashIsSentOnceAsLiteralPrompt() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            fakeSubmission.ready = false
+            vm.sendMessage("/queue /help")
+            advanceUntilIdle()
+            val draft = fakeDraftStore.drafts.value.single()
+            assertEquals("/help", draft.text)
+            assertTrue(draft.queued)
+            fakeSubmission.ready = true
+            vm.restoreDraft(draft.id)
+            advanceUntilIdle()
+            vm.sendMessage("/help")
+            advanceUntilIdle()
+            verify(exactly = 1) { HermesWsClient.sendMessage(sessionId, "/help", any(), true) }
+            verify(exactly = 0) { HermesWsClient.writeScoped(any(), WsMethods.COMMAND_DISPATCH, any(), any()) }
+            verify(exactly = 0) { HermesWsClient.sendRedirect(any(), any(), any()) }
+            assertTrue(fakeDraftStore.drafts.value.isEmpty())
+        }
+
+    @Test
     fun draft_offlineSurvivesRecreationAndReconnectWithoutSending() =
         runTest {
             val (vm, _) = createViewModelWithSession()

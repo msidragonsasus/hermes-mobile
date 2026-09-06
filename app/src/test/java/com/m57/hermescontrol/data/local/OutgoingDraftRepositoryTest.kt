@@ -61,6 +61,18 @@ class OutgoingDraftRepositoryTest {
         }
 
     @Test
+    fun `queue intent survives recreation and legacy drafts default to ordinary prompts`() =
+        runTest {
+            val dao = FakeDao()
+            val draft = OutgoingDraft("queued", scope, "saved", "runtime", "/help", emptyList(), 123, queued = true)
+            OutgoingDraftRepository(dao).save(draft)
+            assertEquals(draft, OutgoingDraftRepository(dao).observe(scope).first().single())
+            // Exact prior payload shape: absence of the new optional field must remain readable.
+            dao.rows.value = dao.rows.value.map { it.copy(payload = it.payload.replace(",\"queued\":true", "")) }
+            assertEquals(draft.copy(queued = false), OutgoingDraftRepository(dao).observe(scope).first().single())
+        }
+
+    @Test
     fun `stable target distinguishes missing empty and delimiter containing identifiers`() {
         assertNotEquals(
             scope.copy(connectionProfileId = null).draftTargetKey(),
