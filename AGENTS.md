@@ -3,22 +3,57 @@
 Guidance for AI coding agents working on this repository.
 This complements [README.md](README.md) (for humans) and [DESIGN.md](DESIGN.md)
 (architecture & design rationale) with agent-focused context. Before making any
-non-trivial architectural change — new screens, navigation changes, theme/state
-patterns, module boundaries — read `DESIGN.md` first and keep changes consistent
-with the decisions recorded there. If a change would contradict `DESIGN.md`,
+UI change — including copy, layout, states, accessibility, navigation, or theme —
+read [DESIGN.md](DESIGN.md) and the relevant sections of
+[UX_SPEC.md](docs/personal-ai-spec/UX_SPEC.md) first. For architecture changes, also
+read [ARCHITECTURE.md](docs/personal-ai-spec/ARCHITECTURE.md). Keep changes consistent
+with these decisions. If a change would contradict `DESIGN.md`,
 flag it explicitly rather than silently diverging.
+
+## Mandatory Working Rules
+
+- Confirm the actual repository root, remote, branch, HEAD, and existing diff before
+  editing. Work in the user's fork (`msidragonsasus/hermes-mobile`), never in a
+  Git-free parent or an `.audit` checkout. Do not reset to the old specification SHA.
+- Preserve unrelated changes. Work only within the requested PR scope; Task 01
+  and later phases require a separate request. Do not automatically push, publish
+  a PR, merge, deploy, or alter host-wide settings.
+- Keep Kotlin, Java, XML, Gradle, JSON, Markdown, and YAML in UTF-8. Preserve
+  existing BOM/newlines; verify decoding before attempting any encoding repair.
+- Reuse the existing app, shared UI, navigation, and dependencies. No blank-project
+  replacement, bulk rewrite, GPL code copying, or remote DEX/JAR/SO loading.
+- Preserve installed app data, applicationId, signing identity, settings, and DB.
+  Never solve update/build/migration failures by uninstalling, clearing data, or
+  destructive DB recreation. Stop with a recoverable error if preservation fails.
+- Run checks appropriate to the actual diff. For documentation-only changes,
+  validate links, specification/schema consistency, and diff scope; reuse dated
+  audit evidence instead of repeating successful Android checks without a reason.
+  Report failures and untested areas accurately; do not weaken tests to pass.
+- Human approval and transport safety requirements are in
+  [SECURITY.md](docs/personal-ai-spec/SECURITY.md); these are target gates, not a
+  claim that the current client already enforces them. No automatic external writes.
+
+The accepted audit and PR sequence are in
+[IMPLEMENTATION_PLAN.md](docs/personal-ai/IMPLEMENTATION_PLAN.md).
+Read [CODEX_START_HERE.md](docs/personal-ai-spec/codex/CODEX_START_HERE.md) for the
+document map, not as authorization to start another task. The former duplicated
+addendum now links to these rules. Reasons for PR 00 corrections are recorded in
+[ADR-0004](docs/personal-ai-spec/adr/0004-audit-aligned-foundation.md).
 
 ## Project Overview
 
 **Hermes Mobile** is a Jetpack Compose Android app — a mobile control panel for
 [Hermes Agent](https://hermes-agent.nousresearch.com). It talks to the Hermes
-dashboard's REST API and WebSocket TUI Gateway (JSON-RPC 2.0) over a trusted LAN.
+dashboard's REST API and WebSocket TUI Gateway (JSON-RPC 2.0) over a trusted LAN
+or Tailscale. The Personal AI Shell target extends this app; see the product and
+UX specifications rather than treating the target shell as implemented.
 
 - **Package:** `com.m57.hermescontrol`
 - **Min SDK 26 / Target SDK 37 / Compile SDK 37**
-- **Kotlin 2.4.10**, KSP 2.3.10 (standalone versioning, NOT `kotlinVersion-kspVersion`)
-- **Jetpack Compose**, Room 2.7.x, Navigation3, OkHttp WebSocket, Retrofit, Kotlinx Serialization
-- **Auth:** `EncryptedSharedPreferences` (AES256-GCM), Bearer token (REST) + `?token=` (WS)
+- **Kotlin 2.4.10**, KSP 2.3.11 (standalone versioning, NOT `kotlinVersion-kspVersion`)
+- **Jetpack Compose / Material 3**, Room 3.0.2 (`androidx.room3`), Navigation3, OkHttp WebSocket, Retrofit, Kotlinx Serialization
+- **Structure / DI:** single `:app`; manual construction and ViewModel factories, no Hilt/Dagger. Phase 1 keeps this structure; module extraction and Hilt are separate Phase 2 decisions.
+- **Auth:** Keystore-backed `EncryptedSharedPreferences` (AES256-GCM values); Bearer REST / token WS and gated cookie / one-time WS ticket paths. Preserve the existing auth-mode separation.
 
 ## Build & Test Commands
 
@@ -30,6 +65,9 @@ If you have a local Android SDK (`ANDROID_HOME` set), these work:
 ./gradlew assembleDebug                     # full APK build
 ./gradlew testDebugUnitTest                 # unit tests (MockK)
 ./gradlew ktlintCheck                       # style check
+./gradlew checkColorLiterals                # semantic color guard
+./gradlew lintDebug                         # Android lint
+./gradlew compileReleaseKotlin              # release compilation
 ```
 
 **ktlint standalone** (no SDK needed):
@@ -42,7 +80,10 @@ chmod +x ktlint
 ./ktlint --format <file>                    # auto-fix
 ```
 
-**No SDK? CI handles everything** — push small and watch the checks below.
+**No SDK?** Report unavailable Android checks. CI can run them when publishing is
+authorized; missing SDK is not authorization to push. On Windows use `gradlew.bat`,
+JDK 21, explicit UTF-8, and the matching ktlint plus Git sh in the process PATH.
+Existing Windows failures are recorded in the audit; do not disguise them as passes.
 
 ### CI pipeline (`.github/workflows/android.yml`)
 
@@ -54,7 +95,10 @@ chmod +x ktlint
 | `build`              | assembleDebug (gated by the 3 above)                                                                                               |
 | `release-compile`    | compileReleaseKotlin — catches release-variant compilation issues (e.g. debugImplementation-scoped deps referenced in main source) |
 | `instrumented-tests` | Compose UI tests on Android emulator (API 34 ATD)                                                                                  |
-| `ci-summary`         | Aggregator (`if: always()`) — branch protection gates on THIS check                                                                |
+| `ci-summary`         | Aggregator (`if: always()`) — does not include instrumented-tests in its needs                                                                |
+
+Detect Changes may skip Android jobs for documentation-only diffs. A skipped job
+is not a new test pass; inspect instrumented-tests separately from CI Summary.
 
 Also: There is a separate workflow `merge-conflict-detector.yml` that auto-labels PRs with `has-conflicts`.
 
@@ -185,21 +229,24 @@ Column(
     modifier = Modifier.fillMaxSize(),    // no .padding(paddingValues)!!
 ) { ... }
 
-// ✅ Loading/Error/Empty states — these DO need it:
-LoadingState(modifier = Modifier.padding(paddingValues))
+// ✅ Loading/Error/Empty inside HermesScaffold content have the same inset owner:
+LoadingState() // no repeated paddingValues; retain the screen-specific arguments
 ```
 
 **Quick test:** If your screen's top gap is wider than CronJobsScreen's, you've double-stacked.
 
-**See also:** `references/hermes-scaffold-padding.md` in the skill doc for the full
-breakdown, edge cases, and timeline of previous occurrences.
+**Source of truth:** `ui/common/HermesScaffold.kt` applies side/bottom insets and
+dynamic top-bar padding before invoking content. Loading/error/empty content uses
+the same container. Outside this scaffold, inspect the actual inset owner instead
+of copying its padding. See DESIGN.md for the shared layout rule.
 
 ### Room Persistence
 
 - `ChatMessageEntity` / `ChatMessageDao` / `HermesDatabase` — chat messages survive
   app kills. `getMessagesForSession()` returns `suspend fun ...: List<ChatMessageEntity>`
   (not `Flow` — the caller controls the coroutine scope).
-- Room 2.7.x requires `room { schemaDirectory("$projectDir/schemas") }` DSL.
+- Room 3.0.2 uses the existing `room { schemaDirectory("$projectDir/schemas") }` configuration. Current DB schema is v6, with explicit v2→v6 migrations. Do not downgrade Room or add Hilt to match outdated documentation.
+- Existing DB delete/destructive fallback paths are unresolved audit findings, not an approved preservation strategy. Follow the separate DB-protection PR before device updates.
 - `ChatViewModel` extends `AndroidViewModel` (needs Application for DB access).
 
 ### Theme
@@ -225,7 +272,7 @@ Access status colors via `LocalHermesStatusColors.current.success`, not
 
 ### PR-Always (ENFORCED)
 
-**Every change goes through a PR, targeting `dev`. Never push directly to `dev` (or `main`).**
+**Every integrated change goes through a PR targeting the user fork's `dev`. Never push directly to `dev` (or `main`).** Local preparation may stop before commit/push/PR publication when that is the requested scope. The example below is for an authorized publication workflow, not an instruction to publish automatically.
 
 ```bash
 git checkout dev && git pull origin dev
@@ -246,10 +293,8 @@ gh pr create --base dev --title "fix(#N): description" --body "Closes #N"
 
 ## Security Considerations
 
-- **Cleartext HTTP/WS is intentional** — trusted LAN only. `usesCleartextTraffic="true"`
-  and `http://`/`ws://` URLs are by design. Don't "fix" this unless adding HTTPS support.
-- **`HttpLoggingInterceptor.Level.BODY`** must stay gated on `BuildConfig.DEBUG` — it
-  prints the Authorization header. (B1)
+- **Cleartext HTTP/WS is intentional** for trusted LAN/Tailscale only. Preserve the existing connection modes; do not expose Hermes publicly. Current manifest permission is not proof of runtime host/origin enforcement.
+- **No secret or payload diagnostics, including debug.** Current REST logging is BASIC in debug / NONE in release; existing WS payload and ticket logging remains an unresolved finding. Do not enable BODY/HEADERS or log token/cookie/secret/message contents. Use safe metadata and review URL/exception/export paths too.
 - **AuthManager token** is ephemeral — it becomes invalid when the Hermes dashboard
   restarts. Symptom: 401 on every call. Fix: re-extract the token from the running
   gateway, don't assume the stored one is valid.
@@ -266,7 +311,7 @@ gh pr create --base dev --title "fix(#N): description" --body "Closes #N"
   (`remember {}`, `buildAnnotatedString`, `LaunchedEffect`). Extract to a local
   `val` at the composable scope first.
 - Don't add new screens without checking if an existing one already covers the
-  functionality (28+ screens exist). Extend rather than duplicate.
+  functionality (27 registry definitions plus auth/settings/detail entries exist). Extend rather than duplicate.
 - **⚠ Never scope a dependency to `debugImplementation` if its import is used in
   `main/` source code.** The CI `release-compile` job catches this, but save the
   cycle. `okhttp3.logging.HttpLoggingInterceptor` is the classic example — it's
@@ -308,13 +353,18 @@ com.m57.hermescontrol/
 ├── HermesControlApp.kt     Application class
 ├── Navigation.kt           Drawer + NavDisplay + entry wiring
 ├── NavigationController.kt Central navigation guard (dedup)
-├── NavigationKeys.kt       @Serializable NavKey data objects (28 screens + 6 settings sub-pages)
-├── ScreenRegistry.kt       entry<T> registrations for all NavKeys
+├── NavigationKeys.kt       @Serializable roots and parameterized/detail keys
+├── ScreenRegistry.kt       27 screen definitions; Navigation.kt also owns other entries
 └── MainActivity.kt
 ```
 
 ## Further Reading
 
+- [docs/personal-ai/PR00_REPORT.md](docs/personal-ai/PR00_REPORT.md) — local documentation change record and verification
+- [docs/personal-ai-spec/PRODUCT_SPEC.md](docs/personal-ai-spec/PRODUCT_SPEC.md) — product scope
+- [docs/personal-ai-spec/UX_SPEC.md](docs/personal-ai-spec/UX_SPEC.md) — flows and shared state/attention UX
+- [docs/personal-ai-spec/ARCHITECTURE.md](docs/personal-ai-spec/ARCHITECTURE.md) — staged architecture and protocol boundaries
+- [docs/personal-ai-spec/MINIAPP_PLATFORM.md](docs/personal-ai-spec/MINIAPP_PLATFORM.md) — manifest and extension contract
 - [README.md](README.md) — human-facing overview, features, screenshots, tech stack
 - [DESIGN.md](DESIGN.md) — architecture and design decisions, rationale for the
   patterns in this doc (Navigation3, HermesScaffold, theme presets, etc.)

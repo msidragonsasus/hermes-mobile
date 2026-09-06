@@ -1,7 +1,7 @@
 ---
 version: "alpha"
 name: "Hermes Mobile Design System"
-description: "High-density, minimal Material 3 interface for the Hermes Agent Android client"
+description: "Existing Material 3 design system with Personal AI Shell interaction guidance"
 omitted: []
 colors:
   # Slate Dark Baseline (DefaultScheme.kt)
@@ -205,12 +205,60 @@ components:
 ---
 
 ## Overview
-Hermes Mobile (`com.m57.hermescontrol`) is a high-density, keyboard-first, distraction-free Android client for the Hermes Agent platform. The UI philosophy prioritizes information density, low battery drain (OLED-friendly), and instantaneous feedback over decorative visual noise.
+Hermes Mobile (`com.m57.hermescontrol`) remains the Jetpack Compose / Material 3 Android foundation. Personal AI Shell adds a one-handed, Japanese-first daily interaction model while preserving the existing Chat and Advanced management surfaces. Prioritize readable information, human decisions, explicit execution feedback, and low visual noise; keyboard support complements touch access.
 
-The visual language follows Material 3 guidelines strictly adapted for developer utilities:
-- **Tone**: Technical, focused, utilitarian, crisp.
+The visual language continues the existing Material 3 components and theme system:
+- **Tone**: Clear and focused; daily screens use plain language, with technical details available on demand.
 - **Form Factors**: Native Android phones, foldables, and tablets via adaptive Navigation 3 layouts.
 - **Core Principle**: Zero fluff. Fast render cycles, explicit states, flat surfaces, and zero visual ambiguity.
+
+## Personal AI Shell Interaction Model
+
+Target navigation is **Today / Chat / Activity / Apps**. This is a staged target,
+not the current implementation. Keep every existing management/detail screen
+reachable through Advanced; preserve NavigationController deduplication and
+screen-owned drawer gestures. Tab switches must not create duplicate sessions or
+sockets. Follow [UX_SPEC.md](docs/personal-ai-spec/UX_SPEC.md) for detailed flows.
+
+- Human decisions (Needs You, approval, clarification) precede passive progress.
+- Display connection state separately from Run state. A disconnected client must
+  not label a still-running or unknown Run as failed; show last confirmed state
+  and resynchronization explicitly.
+- Design reusable Run/status, approval, clarification, and artifact components
+  shared by Today, Chat, Activity, and Mini Apps. They share labels, state meanings,
+  loading/offline/error behavior, and action handling; do not clone screen-specific
+  cards with different rules. Reuse StateViews, SharedComponents, DetailDialog,
+  DetailRows, and existing Chat components before adding shared variants.
+- Approval displays action, target, effect, source, and expiry (unknown when absent).
+  Bind responses to the exact original request/session, preserve Responding until
+  confirmed, and offer once/deny only. Modify is a safe review/revision flow when
+  supported, not an invented approval endpoint or implicit permission. High-impact
+  actions open details. See [SECURITY.md](docs/personal-ai-spec/SECURITY.md).
+- Artifacts expose safe summaries and supported preview/open actions, with source
+  and availability; do not imply missing content is downloaded or generated.
+- Mini Apps use host theme tokens, components, and approval surfaces. No independent
+  color/spacing system or approval bypass. Native, SDUI, and Web stages remain
+  bounded by [MINIAPP_PLATFORM.md](docs/personal-ai-spec/MINIAPP_PLATFORM.md).
+
+## Accessibility and Input
+
+- Japanese strings and natural wrapping, Android plurals, and system font scaling
+  are required. Do not force fixed text heights or ellipsize decision-critical
+  target/effect/expiry text. Default dimensions below do not override accessibility.
+- Keep interactive targets at least 48dp and key actions reachable one-handed.
+  Support TalkBack labels, state descriptions, logical focus order, and feedback
+  after response. Status uses icon + text + semantic color, never color alone.
+- Preserve contrast across all presets and dynamic colors. Test large fonts,
+  Japanese text, light/dark modes, and TalkBack for relevant UI changes.
+- Assign system bars, shell bottom navigation, and IME inset handling to explicit
+  owners. Reuse HermesScaffold; avoid double padding and keep Composer, approval,
+  and question actions visible above the IME. Respect existing scroll behavior.
+
+The front-matter tokens and default dimensions document the existing visual
+baseline. Use `MaterialTheme`, `LocalSpacing`, `Shapes`, `Type`, and
+`LocalHermesStatusColors` at runtime, rather than copying constants into screens.
+PR 00 changes and their reasons are in
+[ADR-0004](docs/personal-ai-spec/adr/0004-audit-aligned-foundation.md).
 
 ## Colors
 The app supports 6 dynamic presets managed by `PaletteTemplate.kt` (`Default/Slate`, `Monochrome`, `Gruvbox`, `Catppuccin`, `AMOLED`, `Nord`), plus dynamic Android 12+ wallpaper theming:
@@ -229,7 +277,7 @@ The app supports 6 dynamic presets managed by `PaletteTemplate.kt` (`Default/Sla
    - Every theme preset must explicitly define `onErrorContainer` (`#FFB4AB` in Default Dark) to prevent invisible text bugs.
 
 ## Typography
-- **UI Fonts**: System `Roboto` / sans-serif with strict semantic scaling to prevent layout shifts.
+- **UI Fonts**: System sans-serif with Japanese fallback and semantic typography that respects system font scaling; layouts grow or scroll when text expands.
 - **Code & Logs**: Tabular `JetBrains Mono` for terminal traces, tool payloads, JSON viewers, and memory tokens.
 - **Scale Discipline (`Type.kt`)**:
   - Screen titles: `20sp` (`title-large`) with 0.1sp tracking.
@@ -240,8 +288,8 @@ The app supports 6 dynamic presets managed by `PaletteTemplate.kt` (`Default/Sla
 
 ## Layout
 - **Scaffolding (`HermesScaffold`)**:
-  - Global `TopAppBar` containing screen title, connection indicator, profile switch dropdown, and quick action icon buttons.
-  - **No Floating Action Buttons (FABs)**: Primary triggers live in the top-bar actions or fixed bottom composer docks.
+  - Shared `TopAppBar` slots provide title, connection indicator, and contextual actions. In the target daily shell, profile/model details move to a shared menu/sheet as specified in UX_SPEC; keep existing Advanced controls accessible.
+  - **No new Floating Action Buttons (FABs)**: Reuse top-bar actions or fixed bottom docks, with frequent decisions within one-handed reach. Preserve the existing Chat scroll-to-latest control; its redesign is outside the shell migration.
   - **Scaffold Padding Foot-Gun Rule**: Content lambdas must **NEVER** apply `Modifier.padding(paddingValues)` on root children — the scaffold's internal `Box` already handles top-bar offsets.
 - **Spacing Scale (`Spacing.kt`)**:
   - `xs: 2dp`: Hairline gaps, micro dividers.
@@ -251,7 +299,7 @@ The app supports 6 dynamic presets managed by `PaletteTemplate.kt` (`Default/Sla
   - `xl: 24dp`: Full-feature spacing, large section break.
   - `xxl: 36dp`: Maximum outer margin.
 - **Controls & Navigation**:
-  - Horizontal chip bars must be single-row with `horizontalScroll()`. Never stack chips vertically into multi-row wraps.
+  - Filter chip bars use a single horizontally scrollable row. This rule does not constrain clarification choices: use readable wrapping or a vertical list where Japanese text or large fonts require it.
   - Dropdown pickers take precedence over cycle buttons to ensure all options are discoverable in one tap.
 
 ## Elevation & Depth
@@ -272,7 +320,7 @@ The app supports 6 dynamic presets managed by `PaletteTemplate.kt` (`Default/Sla
   - `9999dp` (`rounded.full`): Interactive filter chips, timeline markers, circular icon buttons.
 
 ## Components
-- **Top App Bar**: Flat surface, 56dp height, contains title marquee, WS connection status pill, and action buttons.
+- **Top App Bar**: Flat shared surface with existing default sizing and context slots. Preserve accessible title and status text; do not enforce a fixed height or marquee when font scaling needs more room.
 - **Chat Timeline**:
   - **User Bubbles**: Right-aligned, solid primary fill, high-contrast text (`onPrimary`).
   - **Assistant Bubbles**: Left-aligned, `surfaceContainer` fill (`#1B2022`), full Markdown renderer support.
@@ -283,7 +331,7 @@ The app supports 6 dynamic presets managed by `PaletteTemplate.kt` (`Default/Sla
   - Inactive chips: `surfaceContainerHigh` fill with `text-secondary` text.
   - Disabled controls: Visually greyed out with `alpha = 0.38f`.
 - **Dialogs & Bottom Sheets**:
-  - Standard CRUD flows must provide all 4 operations (Create, Read, Update, Delete) with confirmation gates for destructive actions.
+  - Expose only operations supported by the resource, verified server capability, and user permission. A read-only resource does not require invented Create/Update/Delete endpoints. Write/destructive operations use the host approval policy.
   - Every managed resource must have a discoverable navigation surface in the UI.
 
 ## Do's and Don'ts
@@ -298,7 +346,7 @@ The app supports 6 dynamic presets managed by `PaletteTemplate.kt` (`Default/Sla
 
 ### Don'ts
 - **DON'T** render emoji glyphs (`✅`, `❌`, `⭕`, `🔄`, `⚡`, `🛠`, `📄`) in the app UI — replace them with real vector icons.
-- **DON'T** use Floating Action Buttons (FABs); anchor actions in top bars or fixed docks.
+- **DON'T** add new Floating Action Buttons (FABs); use shared top-bar/fixed-dock actions. Preserve the existing Chat scroll-to-latest exception.
 - **DON'T** apply `Modifier.padding(paddingValues)` inside `HermesScaffold` content lambdas.
 - **DON'T** use gradient backgrounds on chat surfaces or message bubbles.
 - **DON'T** create multi-layer nested cards or unnecessary decorative borders.
