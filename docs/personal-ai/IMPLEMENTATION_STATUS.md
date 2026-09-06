@@ -22,7 +22,8 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
 | PR03 | 完了 `5136a02` | 関連unit Debug/Release各46件、SQLCipher移行・保全・起動停止UIのemulator 3件成功 |
 | PR04 | 完了 `7bf9270` | 単一socketの固定scope/event/read境界。既存WebSocket 54件、新contract 6件。自己レビューで固定所属とno-queueを確認 |
 | PR05 | 完了 `ad29751` | scopeごとのread probe、Unknown/Blocked区別、API専用offline decoder。追加4件。live writeはdisabled |
-| PR06a〜06b | 未着手 | offline write禁止、結果不明、固定要求とACK |
+| PR06a | 実装中 `b6d161d` | offline writeのqueue禁止を検証済み。永続draft・結果不明・Chat/通知入口の固定scope統合は残作業 |
+| PR06b | 未着手 | 固定要求とACK、once/deny、失効と古い応答 |
 | PR07〜08b | 未着手 | 既存27画面を保持してregistry/復元/4-tabを統合 |
 | PR09a〜09b | 未着手 | 実イベントの観測範囲と正確なAttention通知 |
 | PR10 | 未着手 | strict manifest parser/意味検証、静的表示のみ |
@@ -96,3 +97,15 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
 - 証跡: checkout外`../phase1-validation/pr04-05-*-results`、`pr04-05-final-*-results`、同prefixのlog。
   自己レビューでは古いACK/別profileへの所属付け、readの遅延送信、本文ログ、広告URL追従がないことを確認。
   新UIへの手動DI接続はPR08〜09で行う。実Hermesのversion/auth/Run/approval互換は未検証。
+
+## PR06aの途中経過
+
+- 明示したread methodのみ既存のreconnect queueへ入れる。prompt・承認・質問・sudo・secret・
+  添付・設定変更・未知methodはoffline/送信拒否時に未送信エラーを返し、自動queueしない。
+  `send(true)`後の要求をreplayしない既存条件も維持した。
+- Releaseの通信関連57件成功。Debugは最初の57件中、oversized送信拒否でsocketをcancelする
+  回帰1件を検出し、サイズ超過時は既存socketを維持する条件へ修正。修正後の対象5件成功。
+  自己レビューで別操作の拒否が進行中の応答待ちを消す問題を修正し、追加ケースとoffline拒否を
+  Debug/Release各2件で成功確認した。追加テストのprivate setter直接参照による初回compile失敗も修正済み。
+- 最終4ファイルktlint、diff check成功。証跡はcheckout外`../phase1-validation/pr06a-*`。
+  永続下書き、送信結果不明の表示、Chat/通知の固定scope submitは未実装なのでPR06a完了とはしない。
