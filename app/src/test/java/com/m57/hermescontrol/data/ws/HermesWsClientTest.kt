@@ -461,6 +461,10 @@ class HermesWsClientTest {
             assertFalse(HermesWsClient.writeScoped(scope.copy(generation = -1), method, params).accepted)
             assertFalse(HermesWsClient.writeScoped(scope.copy(serverProfileId = "other"), method, params).accepted)
         }
+        for (choice in listOf("once", "deny", "session", "always")) {
+            HermesWsClient.send(WsMethods.APPROVAL_RESPOND, params + ("choice" to choice))
+        }
+        HermesWsClient.send(WsMethods.APPROVAL_RECEIVED, params)
         verify(exactly = 0) { socket.send(any<String>()) }
         val frames = mutableListOf<String>()
         every { socket.send(any<String>()) } answers {

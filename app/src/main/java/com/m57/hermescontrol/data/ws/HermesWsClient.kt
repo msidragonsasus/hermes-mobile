@@ -818,6 +818,7 @@ object HermesWsClient {
                         WsMethods.PROMPT_BTW,
                         WsMethods.APPROVAL_RESPOND,
                         WsMethods.APPROVAL_RECEIVED,
+                        WsMethods.APPROVAL_PENDING,
                         WsMethods.CLARIFY_RESPOND,
                     )
             val sessionId = params["session_id"] as? String
@@ -944,6 +945,11 @@ object HermesWsClient {
                 pendingReply = true
             }
             onSent?.invoke(id)
+            if (method == WsMethods.APPROVAL_RESPOND || method == WsMethods.APPROVAL_RECEIVED) {
+                // Approval writes require an original RequestRef through writeScoped.
+                rejectNotSent(id, replyPendingBeforeSend)
+                return@synchronized
+            }
             val ws = webSocket
             if (ws != null && connected.get()) {
                 val scope = _connectionScope.value

@@ -25,6 +25,7 @@ import com.m57.hermescontrol.data.remote.safeApiCall
 import com.m57.hermescontrol.data.session.ActiveSessionHolder
 import com.m57.hermescontrol.data.session.ProfileSwitchCoordinator
 import com.m57.hermescontrol.data.transport.DashboardRpcTransport
+import com.m57.hermescontrol.data.transport.HermesAttentionTransport
 import com.m57.hermescontrol.data.transport.HermesSubmissionTransport
 import com.m57.hermescontrol.data.ws.CommandBlocklist
 import com.m57.hermescontrol.data.ws.CommandCatalog
@@ -34,9 +35,13 @@ import com.m57.hermescontrol.data.ws.WsEvent
 import com.m57.hermescontrol.data.ws.WsMethods
 import com.m57.hermescontrol.data.ws.toAny
 import com.m57.hermescontrol.data.ws.toJsonElement
+import com.m57.hermescontrol.domain.hermes.AttentionItem
+import com.m57.hermescontrol.domain.hermes.AttentionKind
+import com.m57.hermescontrol.domain.hermes.AttentionRepository
 import com.m57.hermescontrol.domain.hermes.ConnectionScope
 import com.m57.hermescontrol.domain.hermes.DraftState
 import com.m57.hermescontrol.domain.hermes.OutgoingDraft
+import com.m57.hermescontrol.domain.hermes.RequestRef
 import com.m57.hermescontrol.domain.hermes.SessionRef
 import com.m57.hermescontrol.domain.hermes.SubmissionResult
 import com.m57.hermescontrol.domain.hermes.draftTargetKey
@@ -153,6 +158,10 @@ internal fun sameLogicalMessage(
     b: ChatMessage,
 ): Boolean {
     if (a.role != b.role) return false
+    if (a.approvalInfo != null || b.approvalInfo != null) {
+        val ref = a.approvalInfo?.ref
+        return if (ref != null) ref == b.approvalInfo?.ref else a.id == b.id
+    }
     if (a.role == MessageRole.TOOL) {
         // Issue #842: prefer the gateway's tool call id when both sides carry
         // it — the REST transcript stores `tool_call_id` and the live WS
@@ -508,6 +517,8 @@ class ChatViewModel(
     private val draftStore: OutgoingDraftStore =
         OutgoingDraftRepository(HermesDatabase.get(application).outgoingDraftDao()),
     private val submissionTransport: HermesSubmissionTransport = DashboardRpcTransport(),
+    private val attentionTransport: HermesAttentionTransport = DashboardRpcTransport(),
+    private val attentionRepository: AttentionRepository = AttentionRepository(),
 ) : AndroidViewModel(application) {
     constructor(application: Application) : this(application, startCleanup = true)
 
@@ -703,9 +714,37 @@ class ChatViewModel(
                 }
             }
         }
+        viewModelScope.launch {
+            wsClient.scopedEvents.collect { observation ->
+                val event = observation.event
+                if (observation.scope != submissionTransport.configuredScope()) return@collect
+                when (event) {
+                    is WsEvent.ApprovalRequest -> {
+                        if (isCurrentSession(event.sessionId)) handleApprovalRequest(event, observation.scope)
+                    }
+
+                    is WsEvent.SessionInfo -> {
+                        val runtimeId = event.data?.get("session_id") as? String
+                        val approval = event.data?.get("pending_approval") as? Map<*, *>
+                        if (runtimeId != null && isCurrentSession(runtimeId) && approval != null) {
+                            handleApprovalRequest(parseApprovalMap(approval, runtimeId), observation.scope)
+                        }
+                    }
+
+                    else -> {}
+                }
+            }
+        }
+        viewModelScope.launch {
+            attentionRepository.items.collect { refreshApprovalStates() }
+        }
+        viewModelScope.launch {
+            wsClient.connectionScope.collect { refreshApprovalStates() }
+        }
         // B7 (Jun 30 2026, kanban t_connection_loading): clear loading state on connection failure or status change
         viewModelScope.launch {
             wsClient.connectionStatus.collect { status ->
+                refreshApprovalStates()
                 if (status == ConnectionStatus.DISCONNECTED ||
                     status == ConnectionStatus.RECONNECTING ||
                     status == ConnectionStatus.NO_NETWORK ||
@@ -987,23 +1026,7 @@ class ChatViewModel(
                         // chip stays hidden until the real window lands.
                         viewModelScope.launch { fetchContextUsage(skipRestFallback = true) }
                     }
-                    // Session.info can carry `pending_approval` (reconnect
-                    // reconciliation) — surface it unless already on screen.
-                    val pendingApproval = info["pending_approval"] as? Map<*, *>
-                    if (pendingApproval != null) {
-                        val rid = pendingApproval["request_id"] as? String
-                        val alreadyShown =
-                            rid != null &&
-                                _uiState.value.messages.any { it.approvalInfo?.requestId == rid }
-                        if (!alreadyShown) {
-                            handleApprovalRequest(
-                                parseApprovalMap(
-                                    pendingApproval,
-                                    runtimeSessionId ?: _uiState.value.currentSessionId,
-                                ),
-                            )
-                        }
-                    }
+                    // Pending approvals are reconciled by the scoped event collector.
                 }
             }
 
@@ -1068,7 +1091,7 @@ class ChatViewModel(
             }
 
             is WsEvent.ApprovalRequest -> {
-                handleApprovalRequest(event)
+                // Approval actions are observed only from the socket-scoped stream.
             }
 
             is WsEvent.SudoRequest -> {
@@ -1301,19 +1324,8 @@ class ChatViewModel(
                 // (server `_session_info_payload`); surface it, then ask for
                 // the full queue in case more are parked.
                 val pendingApproval = resultMap?.get("pending_approval") as? Map<*, *>
-                if (pendingApproval != null) {
-                    val rid = pendingApproval["request_id"] as? String
-                    val alreadyShown =
-                        rid != null &&
-                            _uiState.value.messages.any { it.approvalInfo?.requestId == rid }
-                    if (!alreadyShown) {
-                        handleApprovalRequest(
-                            parseApprovalMap(
-                                pendingApproval,
-                                runtimeSessionId ?: sessionId,
-                            ),
-                        )
-                    }
+                if (pendingApproval != null && request?.scope != null) {
+                    handleApprovalRequest(parseApprovalMap(pendingApproval, runtimeSessionId), request.scope)
                 }
                 val activeSessionId = runtimeSessionId ?: sessionId
                 if (activeSessionId != null) replayPendingApproval(activeSessionId)
@@ -4007,47 +4019,74 @@ class ChatViewModel(
 
     // ── Approval flow ───────────────────────────────────────────────────
 
-    private fun handleApprovalRequest(event: WsEvent.ApprovalRequest) {
-        val description = event.description ?: event.command ?: "Unknown command"
-        val content = "**Approval Required**\n$description"
-        val msg =
-            ChatMessage(
-                role = MessageRole.SYSTEM,
-                content = content,
-                approvalInfo =
-                    ApprovalInfo(
-                        command = event.command,
-                        description = event.description,
-                        patternKeys = event.patternKeys,
-                        requestId = event.requestId,
-                        choices = event.choices,
-                        allowPermanent = event.allowPermanent,
-                        smartDenied = event.smartDenied,
-                    ),
+    private fun handleApprovalRequest(
+        event: WsEvent.ApprovalRequest,
+        sourceScope: ConnectionScope? = null,
+    ) {
+        val runtimeId = event.sessionId?.takeIf { it.isNotBlank() }
+        val requestId = event.requestId?.takeIf { it.isNotBlank() }
+        val ref =
+            if (sourceScope != null && runtimeId != null && requestId != null) {
+                RequestRef(sourceScope, SessionRef(runtimeId), requestId)
+            } else {
+                null
+            }
+        val description = event.description ?: event.command ?: "実行内容は未提供です"
+        val item = ref?.let { attentionRepository.observe(AttentionItem(it, AttentionKind.APPROVAL, description)) }
+        val info =
+            ApprovalInfo(
+                command = event.command,
+                description = event.description,
+                patternKeys = event.patternKeys,
+                requestId = event.requestId,
+                choices = event.choices,
+                allowPermanent = event.allowPermanent,
+                smartDenied = event.smartDenied,
+                ref = ref,
+                status = item?.status ?: com.m57.hermescontrol.domain.hermes.AttentionStatus.UNKNOWN,
+                responseEnabled = ref != null && submissionTransport.isReady(ref.scope),
             )
+        var added = false
         _uiState.update { state ->
+            if (ref != null && state.messages.any { it.approvalInfo?.ref == ref }) return@update state
+            added = true
             state.copy(
-                messages = state.messages + msg,
+                messages =
+                    state.messages +
+                        ChatMessage(
+                            role = MessageRole.SYSTEM,
+                            content = "承認が必要です\n$description",
+                            approvalInfo = info,
+                        ),
                 isAgentTyping = false,
             )
         }
-        // Desktop parity (`prompts.ts` receiveApprovalRequest): ack the render
-        // so the backend knows this client holds the prompt. Fire-and-forget.
-        val requestId = event.requestId
-        val sessionId = runtimeSessionId ?: event.sessionId ?: _uiState.value.currentSessionId
-        if (requestId != null && sessionId != null) {
-            viewModelScope.launch(ioDispatcher) {
-                runCatching {
-                    wsClient.send(
-                        method = WsMethods.APPROVAL_RECEIVED,
-                        params =
-                            mapOf(
-                                "session_id" to sessionId,
-                                "request_id" to requestId,
-                            ),
-                    )
-                }
-            }
+        if (added && ref != null) {
+            viewModelScope.launch(ioDispatcher) { attentionTransport.acknowledgeApproval(ref) }
+        }
+    }
+
+    private fun refreshApprovalStates() {
+        val items = attentionRepository.items.value.associateBy { it.ref }
+        _uiState.update { state ->
+            state.copy(
+                messages =
+                    state.messages.map { message ->
+                        val info = message.approvalInfo ?: return@map message
+                        val item = items[info.ref]
+                        message.copy(
+                            approvalInfo =
+                                info.copy(
+                                    status = item?.status ?: info.status,
+                                    responseEnabled =
+                                        info.ref?.let {
+                                            it.scope == submissionTransport.configuredScope() &&
+                                                submissionTransport.isReady(it.scope)
+                                        } == true,
+                                ),
+                        )
+                    },
+            )
         }
     }
 
@@ -4097,71 +4136,62 @@ class ChatViewModel(
 
     /**
      * Reconnect replay (desktop `replayPendingApproval` parity): ask the
-     * gateway for unresolved approvals and surface the oldest one. Called
-     * after resume and after each respond (the queue can hold more).
+     * gateway for all unresolved approvals using the fixed resumed session.
+     * This read never resends an answer or resets an uncertain response.
      */
     private fun replayPendingApproval(sessionId: String) {
-        val targetSessionId = runtimeSessionId ?: sessionId
+        val scope = sessionScope ?: return
+        val runtimeId = runtimeSessionId ?: return
+        val generation = sessionGeneration
+        if (sessionId != runtimeId && sessionId != _uiState.value.currentSessionId) return
         viewModelScope.launch(ioDispatcher) {
-            wsClient.send(
-                method = WsMethods.APPROVAL_PENDING,
-                params = mapOf("session_id" to targetSessionId),
-                onSent = { id -> trackRequest(id, WsMethods.APPROVAL_PENDING) },
-            )
+            try {
+                val result =
+                    wsClient
+                        .writeScoped(
+                            scope,
+                            WsMethods.APPROVAL_PENDING,
+                            mapOf("session_id" to runtimeId),
+                        ).response
+                        .await()
+                if (generation != sessionGeneration || !submissionTransport.isReady(scope)) return@launch
+                handleApprovalPendingResult(result.toJsonElement().toAny(), scope, runtimeId)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // A read failure cannot authorize a response or resend one.
+            }
         }
     }
 
-    private fun handleApprovalPendingResult(result: Any?) {
-        @Suppress("UNCHECKED_CAST")
-        val approvals = (result as? Map<*, *>)?.get("approvals") as? List<*>
-        val first = approvals?.filterIsInstance<Map<*, *>>()?.firstOrNull() ?: return
-        val requestId = first["request_id"] as? String ?: return
-        val sessionId = runtimeSessionId ?: _uiState.value.currentSessionId
-        // Don't duplicate a prompt already on screen.
-        val alreadyShown =
-            _uiState.value.messages.any { it.approvalInfo?.requestId == requestId }
-        if (alreadyShown) return
-        handleApprovalRequest(parseApprovalMap(first, sessionId))
+    private fun handleApprovalPendingResult(
+        result: Any?,
+        scope: ConnectionScope? = null,
+        runtimeId: String? = null,
+    ) {
+        val approvals = (result as? Map<*, *>)?.get("approvals") as? List<*> ?: return
+        for (approval in approvals.filterIsInstance<Map<*, *>>()) {
+            handleApprovalRequest(parseApprovalMap(approval, runtimeId), scope)
+        }
     }
 
-    fun respondToApproval(action: String) {
-        val state = _uiState.value
-        val approvalMsg = state.messages.lastOrNull { it.approvalInfo != null } ?: return
-        val sessionId = runtimeSessionId ?: state.currentSessionId ?: return
-        // Desktop sends `once` for a single run; legacy mobile sent `approve`
-        // (any non-deny still unblocks, but stay on-spec going forward).
-        val choice = if (action == "approve") "once" else action
-        val requestId = approvalMsg.approvalInfo?.requestId
-
-        // Clear buttons immediately
-        _uiState.update { s ->
-            s.copy(
-                messages =
-                    s.messages.map {
-                        if (it.id == approvalMsg.id) {
-                            it.copy(approvalInfo = null)
-                        } else {
-                            it
-                        }
-                    },
-            )
-        }
-
+    fun respondToApproval(
+        messageId: String,
+        action: String,
+    ) {
+        if (action !in setOf("once", "deny")) return
+        val approval =
+            _uiState.value.messages
+                .firstOrNull { it.id == messageId }
+                ?.approvalInfo ?: return
+        val ref = approval.ref ?: return
         viewModelScope.launch(ioDispatcher) {
-            val params =
-                mutableMapOf<String, Any>(
-                    "session_id" to sessionId,
-                    "choice" to choice,
-                    "all" to false,
-                )
-            if (requestId != null) params["request_id"] = requestId
-            wsClient.send(
-                method = WsMethods.APPROVAL_RESPOND,
-                params = params,
-                onSent = { id -> trackRequest(id, WsMethods.APPROVAL_RESPOND) },
-            )
-            // The queue can hold more pendings — surface the next one.
-            replayPendingApproval(sessionId)
+            attentionRepository.respond(
+                ref = ref,
+                currentScope = submissionTransport.configuredScope(),
+                ready = submissionTransport.isReady(ref.scope),
+                now = System.currentTimeMillis(),
+            ) { attentionTransport.respondApproval(ref, action) }
         }
     }
 

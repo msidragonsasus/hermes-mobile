@@ -208,5 +208,21 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
 - `writeScoped` 自体にも要求ID必須・広範囲承認禁止を追加。既存socket/待機呼出/timeoutを使い、queueしない。
 - Debug/Release各13件成功（状態管理6、adapter6、実WSクライアントのsocket fixture1）。
   ktlint対象7ファイルとdiff check成功。実Hermesとのlive通信や画面操作を行った結果ではない。
-- **未完了**: 既存Chatの最後のカード選択・ACK前消去を置換し、scoped event/replay/clarification batchと
-  画面へ接続する。既存UIのsession/always操作も残っており、PR06bの受入条件はまだ満たしていない。
+- この基盤時点では画面未接続。承認画面への接続は下記で実施。質問・横断Needs Youは引き続き未完了。
+
+## PR06b: Chat承認の固定依頼への接続（途中）
+
+- 押したカードのmessage IDから元RequestRefを取得する。最後のカード選択とACK前消去を廃止。
+  once/denyのみ表示し、送信中・確認済み・結果不明・保留を表示する。期限未提供は不明、修正未対応は
+  理由付きdisabled。操作は48dp以上、依頼元と実行コマンドを省略せず表示する。
+- 承認のlive/session.infoはsocketで採取したscopeを使う。resumeは元RPCのscopeを使い、
+  pending照会は固定scope/runtimeへ送り、全件をexact identityで取り込む。replayは応答状態をリセットしない。
+  古いsocketのイベント、識別情報不足、別scope、offlineでは応答しない。
+- render受領ACKと承認応答を別々に扱い、旧unscoped sendからの承認書込も拒否する。
+  履歴の重複整理では同じ説明文でも別依頼を統合しない。
+- ChatViewModelTest全体はDebug/Release各142件成功。最終差分の承認9件とsocket境界1件は
+  両variant各10件成功。ktlint対象7ファイル・diff check成功。
+  証跡: `../phase1-validation/pr06b-approval-chat-full-{Debug,Release}.xml`、
+  `../phase1-validation/pr06b-approval-final.log`。実Hermes通信・今回の画面実機検証は未実施。
+- PR06bはまだ途中。clarificationの固定request/question単位送信、期限切れ、複数依頼表示、
+  Today/Activityとの共有、UI検証が残る。PR07〜11・Phase 1最終品質ゲートも未完了。

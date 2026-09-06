@@ -16,11 +16,14 @@ import com.m57.hermescontrol.data.remote.GatewayFileClient
 import com.m57.hermescontrol.data.remote.GatewayFileResult
 import com.m57.hermescontrol.data.session.ActiveSessionHolder
 import com.m57.hermescontrol.data.session.ProfileSwitchCoordinator
+import com.m57.hermescontrol.data.transport.HermesAttentionTransport
 import com.m57.hermescontrol.data.ws.ConnectionStatus
 import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.data.ws.JsonRpcError
+import com.m57.hermescontrol.data.ws.ScopedWsEvent
 import com.m57.hermescontrol.data.ws.WsEvent
 import com.m57.hermescontrol.data.ws.WsMethods
+import com.m57.hermescontrol.domain.hermes.AttentionStatus
 import com.m57.hermescontrol.domain.hermes.DraftState
 import com.m57.hermescontrol.domain.hermes.SubmissionResult
 import com.m57.hermescontrol.ui.chat.fakes.FakeChatPersistenceRepository
@@ -68,6 +71,8 @@ import org.junit.Test
 class ChatViewModelTest {
     private val testDispatcher = StandardTestDispatcher()
     private val mockEventsFlow = MutableSharedFlow<WsEvent>(extraBufferCapacity = 64)
+    private val mockScopedEvents = MutableSharedFlow<ScopedWsEvent>(extraBufferCapacity = 64)
+    private lateinit var attentionTransport: HermesAttentionTransport
     private val mockConnectionStatus = MutableStateFlow(ConnectionStatus.DISCONNECTED)
     private val mockSwitchFlow = MutableSharedFlow<String>(extraBufferCapacity = 8)
     private lateinit var app: Application
@@ -167,6 +172,12 @@ class ChatViewModelTest {
         fakeSlashUsageStore = FakeSlashUsageStore()
         fakeDraftStore = FakeOutgoingDraftStore()
         fakeSubmission = FakeSubmissionTransport()
+        attentionTransport = mockk()
+        coEvery { attentionTransport.acknowledgeApproval(any()) } returns SubmissionResult.Confirmed("received", true)
+        coEvery { attentionTransport.respondApproval(any(), any()) } returns
+            SubmissionResult.Confirmed("response", true)
+        every { HermesWsClient.scopedEvents } returns mockScopedEvents
+        every { HermesWsClient.connectionScope } returns MutableStateFlow(fakeSubmission.scope)
         ActiveSessionHolder.set(null)
 
         mockConnectionStatus.value = ConnectionStatus.DISCONNECTED
@@ -248,6 +259,7 @@ class ChatViewModelTest {
             testDispatcher,
             fakeDraftStore,
             fakeSubmission,
+            attentionTransport,
         )
 
     /**
@@ -3531,308 +3543,218 @@ class ChatViewModelTest {
 
     // ── Approval flow ────────────────────────────────────────────────────────
 
-    @Test
-    fun testApprovalRequest_addsSystemMessage() =
-        runTest {
-            val viewModel = createViewModel()
-            advanceUntilIdle()
-
-            mockEventsFlow.emit(
+    private suspend fun TestScope.observeApproval(
+        viewModel: ChatViewModel,
+        requestId: String? = "request-1",
+        runtimeId: String? = "session-123",
+    ): ChatMessage {
+        mockScopedEvents.emit(
+            ScopedWsEvent(
+                fakeSubmission.scope,
+                1,
                 WsEvent.ApprovalRequest(
-                    command = "rm -rf /data",
-                    description = "The agent wants to execute: rm -rf /data",
-                    patternKeys = listOf("shell:rm"),
-                    sessionId = null,
-                ),
-            )
-            advanceUntilIdle()
-
-            val msg =
-                viewModel.uiState.value.messages
-                    .first { it.content.contains("Approval Required") }
-            assertNotNull(msg.approvalInfo)
-            assertEquals("rm -rf /data", msg.approvalInfo?.command)
-        }
-
-    @Test
-    fun testRespondToApproval_sendsRpc() =
-        runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm",
-                    description = "Dangerous command",
-                    patternKeys = null,
-                    sessionId = null,
-                ),
-            )
-            advanceUntilIdle()
-
-            viewModel.respondToApproval("approve")
-            advanceUntilIdle()
-
-            verify { HermesWsClient.send(WsMethods.APPROVAL_RESPOND, any(), any()) }
-        }
-
-    @Test
-    fun testRespondToApproval_clearsButtons() =
-        runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm",
-                    description = "Dangerous",
-                    patternKeys = null,
-                    sessionId = null,
-                ),
-            )
-            advanceUntilIdle()
-
-            val approvalMsg =
-                viewModel.uiState.value.messages
-                    .firstOrNull { it.approvalInfo != null }
-            assertNotNull(approvalMsg)
-
-            viewModel.respondToApproval("approve")
-            advanceUntilIdle()
-
-            val msgAfter =
-                viewModel.uiState.value.messages
-                    .firstOrNull { it.id == approvalMsg!!.id }
-            assertNotNull(msgAfter)
-            assertNull(msgAfter!!.approvalInfo)
-        }
-
-    @Test
-    fun testApprovalRequest_storesRequestIdAndChoices() =
-        runTest {
-            val viewModel = createViewModel()
-            advanceUntilIdle()
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm -rf /tmp/x",
-                    description = "dangerous command",
-                    patternKeys = listOf("shell:rm"),
-                    sessionId = null,
-                    requestId = "req-1",
+                    command = "test command",
+                    description = "対象の変更",
+                    patternKeys = listOf("shell:test"),
+                    sessionId = runtimeId,
+                    requestId = requestId,
                     choices = listOf("once", "session", "always", "deny"),
-                    allowPermanent = true,
-                    smartDenied = false,
                 ),
-            )
-            advanceUntilIdle()
+            ),
+        )
+        advanceUntilIdle()
+        return viewModel.uiState.value.messages
+            .last { it.approvalInfo != null }
+    }
 
-            val msg =
-                viewModel.uiState.value.messages
-                    .first { it.content.contains("Approval Required") }
-            assertEquals("req-1", msg.approvalInfo?.requestId)
+    @Test
+    fun testApprovalRequest_preservesMetadataAndAcknowledgesExactRuntime() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val row = observeApproval(vm)
+            assertEquals("test command", row.approvalInfo?.command)
+            assertEquals(listOf("shell:test"), row.approvalInfo?.patternKeys)
+            assertEquals("request-1", row.approvalInfo?.requestId)
             assertEquals(
-                listOf("once", "session", "always", "deny"),
-                msg.approvalInfo?.choices,
+                "session-123",
+                row.approvalInfo
+                    ?.ref
+                    ?.session
+                    ?.runtimeId,
             )
-            assertEquals(true, msg.approvalInfo?.allowPermanent)
+            coVerify(exactly = 1) { attentionTransport.acknowledgeApproval(row.approvalInfo!!.ref!!) }
+            coVerify(exactly = 0) { attentionTransport.respondApproval(any(), any()) }
         }
 
     @Test
-    fun testRespondToApproval_mapsApproveToOnceAndSendsRequestId() =
+    fun testApprovalRequest_sameContentDifferentIdentitySurvivesTranscriptMerge() =
         runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-            advanceUntilIdle()
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm",
-                    description = "Dangerous",
-                    patternKeys = null,
-                    sessionId = null,
-                    requestId = "req-42",
-                    choices = listOf("once", "deny"),
-                ),
-            )
-            advanceUntilIdle()
-
-            viewModel.respondToApproval("approve")
-            advanceUntilIdle()
-
-            verify {
-                HermesWsClient.send(
-                    WsMethods.APPROVAL_RESPOND,
-                    withArg { params ->
-                        assertEquals(sessionId, params["session_id"])
-                        assertEquals("once", params["choice"])
-                        assertEquals("req-42", params["request_id"])
-                    },
-                    any(),
-                )
-            }
+            val (vm, _) = createViewModelWithSession()
+            val first = observeApproval(vm, "first")
+            val second = observeApproval(vm, "second")
+            assertFalse(sameLogicalMessage(first, second))
+            assertTrue(sameLogicalMessage(first, first.copy(id = "rest-copy")))
+            assertFalse(sameLogicalMessage(first, first.copy(approvalInfo = null)))
         }
 
     @Test
-    fun testRespondToApproval_sessionChoice() =
+    fun testApprovalResponse_targetsTappedRowAndWaitsForAck() =
         runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-            advanceUntilIdle()
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm",
-                    description = "Dangerous",
-                    patternKeys = null,
-                    sessionId = null,
-                    requestId = "req-7",
-                    choices = listOf("once", "session", "always", "deny"),
-                ),
+            val (vm, _) = createViewModelWithSession()
+            val first = observeApproval(vm, "first")
+            val second = observeApproval(vm, "second")
+            val reply = CompletableDeferred<SubmissionResult<Boolean>>()
+            coEvery { attentionTransport.respondApproval(any(), any()) } coAnswers { reply.await() }
+            vm.respondToApproval(first.id, "once")
+            runCurrent()
+            vm.respondToApproval(first.id, "once")
+            runCurrent()
+            assertEquals(
+                AttentionStatus.SUBMITTING,
+                vm.uiState.value.messages
+                    .first { it.id == first.id }
+                    .approvalInfo
+                    ?.status,
             )
+            assertEquals(
+                AttentionStatus.PENDING,
+                vm.uiState.value.messages
+                    .first { it.id == second.id }
+                    .approvalInfo
+                    ?.status,
+            )
+            coVerify(exactly = 1) { attentionTransport.respondApproval(first.approvalInfo!!.ref!!, "once") }
+            reply.complete(SubmissionResult.Confirmed("ack", true))
             advanceUntilIdle()
-
-            viewModel.respondToApproval("session")
-            advanceUntilIdle()
-
-            verify {
-                HermesWsClient.send(
-                    WsMethods.APPROVAL_RESPOND,
-                    withArg { params ->
-                        assertEquals("session", params["choice"])
-                        assertEquals("req-7", params["request_id"])
-                    },
-                    any(),
-                )
-            }
+            assertEquals(
+                AttentionStatus.CONFIRMED,
+                vm.uiState.value.messages
+                    .first { it.id == first.id }
+                    .approvalInfo
+                    ?.status,
+            )
         }
 
     @Test
-    fun testRespondToApproval_omitsRequestIdWhenAbsent() =
+    fun testApprovalResponse_rejectsBroadAndUnknownChoices() =
         runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
+            val (vm, _) = createViewModelWithSession()
+            val row = observeApproval(vm)
+            for (choice in listOf("session", "always", "approve", "unknown")) vm.respondToApproval(row.id, choice)
             advanceUntilIdle()
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "ls",
-                    description = "Safe",
-                    patternKeys = null,
-                    sessionId = null,
-                ),
+            coVerify(exactly = 0) { attentionTransport.respondApproval(any(), any()) }
+            assertEquals(
+                AttentionStatus.PENDING,
+                vm.uiState.value.messages
+                    .last()
+                    .approvalInfo
+                    ?.status,
             )
+            vm.respondToApproval(row.id, "deny")
             advanceUntilIdle()
-
-            viewModel.respondToApproval("deny")
-            advanceUntilIdle()
-
-            verify {
-                HermesWsClient.send(
-                    WsMethods.APPROVAL_RESPOND,
-                    withArg { params ->
-                        assertEquals("deny", params["choice"])
-                        assertFalse(params.containsKey("request_id"))
-                    },
-                    any(),
-                )
-            }
+            coVerify(exactly = 1) { attentionTransport.respondApproval(row.approvalInfo!!.ref!!, "deny") }
         }
 
     @Test
-    fun testRespondToApproval_triggersPendingReplay() =
+    fun testApprovalResponse_missingIdentityCannotSendEvenDeny() =
         runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-            advanceUntilIdle()
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm",
-                    description = "Dangerous",
-                    patternKeys = null,
-                    sessionId = null,
-                    requestId = "req-9",
-                    choices = listOf("once", "deny"),
-                ),
-            )
-            advanceUntilIdle()
-
-            viewModel.respondToApproval("once")
-            advanceUntilIdle()
-
-            verify {
-                HermesWsClient.send(
-                    WsMethods.APPROVAL_PENDING,
-                    withArg { params ->
-                        assertEquals(sessionId, params["session_id"])
-                    },
-                    any(),
-                )
+            val (vm, _) = createViewModelWithSession()
+            val noRequest = observeApproval(vm, requestId = null)
+            val noSession = observeApproval(vm, requestId = "other", runtimeId = null)
+            for (row in listOf(noRequest, noSession)) {
+                assertNull(row.approvalInfo?.ref)
+                assertFalse(row.approvalInfo!!.responseEnabled)
+                vm.respondToApproval(row.id, "deny")
             }
+            advanceUntilIdle()
+            coVerify(exactly = 0) { attentionTransport.respondApproval(any(), any()) }
+            coVerify(exactly = 0) { attentionTransport.acknowledgeApproval(any()) }
         }
 
     @Test
-    fun testApprovalFlow_prefersRuntimeSessionIdOverStorageId() =
+    fun testApprovalResponse_scopeChangeAndOfflineCannotSend() =
         runTest {
-            val viewModel = createViewModel()
+            val (vm, _) = createViewModelWithSession()
+            val row = observeApproval(vm)
+            val original = fakeSubmission.scope
+            fakeSubmission.ready = false
+            vm.respondToApproval(row.id, "once")
             advanceUntilIdle()
-
-            mockConnectionStatus.value = ConnectionStatus.CONNECTED
-            mockEventsFlow.emit(WsEvent.GatewayReady(null))
-            advanceUntilIdle()
-
-            mockEventsFlow.emit(
-                WsEvent.RpcResult(
-                    "req-id-3",
-                    mapOf(
-                        "session_id" to "runtime-sid-999",
-                        "stored_session_id" to "storage-uuid-111",
-                    ),
-                ),
-            )
-            advanceUntilIdle()
-
-            assertEquals("storage-uuid-111", viewModel.uiState.value.currentSessionId)
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm -rf /data",
-                    description = "Dangerous operation",
-                    patternKeys = null,
-                    sessionId = null,
-                    requestId = "req-runtime-test",
-                    choices = listOf("once", "deny"),
-                ),
-            )
-            advanceUntilIdle()
-
-            verify {
-                HermesWsClient.send(
-                    WsMethods.APPROVAL_RECEIVED,
-                    withArg { params ->
-                        assertEquals("runtime-sid-999", params["session_id"])
-                        assertEquals("req-runtime-test", params["request_id"])
-                    },
-                    any(),
-                )
+            fakeSubmission.ready = true
+            for (scope in listOf(
+                original.copy(generation = 2),
+                original.copy(serverIdentity = "other"),
+                original.copy(connectionProfileId = "other"),
+                original.copy(serverProfileId = "other"),
+                original.copy(processId = "other"),
+            )) {
+                fakeSubmission.scope = scope
+                vm.respondToApproval(row.id, "once")
+                advanceUntilIdle()
             }
+            coVerify(exactly = 0) { attentionTransport.respondApproval(any(), any()) }
+        }
 
-            viewModel.respondToApproval("once")
+    @Test
+    fun testApprovalResponse_unknownIsNotAutomaticallyRetriedByReplay() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val row = observeApproval(vm)
+            coEvery { attentionTransport.respondApproval(any(), any()) } returns SubmissionResult.Unknown
+            vm.respondToApproval(row.id, "once")
             advanceUntilIdle()
+            observeApproval(vm)
+            vm.respondToApproval(row.id, "once")
+            advanceUntilIdle()
+            assertEquals(
+                1,
+                vm.uiState.value.messages
+                    .count { it.approvalInfo?.requestId == "request-1" },
+            )
+            assertEquals(
+                AttentionStatus.UNKNOWN,
+                vm.uiState.value.messages
+                    .last()
+                    .approvalInfo
+                    ?.status,
+            )
+            coVerify(exactly = 1) { attentionTransport.respondApproval(any(), any()) }
+        }
 
-            verify {
-                HermesWsClient.send(
-                    WsMethods.APPROVAL_RESPOND,
-                    withArg { params ->
-                        assertEquals("runtime-sid-999", params["session_id"])
-                        assertEquals("once", params["choice"])
-                        assertEquals("req-runtime-test", params["request_id"])
-                    },
-                    any(),
-                )
-                HermesWsClient.send(
-                    WsMethods.APPROVAL_PENDING,
-                    withArg { params ->
-                        assertEquals("runtime-sid-999", params["session_id"])
-                    },
-                    any(),
-                )
-            }
+    @Test
+    fun testApprovalResponse_definitelyNotSentRequiresNewTap() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val row = observeApproval(vm)
+            coEvery { attentionTransport.respondApproval(any(), any()) } returns SubmissionResult.NotSent
+            vm.respondToApproval(row.id, "once")
+            advanceUntilIdle()
+            assertEquals(
+                AttentionStatus.PENDING,
+                vm.uiState.value.messages
+                    .last()
+                    .approvalInfo
+                    ?.status,
+            )
+            coVerify(exactly = 1) { attentionTransport.respondApproval(any(), any()) }
+            vm.respondToApproval(row.id, "deny")
+            advanceUntilIdle()
+            coVerify(exactly = 2) { attentionTransport.respondApproval(any(), any()) }
+        }
+
+    @Test
+    fun testApprovalRequest_ignoresUnscopedAndOldSocketEvents() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val event = WsEvent.ApprovalRequest("command", null, null, "session-123", "old")
+            mockEventsFlow.emit(event)
+            mockScopedEvents.emit(ScopedWsEvent(fakeSubmission.scope.copy(generation = 0), 1, event))
+            advanceUntilIdle()
+            assertTrue(
+                vm.uiState.value.messages
+                    .none { it.approvalInfo != null },
+            )
+            coVerify(exactly = 0) { attentionTransport.acknowledgeApproval(any()) }
         }
 
     // ── Sudo / secret prompt flow (issue #524) ───────────────────────────
@@ -4253,16 +4175,9 @@ class ChatViewModelTest {
         runTest {
             val (viewModel, _) = createViewModelWithSession()
 
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm",
-                    description = "Dangerous",
-                    patternKeys = null,
-                    sessionId = null,
-                ),
-            )
-            advanceUntilIdle()
-            viewModel.respondToApproval("approve")
+            val row = observeApproval(viewModel)
+            coEvery { attentionTransport.respondApproval(any(), any()) } returns SubmissionResult.Unknown
+            viewModel.respondToApproval(row.id, "once")
             advanceUntilIdle()
 
             // Simulate socket drop → reconnecting (triggers rejectAllPending).
@@ -4283,16 +4198,9 @@ class ChatViewModelTest {
         runTest {
             val (viewModel, _) = createViewModelWithSession()
 
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm",
-                    description = "Dangerous",
-                    patternKeys = null,
-                    sessionId = null,
-                ),
-            )
-            advanceUntilIdle()
-            viewModel.respondToApproval("approve")
+            val row = observeApproval(viewModel)
+            coEvery { attentionTransport.respondApproval(any(), any()) } returns SubmissionResult.Unknown
+            viewModel.respondToApproval(row.id, "once")
             advanceUntilIdle()
 
             // User-initiated reconnect must not throw / hang.

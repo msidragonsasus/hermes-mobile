@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -33,7 +34,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -44,7 +44,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -78,6 +77,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.model.Attachment
+import com.m57.hermescontrol.domain.hermes.AttentionStatus
 import com.m57.hermescontrol.theme.DarkOnSurface
 import com.m57.hermescontrol.theme.HermesStatusColors
 import com.m57.hermescontrol.theme.LightOnSurface
@@ -329,7 +329,7 @@ private fun SelfImprovementReviewCard(
 @Composable
 internal fun SystemBubble(
     message: ChatMessage,
-    onRespondApproval: (String) -> Unit = {},
+    onRespondApproval: (String, String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     if (message.content.contains("Self-improvement review:", ignoreCase = true)) {
@@ -338,7 +338,6 @@ internal fun SystemBubble(
     }
 
     val approvalInfo = message.approvalInfo
-    var confirmAlways by remember(message.id) { mutableStateOf(false) }
 
     Column(
         modifier =
@@ -356,145 +355,74 @@ internal fun SystemBubble(
                 ),
         )
 
-        // Approval action buttons — dynamic from backend `choices`
-        // (desktop `approval.tsx` parity: once/session/always/deny,
-        // smart-denied → once/deny only, allowPermanent=false hides Always).
         if (approvalInfo != null) {
             Spacer(Modifier.height(8.dp))
-            val rawChoices = approvalInfo.choices ?: listOf("once", "deny")
-            val visibleChoices =
-                rawChoices.filter { choice ->
-                    when (choice) {
-                        "always" -> approvalInfo.allowPermanent != false
-                        else -> true
+            val statusText =
+                when (approvalInfo.status) {
+                    AttentionStatus.SUBMITTING -> {
+                        "回答を送信中・確認待ち"
+                    }
+
+                    AttentionStatus.CONFIRMED -> {
+                        "回答を確認しました"
+                    }
+
+                    AttentionStatus.EXPIRED -> {
+                        "この依頼は失効しました"
+                    }
+
+                    AttentionStatus.UNKNOWN -> {
+                        "回答結果を確認できません。再送せず、状況を確認してください"
+                    }
+
+                    AttentionStatus.PENDING -> {
+                        if (approvalInfo.responseEnabled) "回答が必要です" else "接続または依頼を確認するまで回答を保留します"
                     }
                 }
+            Text(statusText, style = MaterialTheme.typography.bodySmall)
+            approvalInfo.command?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            Text("影響・可逆性：サーバーからの説明を確認してください", style = MaterialTheme.typography.bodySmall)
+            Text("有効期限：不明", style = MaterialTheme.typography.bodySmall)
+            approvalInfo.ref?.let { ref ->
+                Text("依頼元：${ref.session.runtimeId}", style = MaterialTheme.typography.bodySmall)
+                Text("依頼ID：${ref.requestId}", style = MaterialTheme.typography.bodySmall)
+            }
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                for (choice in visibleChoices) {
-                    when (choice) {
-                        "deny" -> {
-                            FilledTonalButton(
-                                onClick = { onRespondApproval("deny") },
-                                modifier =
-                                    Modifier
-                                        .height(36.dp)
-                                        .testTag("deny_button"),
-                                colors =
-                                    ButtonDefaults.filledTonalButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.errorContainer,
-                                    ),
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Close,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text("Deny")
-                            }
-                        }
-
-                        "session" -> {
-                            FilledTonalButton(
-                                onClick = { onRespondApproval("session") },
-                                modifier =
-                                    Modifier
-                                        .height(36.dp)
-                                        .testTag("session_button"),
-                                colors =
-                                    ButtonDefaults.filledTonalButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                    ),
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Check,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text("Allow session")
-                            }
-                        }
-
-                        "always" -> {
-                            FilledTonalButton(
-                                onClick = { confirmAlways = true },
-                                modifier =
-                                    Modifier
-                                        .height(36.dp)
-                                        .testTag("always_button"),
-                                colors =
-                                    ButtonDefaults.filledTonalButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                                    ),
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Check,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text("Always allow")
-                            }
-                        }
-
-                        else -> {
-                            // "once" (+ legacy "approve" → normalized to once in VM)
-                            FilledTonalButton(
-                                onClick = { onRespondApproval(choice) },
-                                modifier =
-                                    Modifier
-                                        .height(36.dp)
-                                        .testTag("approve_button"),
-                                colors =
-                                    ButtonDefaults.filledTonalButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    ),
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Check,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text(if (choice == "approve") "Approve" else "Run")
-                            }
-                        }
+                for (choice in listOf("deny", "once")) {
+                    FilledTonalButton(
+                        onClick = { onRespondApproval(message.id, choice) },
+                        enabled = approvalInfo.responseEnabled && approvalInfo.status == AttentionStatus.PENDING,
+                        modifier =
+                            Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag(if (choice == "deny") "deny_button" else "approve_button"),
+                        colors =
+                            ButtonDefaults.filledTonalButtonColors(
+                                containerColor =
+                                    if (choice == "deny") {
+                                        MaterialTheme.colorScheme.errorContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    },
+                            ),
+                    ) {
+                        Icon(
+                            imageVector = if (choice == "deny") Icons.Filled.Close else Icons.Filled.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (choice == "deny") "拒否" else "今回だけ許可")
                     }
                 }
+                FilledTonalButton(onClick = {}, enabled = false, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text("修正")
+                }
             }
-            // "Always allow" persists the pattern permanently — confirm first
-            // (desktop confirm-modal parity).
-            if (confirmAlways) {
-                AlertDialog(
-                    onDismissRequest = { confirmAlways = false },
-                    title = { Text("Always allow this command?") },
-                    text = {
-                        Text(
-                            "This persists the pattern permanently so future " +
-                                "matching commands run without asking.",
-                        )
-                    },
-                    confirmButton = {
-                        TextButton(
-                            onClick = {
-                                confirmAlways = false
-                                onRespondApproval("always")
-                            },
-                        ) {
-                            Text("Always allow")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { confirmAlways = false }) {
-                            Text("Cancel")
-                        }
-                    },
-                )
-            }
+            Text("この接続では依頼の修正に対応していません", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
