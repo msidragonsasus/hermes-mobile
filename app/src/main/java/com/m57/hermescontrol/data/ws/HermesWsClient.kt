@@ -171,7 +171,7 @@ object HermesWsClient {
                         try {
                             ping(timeoutMs = 10_000L)
                         } catch (e: Exception) {
-                            Log.w(TAG, "Health check ping failed: ${e.message}")
+                            Log.w(TAG, "Health check ping failed: ${e.javaClass.simpleName}")
                         }
                     }
                     if (!runHealthCheckPass()) break
@@ -596,11 +596,8 @@ object HermesWsClient {
                 return TicketRequestResult(null, code)
             }
         } catch (e: Exception) {
-            // Include the stack: the exception class alone (e.g.
-            // NetworkOnMainThreadException) can't show WHICH caller on what
-            // thread tripped the mint (main-scope kanban events connect vs
-            // the WS reconnect path).
-            Log.w(TAG, "WS ticket mint failed: ${e.javaClass.simpleName}", e)
+            // PR02 / R03: Throwable messages, causes and stacks can contain credentials.
+            Log.w(TAG, "WS ticket mint failed: ${e.javaClass.simpleName}")
             return TicketRequestResult(null, null, exception = true)
         }
         return TicketRequestResult(null, null)
@@ -738,7 +735,7 @@ object HermesWsClient {
         pendingCalls.clear()
         for ((id, call) in snapshot) {
             removeQueuedMessage(id)
-            Log.w(TAG, "Rejecting pending request on disconnect: ${call.method} (id=$id)")
+            Log.w(TAG, "Rejecting pending request on disconnect")
             call.timeoutJob?.cancel()
             call.deferred.completeExceptionally(error)
         }
@@ -764,7 +761,8 @@ object HermesWsClient {
                 params = decoratedParams.mapValues { it.value.toJsonElement() },
             )
         val json = OkHttpProvider.json.encodeToString(request)
-        if (BuildConfig.DEBUG) Log.d(TAG, "→ $json")
+        // PR02 / R03: diagnostics must never receive wire payloads or Throwable details.
+        if (BuildConfig.DEBUG) Log.d(TAG, "WS send chars=${json.length}")
         var reconnect = false
         synchronized(outboundLock) {
             if (method == WsMethods.PROMPT_SUBMIT) {
@@ -961,7 +959,7 @@ object HermesWsClient {
                         }
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Replay failed for session $sid: ${e.message}")
+                    Log.w(TAG, "Replay failed: ${e.javaClass.simpleName}")
                 }
             }
         } finally {
@@ -1030,8 +1028,7 @@ object HermesWsClient {
         }
         if (!isCurrentGeneration(generation)) return
         val url = AuthManager.wsUrl()
-        val safeUrl = url.replace(Regex("token=[^&]+"), "token=REDACTED")
-        if (BuildConfig.DEBUG) Log.d(TAG, "Connecting to $safeUrl")
+        if (BuildConfig.DEBUG) Log.d(TAG, "Opening WebSocket")
 
         val request = Request.Builder().url(url).build()
         val newSocket = OkHttpProvider.websocket.newWebSocket(request, WsListenerImpl(generation))
@@ -1126,7 +1123,7 @@ object HermesWsClient {
                         markQueuedMessageSent(msg)
                         continue
                     }
-                    if (BuildConfig.DEBUG) Log.d(TAG, "→ (queued) $msg")
+                    if (BuildConfig.DEBUG) Log.d(TAG, "WS queue send chars=${msg.length}")
                     if (!webSocket.send(msg)) {
                         recoverRejectedSocket(webSocket)
                         break
@@ -1144,7 +1141,7 @@ object HermesWsClient {
             text: String,
         ) {
             if (!isCurrent() || HermesWsClient.webSocket !== webSocket) return
-            if (BuildConfig.DEBUG) Log.d(TAG, "← $text")
+            if (BuildConfig.DEBUG) Log.d(TAG, "WS receive chars=${text.length}")
             lastPongTimestamp = System.currentTimeMillis()
             // Resolve any in-flight `request()` awaiting this RPC result/error
             // (issue #526) before fanning the parsed event out to collectors.
@@ -1203,7 +1200,7 @@ object HermesWsClient {
                         parsed
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to parse message", e)
+                    Log.e(TAG, "WS parse failed: ${e.javaClass.simpleName}")
                     WsEvent.Unknown(text)
                 }
             when (event) {
@@ -1302,7 +1299,7 @@ object HermesWsClient {
                 // Log the exception class only — [Throwable.message] can leak URLs
                 // or headers. The message is still inspected internally for auth
                 // detection.
-                Log.e(TAG, "WebSocket failure: ${t.javaClass.simpleName}", t)
+                Log.e(TAG, "WebSocket failure: ${t.javaClass.simpleName}")
                 connected.set(false)
                 ActiveSessionHolder.clear()
                 stopHealthTracking()

@@ -1,6 +1,7 @@
 package com.m57.hermescontrol.data.ws
 
 import android.util.Log
+import com.m57.hermescontrol.BuildConfig
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.CleartextPolicy
 import com.m57.hermescontrol.data.remote.CookieManager
@@ -9,18 +10,24 @@ import com.m57.hermescontrol.data.remote.NetworkMonitor
 import com.m57.hermescontrol.data.remote.ServerEndpoint
 import com.m57.hermescontrol.data.remote.buildFakePersistentCookieJar
 import com.m57.hermescontrol.data.session.ActiveSessionHolder
+import com.m57.hermescontrol.util.captureDiagnosticLogs
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
 import io.mockk.mockkStatic
 import io.mockk.unmockkAll
 import io.mockk.verify
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -30,6 +37,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -51,6 +59,7 @@ class HermesWsClientTest {
         every { Log.w(any<String>(), any<String>()) } returns 0
         every { Log.w(any<String>(), any<String>(), any<Throwable>()) } returns 0
         every { Log.e(any<String>(), any<String>(), any()) } returns 0
+        every { Log.e(any<String>(), any<String>()) } returns 0
 
         mockWebServer = MockWebServer()
         mockWebServer.start()
@@ -109,6 +118,162 @@ class HermesWsClientTest {
             e.printStackTrace()
         }
         unmockkAll()
+    }
+
+    @Test
+    fun testDiagnosticsKeepWirePayloadAndQueuedFrameIntact() {
+        val logs = captureDiagnosticLogs()
+        val secret = "SYNTHETIC_PRIVATE_secret_sudo_token_ticket_cookie_本文"
+        val sent = mutableListOf<String>()
+        val socket = mockk<WebSocket>(relaxed = true)
+        every { socket.send(any<String>()) } answers {
+            sent.add(firstArg())
+            false
+        }
+        val listener = diagnosticListener(socket)
+        val id =
+            HermesWsClient.send(
+                "SYNTHETIC_PRIVATE_method",
+                mapOf("secret" to secret, "sudo" to secret, "text" to secret.repeat(100)),
+            )
+        val original = sent.single()
+        val wire = Json.parseToJsonElement(original).jsonObject
+        assertEquals(id, wire["id"]?.jsonPrimitive?.content)
+        assertEquals(
+            secret,
+            wire["params"]
+                ?.jsonObject
+                ?.get("secret")
+                ?.jsonPrimitive
+                ?.content,
+        )
+        assertEquals(
+            secret.repeat(100),
+            wire["params"]
+                ?.jsonObject
+                ?.get("text")
+                ?.jsonPrimitive
+                ?.content,
+        )
+
+        every { socket.send(any<String>()) } answers {
+            sent.add(firstArg())
+            true
+        }
+        listener.onOpen(socket, mockk(relaxed = true))
+        assertEquals(listOf(original, original), sent)
+        assertEquals(BuildConfig.DEBUG, logs.any { it.startsWith("WS send chars=") })
+        assertEquals(BuildConfig.DEBUG, logs.any { it.startsWith("WS queue send chars=") })
+        assertFalse(logs.joinToString("\n").contains("SYNTHETIC_PRIVATE"))
+    }
+
+    @Test
+    fun testDiagnosticsExcludeMalformedFramesUnknownTypesAndExceptionChains() =
+        runBlocking {
+            val logs = captureDiagnosticLogs()
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            val malformed = "{\"secret\":\"SYNTHETIC_PRIVATE_壊れたJSON"
+            val received =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    withTimeout(5000) { HermesWsClient.events.first { it is WsEvent.Unknown } }
+                }
+            listener.onMessage(socket, malformed)
+            assertEquals(malformed, (received.await() as WsEvent.Unknown).raw)
+            val unknown = EventParser.parseParams(mapOf("type" to "SYNTHETIC_PRIVATE_type"), malformed)
+            assertEquals(malformed, (unknown as WsEvent.Unknown).raw)
+
+            val failure =
+                IOException("SYNTHETIC_PRIVATE_token=ticket", IllegalStateException("SYNTHETIC_PRIVATE_cookie"))
+            failure.addSuppressed(IllegalArgumentException("SYNTHETIC_PRIVATE_sudo"))
+            listener.onFailure(socket, failure, null)
+            assertTrue(logs.any { it.startsWith("WS parse failed:") })
+            assertTrue(logs.contains("WebSocket failure: IOException"))
+            assertFalse(logs.joinToString("\n").contains("SYNTHETIC_PRIVATE"))
+        }
+
+    @Test
+    fun testDiagnosticsDoNotLogConnectionUrlButHandshakeKeepsIt() {
+        val logs = captureDiagnosticLogs()
+        val path =
+            "/SYNTHETIC_PRIVATE_path?token=SYNTHETIC_PRIVATE_token&ticket=SYNTHETIC_PRIVATE_ticket" +
+                "&cookie=SYNTHETIC_PRIVATE_cookie&other=%53YNTHETIC_PRIVATE_encoded"
+        every { AuthManager.wsUrl() } returns mockWebServer.url(path).toString().replace("http://", "ws://")
+        mockWebServer.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+        HermesWsClient.connect()
+        runBlocking { withTimeout(5000) { HermesWsClient.connectionStatus.first { it == ConnectionStatus.CONNECTED } } }
+        val handshake = mockWebServer.takeRequest(5, TimeUnit.SECONDS)
+        assertEquals(path, handshake?.path)
+        assertEquals(BuildConfig.DEBUG, logs.contains("Opening WebSocket"))
+        assertFalse(logs.joinToString("\n").contains("SYNTHETIC_PRIVATE"))
+    }
+
+    @Test
+    fun testDiagnosticsExcludeReplayRpcErrorsAndPendingMethods() =
+        runBlocking {
+            val logs = captureDiagnosticLogs()
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            every { socket.send(any<String>()) } answers {
+                val id =
+                    Json
+                        .parseToJsonElement(firstArg<String>())
+                        .jsonObject["id"]
+                        ?.jsonPrimitive
+                        ?.content
+                listener.onMessage(
+                    socket,
+                    "{\"id\":\"$id\",\"error\":{\"code\":-1,\"message\":\"SYNTHETIC_PRIVATE_rpc\"}}",
+                )
+                true
+            }
+            HermesWsClient.setSeqWatermark("SYNTHETIC_PRIVATE_session", 1)
+            HermesWsClient.fetchReplayForTest()
+            assertFalse(HermesWsClient.isReplayInFlight())
+            assertTrue(logs.any { it.startsWith("Replay failed:") })
+            every { socket.send(any<String>()) } returns true
+            val pending = HermesWsClient.request("SYNTHETIC_PRIVATE_method")
+            HermesWsClient.rejectAllPending()
+            assertTrue(pending.isCancelled)
+            assertFalse(logs.joinToString("\n").contains("SYNTHETIC_PRIVATE"))
+        }
+
+    @Test
+    fun testDiagnosticsExcludeTicketExceptionsAndMalformedTicketBodies() {
+        val logs = captureDiagnosticLogs()
+        every { AuthManager.serverStore } returns
+            mockk<com.m57.hermescontrol.data.config.ServerStore>().also {
+                every { it.getLatestState() } returns
+                    com.m57.hermescontrol.data.config
+                        .ServerStoreState(wsAuthParam = "ticket")
+            }
+        every { AuthManager.endpointForBuild() } throws IOException("SYNTHETIC_PRIVATE_cookie_authorization")
+        assertNull(HermesWsClient.mintWsTicket())
+        assertTrue(logs.contains("WS ticket mint failed: IOException"))
+
+        every { AuthManager.endpointForBuild() } returns
+            ServerEndpoint.parse(mockWebServer.url("/").toString(), CleartextPolicy.ALLOW_WITH_WARNING)
+        mockWebServer.enqueue(MockResponse().setBody("{\"ticket\":\"SYNTHETIC_PRIVATE_broken"))
+        assertNull(HermesWsClient.mintWsTicket())
+        assertTrue(logs.contains("WS ticket mint failed: unparseable ticket response"))
+        assertFalse(logs.joinToString("\n").contains("SYNTHETIC_PRIVATE"))
+    }
+
+    private fun diagnosticListener(socket: WebSocket): WebSocketListener {
+        HermesWsClient.clearSeqWatermarks()
+
+        fun field(name: String) = HermesWsClient::class.java.getDeclaredField(name).apply { isAccessible = true }
+        field("webSocket").set(HermesWsClient, socket)
+        (field("connected").get(HermesWsClient) as java.util.concurrent.atomic.AtomicBoolean).set(true)
+        (field("intentionalClose").get(HermesWsClient) as java.util.concurrent.atomic.AtomicBoolean).set(false)
+        val generation = (field("connectionGeneration").get(HermesWsClient) as AtomicInteger).get()
+        val constructor =
+            Class
+                .forName("com.m57.hermescontrol.data.ws.HermesWsClient\$WsListenerImpl")
+                .declaredConstructors
+                .single()
+                .apply { isAccessible = true }
+        return constructor.newInstance(generation) as WebSocketListener
     }
 
     @Test

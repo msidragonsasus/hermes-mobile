@@ -342,7 +342,8 @@ object EventParser {
             }
 
             else -> {
-                Log.w(TAG, "Unknown event type: $eventType")
+                // PR02 / R03: event types are server-controlled, including during replay.
+                Log.w(TAG, "Unknown event type")
                 WsEvent.Unknown(rawJson)
             }
         }
