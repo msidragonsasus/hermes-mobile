@@ -271,3 +271,15 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
   これはStateRestorationTesterによる保存・再生成であり、OSによる実process killや実通知配送の確認ではない。
   ktlint・diff check成功。証跡は `../phase1-validation/pr08a-*`。
 - タブ選択・タブごとの保持はPR08bで4タブと合わせて接続する。実Hermes接続・実端末更新は未実施。
+
+## PR08b-1: タブごとの履歴と選択状態
+
+- Today / Chat / Activity / AppsそれぞれにNavigation 3の保存可能な履歴を用意した。
+  タブ選択は詳細画面を保持し、通知などからの明示的なChat遷移はChatの先頭を開く。
+  同じ詳細への再遷移は既存位置まで戻り、重複画面を積まない。
+- 認証されたCompositionから外れると全タブを破棄し、再ログインはTodayから開始する。
+- Debug単体テスト3件成功。専用エミュレーターの保存状態テスト4件成功
+  （前段2件に加え、選択タブと非表示タブの詳細復元、logout後の全タブ破棄）。
+  StateRestorationTesterによる検証であり、OSの実process killではない。
+- この段階では状態モデルを追加したのみ。画面・下部バー・controllerへの接続は次の変更で行う。
+  証跡: `../phase1-validation/pr08b-shell-state.log` と `pr08b-shell-restore.log`。

@@ -17,6 +17,51 @@ class AppBackStackTest {
     @get:Rule val compose = createComposeRule()
 
     @Test
+    fun restoresSelectedTabAndInactiveTabDetail() {
+        val restoration = StateRestorationTester(compose)
+        lateinit var shell: ShellNavigation
+        restoration.setContent { shell = rememberShellNavigation(true)!! }
+        val detail = ToolsetDetailKey("tools/saved", "復元")
+        compose.runOnIdle {
+            shell.navigate(SettingsScreen)
+            shell.select(ShellTab.CHAT)
+            shell.navigate(detail)
+            shell.select(ShellTab.ACTIVITY)
+        }
+        restoration.emulateSavedInstanceStateRestore()
+        compose.runOnIdle {
+            assertEquals(ShellTab.ACTIVITY, shell.selectedTab)
+            assertEquals(listOf(ActivityScreen), shell.backStack.toList())
+            shell.select(ShellTab.CHAT)
+            assertEquals(listOf(ChatScreen, detail), shell.backStack.toList())
+            shell.select(ShellTab.TODAY)
+            assertEquals(listOf(TodayScreen, SettingsScreen), shell.backStack.toList())
+        }
+    }
+
+    @Test
+    fun logoutDiscardsAllTabStacksAndSelection() {
+        val restoration = StateRestorationTester(compose)
+        val authenticated = mutableStateOf(true)
+        var shell: ShellNavigation? = null
+        restoration.setContent { shell = rememberShellNavigation(authenticated.value) }
+        compose.runOnIdle {
+            shell!!.select(ShellTab.CHAT)
+            shell!!.navigate(ToolsetDetailKey("private"))
+            authenticated.value = false
+        }
+        compose.runOnIdle { assertEquals(null, shell) }
+        restoration.emulateSavedInstanceStateRestore()
+        compose.runOnIdle { assertEquals(null, shell) }
+        compose.runOnIdle { authenticated.value = true }
+        compose.runOnIdle {
+            assertEquals(ShellTab.TODAY, shell!!.selectedTab)
+            shell!!.select(ShellTab.CHAT)
+            assertEquals(listOf(ChatScreen), shell!!.backStack.toList())
+        }
+    }
+
+    @Test
     fun restoresStackAndParameterizedDestinationAcrossSavedStateRecreation() {
         val restoration = StateRestorationTester(compose)
         lateinit var stack: NavBackStack<NavKey>
