@@ -117,9 +117,9 @@ object GatewayFileClient {
     }
 
     /**
-     * Strip surrounding quotes/backticks, expand a leading `~`, and require an
-     * absolute path (`/...` or `X:\...`/`X:/...`). Returns `null` for paths
-     * that are not resolvable on the gateway host.
+     * Strip surrounding quotes/backticks and accept absolute or gateway-home paths.
+     * PR01 / R18: `~/` belongs to the remote gateway, never the phone's HOME.
+     * The managed-files endpoint resolves it and enforces its own root policy.
      */
     internal fun normalizePath(raw: String): String? {
         val trimmed =
@@ -128,19 +128,13 @@ object GatewayFileClient {
                 .removeSurrounding("`")
                 .removeSurrounding("\"")
                 .removeSurrounding("'")
-        val expanded =
-            if (trimmed.startsWith("~")) {
-                val home = System.getenv("HOME") ?: return null
-                home + trimmed.removePrefix("~")
-            } else {
-                trimmed
-            }
-        if (!expanded.startsWith("/") &&
-            !Pattern.compile("^[A-Za-z]:[/\\\\]").matcher(expanded).find()
+        if (trimmed == "~" || trimmed.startsWith("~/")) return trimmed
+        if (!trimmed.startsWith("/") &&
+            !Pattern.compile("^[A-Za-z]:[/\\\\]").matcher(trimmed).find()
         ) {
             return null
         }
-        return expanded
+        return trimmed
     }
 
     /** Map an HTTP status to a non-success result; `null` means "let the
