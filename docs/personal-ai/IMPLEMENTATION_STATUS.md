@@ -22,7 +22,7 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
 | PR03 | 完了 `5136a02` | 関連unit Debug/Release各46件、SQLCipher移行・保全・起動停止UIのemulator 3件成功 |
 | PR04 | 完了 `7bf9270` | 単一socketの固定scope/event/read境界。既存WebSocket 54件、新contract 6件。自己レビューで固定所属とno-queueを確認 |
 | PR05 | 完了 `ad29751` | scopeごとのread probe、Unknown/Blocked区別、API専用offline decoder。追加4件。live writeはdisabled |
-| PR06a | 実装中 `b6d161d` / `8491e8e` / `39116b9` / `ffef902` / `51c1379` | queue禁止・暗号化draft・固定scope submit・Chat下書きUI・通知返信を検証。残るcommand経路のscope確認と統合レビューは残作業 |
+| PR06a | 実装中 `b6d161d` / `8491e8e` / `39116b9` / `ffef902` / `51c1379` / `c7fa9a1` | queue禁止・暗号化draft・固定scope submit・Chat下書きUI・通知返信を検証。commandのscope確認も実施。下書き復元の本文・queue保持と統合レビューは残作業 |
 | PR06b | 未着手 | 固定要求とACK、once/deny、失効と古い応答 |
 | PR07〜08b | 未着手 | 既存27画面を保持してregistry/復元/4-tabを統合 |
 | PR09a〜09b | 未着手 | 実イベントの観測範囲と正確なAttention通知 |
@@ -165,3 +165,21 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
   証跡は`../phase1-validation/pr06a-notification-{Debug,Release}-results`、
   `pr06a-notification-display-final.log`、`pr06a-notification-android.log`。
   実通知から実Hermesへの返信、冷起動の最終route、TalkBack、command経由のpromptとPhase 1全体は残作業。
+
+## PR06a コマンド応答の接続先固定
+
+- `command.dispatch`、`slash.exec`、`prompt.btw`を既存socketの`writeScoped`へ移した。
+  実行前のscope・会話世代を固定し、切り替え後の結果・エラー・registry missから新しい
+  会話へのprompt/alias/fallback/prefillを発生させない。結果処理は会話選択と同じMainで行う。
+- 既存120秒timeoutと正確なregistry missだけのslash fallbackを維持した。再接続queueは使わない。
+  実際のJSON応答も既存`toAny`で変換し、Mapだけのfakeで隠れていた出力欠落を修正した。
+- サイド質問はruntime session確認後だけ送信する。offlineでは質問と未送信の表示を保ち、
+  spinnerと自動再送を残さない。通知返信の変更は`c7fa9a1`に分離済み。
+- 関連Chat/command/固定scope送信テストはDebug/Release各179件成功。
+  追加のoffline表示修正後はSlashCommandDispatchRpcTestを両variantで再検証した。
+  初回の新テストでは切替先resume ACKがないfixtureを検出し、実際のACKを返す手順を追加。
+  期待値は維持した。途中のDebug全体1,334件ではこのfixtureの1失敗のみだったが、
+  これは最終全体ゲート成功という扱いにはしない。
+- 証跡: `../pr06a-command-{Debug,Release}-final.log`、
+  `../pr06a-command-offline-final.log`、`../phase1-validation/pr06a-command-*-results`。
+  ktlintと差分チェック成功。実Hermes接続は実施していない。

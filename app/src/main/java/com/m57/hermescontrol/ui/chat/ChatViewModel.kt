@@ -32,6 +32,7 @@ import com.m57.hermescontrol.data.ws.ConnectionStatus
 import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.data.ws.WsEvent
 import com.m57.hermescontrol.data.ws.WsMethods
+import com.m57.hermescontrol.data.ws.toAny
 import com.m57.hermescontrol.data.ws.toJsonElement
 import com.m57.hermescontrol.domain.hermes.ConnectionScope
 import com.m57.hermescontrol.domain.hermes.DraftState
@@ -1382,7 +1383,7 @@ class ChatViewModel(
 
     @Suppress("UNCHECKED_CAST")
     private fun handleDispatchResult(result: Any?) {
-        val map = result as? Map<*, *> ?: return
+        val map = result.toJsonElement().toAny() as? Map<*, *> ?: return
         val type = map["type"] as? String ?: return
         when (type) {
             "send" -> {
@@ -2138,31 +2139,41 @@ class ChatViewModel(
             )
             return
         }
-        val sessionId = runtimeSessionId ?: _uiState.value.currentSessionId
+        val sessionId = runtimeSessionId
         if (sessionId.isNullOrBlank()) {
             addAssistantMessage("No active session for side questions. Start a chat first.")
             return
         }
+        val scope = sessionScope ?: return
+        val request = SessionRequest(sessionGeneration, sessionId = _uiState.value.currentSessionId, scope = scope)
 
+        val ready = submissionTransport.isReady(scope)
         _uiState.update {
             it.copy(
                 btwState =
                     BtwUiState(
                         question = trimmed,
-                        isLoading = true,
+                        isLoading = ready,
+                        error = if (ready) null else "Request not sent; reconnect does not submit it",
                     ),
             )
         }
+        if (!ready) return
 
-        viewModelScope.launch(ioDispatcher) {
+        viewModelScope.launch {
+            if (isStaleSessionRequest(request)) return@launch
             try {
                 val rpcResult =
                     wsClient
-                        .request(
+                        .writeScoped(
+                            scope,
                             WsMethods.PROMPT_BTW,
                             mapOf("session_id" to sessionId, "text" to trimmed),
-                        ).await()
-                val taskId = (rpcResult as? Map<*, *>)?.get("task_id") as? String
+                            timeoutMs = HermesWsClient.REQUEST_TIMEOUT_MS,
+                        ).response
+                        .await()
+                if (isStaleSessionRequest(request)) return@launch
+                val taskId = (rpcResult.toJsonElement().toAny() as? Map<*, *>)?.get("task_id") as? String
                 if (!taskId.isNullOrBlank()) {
                     _uiState.update { state ->
                         state.btwState?.let { current ->
@@ -2171,6 +2182,8 @@ class ChatViewModel(
                     }
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                if (isStaleSessionRequest(request)) return@launch
                 _uiState.update { state ->
                     state.btwState?.let { current ->
                         state.copy(
@@ -2270,7 +2283,11 @@ class ChatViewModel(
         val parts = command.split(" ", limit = 2)
         val name = parts[0].lowercase().removePrefix("/")
         val arg = parts.getOrElse(1) { "" }
-        viewModelScope.launch(ioDispatcher) {
+        // PR06a: capture before suspension; keep result handling on Main with session selection.
+        val scope = sessionScope ?: return
+        val request = SessionRequest(sessionGeneration, sessionId = _uiState.value.currentSessionId, scope = scope)
+        viewModelScope.launch {
+            if (isStaleSessionRequest(request)) return@launch
             try {
                 // Primary path: command.dispatch handles quick/plugin/bundle/
                 // skill commands + a few hardcoded ones. It returns a hard 4018
@@ -2280,12 +2297,17 @@ class ChatViewModel(
                 // full COMMAND_REGISTRY through the worker.
                 val result =
                     wsClient
-                        .request(
+                        .writeScoped(
+                            scope,
                             WsMethods.COMMAND_DISPATCH,
                             mapOf("name" to name, "arg" to arg, "session_id" to sessionId),
-                        ).await()
+                            timeoutMs = HermesWsClient.REQUEST_TIMEOUT_MS,
+                        ).response
+                        .await()
+                if (isStaleSessionRequest(request)) return@launch
                 handleDispatchResult(result)
             } catch (e: HermesWsClient.HermesRpcException) {
+                if (isStaleSessionRequest(request)) return@launch
                 val msg = e.message.orEmpty()
                 // Registry miss on command.dispatch: the backend emits exactly
                 // "not a quick/plugin/bundle/skill command: <name>" (tui_gateway
@@ -2297,16 +2319,21 @@ class ChatViewModel(
                     try {
                         val result =
                             wsClient
-                                .request(
+                                .writeScoped(
+                                    scope,
                                     WsMethods.SLASH_EXEC,
                                     mapOf(
                                         "command" to "/$name${if (arg.isNotEmpty()) " $arg" else ""}",
                                         "session_id" to sessionId,
                                     ),
-                                ).await()
-                        val output = (result as? Map<*, *>)?.get("output") as? String
+                                    timeoutMs = HermesWsClient.REQUEST_TIMEOUT_MS,
+                                ).response
+                                .await()
+                        if (isStaleSessionRequest(request)) return@launch
+                        val output = (result.toJsonElement().toAny() as? Map<*, *>)?.get("output") as? String
                         if (!output.isNullOrBlank()) addAssistantMessage(output)
                     } catch (e2: HermesWsClient.HermesRpcException) {
+                        if (isStaleSessionRequest(request)) return@launch
                         addAssistantMessage("/$name: ${e2.message}")
                     }
                 } else {
@@ -2414,21 +2441,31 @@ class ChatViewModel(
             addAssistantMessage("No active session to undo.")
             return
         }
+        val scope = sessionScope ?: return
+        val request = SessionRequest(sessionGeneration, sessionId = _uiState.value.currentSessionId, scope = scope)
         viewModelScope.launch {
             slashUsageStore.recordUse("/undo")
         }
-        viewModelScope.launch(ioDispatcher) {
+        viewModelScope.launch {
+            if (isStaleSessionRequest(request)) return@launch
             try {
                 val result =
                     wsClient
-                        .request(
+                        .writeScoped(
+                            scope,
                             WsMethods.COMMAND_DISPATCH,
                             mapOf("name" to "undo", "arg" to count, "session_id" to sessionId),
-                        ).await()
+                            timeoutMs = HermesWsClient.REQUEST_TIMEOUT_MS,
+                        ).response
+                        .await()
+                if (isStaleSessionRequest(request)) return@launch
                 handleDispatchResult(result)
             } catch (e: HermesWsClient.HermesRpcException) {
+                if (isStaleSessionRequest(request)) return@launch
                 addAssistantMessage(e.message ?: "Failed to undo.")
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                if (isStaleSessionRequest(request)) return@launch
                 addAssistantMessage(e.message ?: "Failed to undo.")
             }
         }

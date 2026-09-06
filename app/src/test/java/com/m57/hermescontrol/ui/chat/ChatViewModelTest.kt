@@ -143,6 +143,13 @@ class ChatViewModelTest {
         // deferred freezes the VM's event collector at the SESSION_CREATE
         // session.usage await and lets its late completion race per-test
         // capture stubs (slash-focus flake, CI 31137581335 on 4645a2b).
+        every { HermesWsClient.writeScoped(any(), any(), any(), any()) } answers {
+            com.m57.hermescontrol.data.ws.ScopedRpcSubmission(
+                "synthetic-command",
+                true,
+                HermesWsClient.request(arg(1), arg(2), arg(3)),
+            )
+        }
         every { HermesWsClient.request(any(), any(), any()) } answers {
             HermesWsClient.send(arg(0), arg(1)) {}
             CompletableDeferred<Any?>(Unit)

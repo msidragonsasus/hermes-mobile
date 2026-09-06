@@ -426,6 +426,8 @@ class HermesWsClientTest {
             scope.copy(generation = -1),
         )) {
             assertFalse(HermesWsClient.writeScoped(candidate, WsMethods.PROMPT_SUBMIT, params).accepted)
+            assertFalse(HermesWsClient.writeScoped(candidate, WsMethods.COMMAND_DISPATCH, params).accepted)
+            assertFalse(HermesWsClient.writeScoped(candidate, WsMethods.SLASH_EXEC, params).accepted)
         }
         assertFalse(HermesWsClient.writeScoped(scope, "future.write", params).accepted)
         assertFalse(

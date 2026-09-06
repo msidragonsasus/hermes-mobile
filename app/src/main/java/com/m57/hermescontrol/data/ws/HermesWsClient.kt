@@ -813,6 +813,9 @@ object HermesWsClient {
                         WsMethods.IMAGE_ATTACH_BYTES,
                         WsMethods.FILE_ATTACH,
                         WsMethods.SESSION_RESUME,
+                        WsMethods.COMMAND_DISPATCH,
+                        WsMethods.SLASH_EXEC,
+                        WsMethods.PROMPT_BTW,
                     )
             val sessionId = params["session_id"] as? String
             val ws = webSocket
