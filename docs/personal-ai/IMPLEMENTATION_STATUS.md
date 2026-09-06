@@ -17,20 +17,24 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
 | 単位 | 状態 / コミット | 検証・自己レビュー / 次の条件 |
 |---|---|---|
 | PR00 | 完了 `33f69be` | 文書整合確認済み。PR00_REPORT参照 |
-| PR02 | 実装済み `c938404` | 追加6回帰成功、自己/独立レビュー済み。既存unit 2件・color guardはPR01、Release試験タスクは未提供。PR02_REPORT参照 |
+| PR02 | 完了 `c938404` | 追加6回帰、自己/独立レビュー済み。後続PR01で既存2失敗・color guard・Release taskを修正。PR02_REPORTは当時の記録として保持 |
 | PR01 | 完了 `8f48796` / `144b885` / `4f618ee` | Debug/Release各1,281件 failure/error/skip 0。ktlint/color成功。自己レビューで検査範囲と同期を確認 |
 | PR03 | 完了 `5136a02` | 関連unit Debug/Release各46件、SQLCipher移行・保全・起動停止UIのemulator 3件成功 |
 | PR04 | 完了 `7bf9270` | 単一socketの固定scope/event/read境界。既存WebSocket 54件、新contract 6件。自己レビューで固定所属とno-queueを確認 |
 | PR05 | 完了 `ad29751` | scopeごとのread probe、Unknown/Blocked区別、API専用offline decoder。追加4件。live writeはdisabled |
-| PR06a | 実装済み `b6d161d` / `8491e8e` / `39116b9` / `ffef902` / `51c1379` / `c7fa9a1` / `b1d55a9` | queue禁止・暗号化draft・固定scope submit・Chat下書きUI・通知返信を検証。commandのscope・下書き復元の本文/queue保持も確認。全体統合ゲートはPR11で実施 |
-| PR06b | 基盤実装中 | 固定要求の状態管理・typed応答・once/deny通信制約を検証。Chat/UI・replay・通知への接続は未完了 |
-| PR07〜08b | 未着手 | 既存27画面を保持してregistry/復元/4-tabを統合 |
-| PR09a〜09b | 未着手 | 実イベントの観測範囲と正確なAttention通知 |
-| PR10 | 未着手 | strict manifest parser/意味検証、静的表示のみ |
-| PR11 | 未着手 | 全品質ゲート、利用可能なemulator、互換表/画面表/APK記録 |
+| PR06a | 完了 `b6d161d` / `8491e8e` / `39116b9` / `ffef902` / `51c1379` / `c7fa9a1` / `b1d55a9` / `0e3ed66` | queue禁止・暗号化draft・固定scope submit・Chat下書きUI・通知返信を検証。commandのscope・下書き復元の本文/queue保持も自己レビュー。全体結果はPR11 |
+| PR06b | 完了 `639461b` / `440de7c` / `79fea29` | 固定要求・once/deny・質問ID・逆順ACK・失効・結果不明・再送禁止を自己レビュー。Chatと共有詳細/通知への接続もPR09bで完了 |
+| PR07 | 完了 `71cb27d` | 既存27画面と38既存entryの同一content・順序・安定routeを維持。重複ID/route/NavKeyを拒否 |
+| PR08a | 完了 `ab492f4` | 認証分離、保存可能な引数付き履歴、通知待機先を検証。実OS process killとは区別 |
+| PR08b | 完了 `463d244` / `e3273b3` / `f0214be` | 4タブ独立履歴・古いcontroller解放・同時callbackを自己レビュー。既存Chat/AdvancedとIME所有者を維持 |
+| PR09a | 完了 `1379401` | 既存socketの観測だけを表示。欠落・切断・scope切替・保持上限を自己レビュー。永続server Runを捏造しない |
+| PR09b | 完了 `3699e63` | 高影響判断を固定RequestRefの詳細へ集約。共有受信・冷起動欠落・question別通知ID・二重送信防止を自己レビュー |
+| PR10 | 完了 `d0c79a4` | strict manifest parser/意味検証、静的表示のみ。実行・署名検証・権限付与との境界を自己レビュー |
+| PR11 | ローカル検証完了 `5fc1cbc` / `94f37da` | 7ゲート成功、Debug/Release各1,404件、UI全53件成功。実APKのデータ保持更新・未認証process再生成・画面記録を確認。下記の未確認範囲を維持 |
 
-現時点でPhase 1完成・本番利用可能・安全性認定済み・merge-readyとは扱わない。
-実Hermesの契約・実機データ保持の確認は未実施。未確認機能はUnknown/disabledを維持する。
+承認されたPhase 1の実装と利用可能なローカル検証を完了した。
+本番利用可能・安全性認定済み・merge-readyとは扱わない。実Hermesの契約・個人実機のデータ保持は未確認。
+未確認機能はUnknown/disabledを維持する。以下の工程別記録は当時の結果であり、最終状態は末尾PR11を参照。
 
 ## PR01の検証と根拠
 
@@ -324,3 +328,72 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
 - Copied the 3 specification examples byte-for-byte into local assets. All 3 validate with the explicitly test-only Development fixture registration; the live built-in registry correctly rejects the unimplemented Development business feature. Apps validates and displays only the examples' metadata, clearly marked unavailable and ungranted. No enable/install/fetch/renderer/WebView/action execution is present. The declaration index starts disabled and removes all contributions on disable while retaining other registrations.
 - Debug compile/color checks passed. Final MiniAppContractTest: 17 tests passed, including the original example byte comparison, invalid members/types/IDs/permissions/paths/origins, native entry rejection, prerelease ordering and disabled contribution removal. Dedicated emulator-5580/API 36: 2 Apps tests passed, including 2x font scrolling and permission review without navigation/activation. Targeted ktlint formatting/check and git diff --check passed; the published JSON Schema was not modified.
 - Evidence: `../phase1-validation/pr10-contract-tests.log`, `pr10-final-contract.log`, `pr10-apps-ui.log` and copied XML. This completes the offline foundation only. Final whole-app gates, screenshots and integration limitations are recorded in PR11.
+
+## PR11 — 最終統合検証（2026-09-06）
+
+製品実装の最終変更は `d0c79a4`。後続はテストと文書だけで、公開・push・merge・実環境適用は行っていない。
+Windows / JDK 21 / UTF-8固定 / SDK 37 / 専用 `Codex_Personal_AI_Phase1`（API 36、`emulator-5580`）を使用した。
+同時に接続されていたadb対象はこのエミュレーターだけ。個人の実端末にはインストールしていない。
+
+### 品質ゲート
+
+| task | 最終結果 | 証跡（checkout外 `../phase1-validation/`） |
+|---|---|---|
+| `ktlintCheck` | 成功 | `pr11-style-lint-final.log`（最後のUIテスト変更後も再確認） |
+| `checkColorLiterals` | 成功 | `pr11-checkColorLiterals.log` |
+| `testDebugUnitTest` | 1,404件成功、failure/error/skip 0 | `pr11-testDebugUnitTest.log` / `pr11-debug-results/` |
+| `testReleaseUnitTest` | 1,404件成功、failure/error/skip 0 | `pr11-testReleaseUnitTest.log` / `pr11-release-results/` |
+| `lintDebug` | 成功、error 0、warning 117、hint 13 | `pr11-style-lint-final.log` / `pr11-lint-results.xml` |
+| `assembleDebug` | 成功 | `pr11-assembleDebug.log`（後続のinstrumentationでもDebug APKを生成） |
+| `compileReleaseKotlin` | 成功 | `pr11-compileReleaseKotlin.log` |
+| `connectedDebugAndroidTest` | 全53件成功、failure/error/skip 0 | `pr11-navigation-final.log` / `pr11-ui-complete.xml` |
+
+PR01対象だった既存Windowsのunit 2失敗とcolor guardの失敗は解消し、最終全体試験で再発していない。
+新しい画面fixtureは初回にActivityResult owner、次にApplication extras、relaxed mockのSavedState closeableで失敗した。
+テストContextがActivityを保持し、実ActivityのViewModelStoreを利用するよう修正し、期待値を弱めず全53件を再実行した。
+既存テストの削除・skip追加・除外filterによる最終全件の省略はしていない。開発中の絞込み実行と最終全件を区別する。
+lintの警告は残っており、すべてを既存警告と断定する差分監査はしていない。エラー・新規の未解決テスト失敗は0。
+Release APKの署名・配布とLinux CIは未実施。Release Kotlinコンパイルの成功で代替したとは扱わない。
+
+### 統合確認と自己レビュー
+
+- 実MainNavigationでToday→Chat→Activity→Apps→Chat、下書き保持、メニュー→Advanced→Android Back→Chat、logout/loginの内部画面破棄を確認した。Chatには合成ViewModel、認証にはメモリ上の合成flowを使い、実credentialを書き換えていない。
+- 実IME表示中に下部バーが消え、入力欄が操作可能なことを確認した。日本語streaming本文・入力、Appsの詳細保持、200％文字の承認詳細・ACK待ち無効操作を検証して実画面を取得・目視確認した。
+- Advanced一覧の27項目を実際にスクロールしてタップし、元のNavKeyへのdispatchを全件確認した。既存38entry＋Shell追加5entryの対応、subpageと引数付き詳細はregistry/復元試験とNavigationのentryを照合した。全管理画面のserver操作成功を意味しない。
+- 全UIにはDB保全4件、保存状態5件、通知4件、Attention4件、Apps2件、Chat・添付・下書き・reasoning・scroll等の既存試験を含む。SQLCipherの旧schema v2〜v6からv7へのデータ保持と不正鍵/未知versionの保全停止を合成fixtureで検証した。
+- 実APKを専用エミュレーターの既存インストールへ `adb install -r` で更新した。更新直前・直後のDB/WAL/SHM/暗号化preferences/server設定のSHA-256が一致した。元データは合成テスト用であり、個人実機や全旧配布版の更新保証ではない。
+- 未認証AuthLoginを背景化し、app UIDでプロセスを終了した。PID消失と新PID、同じ画面への復元を確認した（`pr11-process-recreation.json` / before・after XML）。`am kill`だけでは前景履歴のprocessが残ったため、その結果では成功と判定していない。認証済み会話・未解決要求を伴う実OS再生成は未確認。
+- TalkBack 16.0を一時有効化し、実APK認証画面の見出し→URL入力のフォーカス・IMEを確認した（`pr11-talkback-service.txt` と画面）。サービス設定は元の無効状態へ戻した。実音とAttention全項目の連続フォーカス順は未確認。
+- 自己レビューで、test-only登録/合成状態がproductionに入らないこと、観測と実行状態の区別、固定要求への応答、権限表示と付与の区別、既存screen content・署名・applicationIdの保持を再確認した。
+
+### APKと画面
+
+最終APKの保存コピーは `E:/OSHIIRE/software/Hermes/phase1-validation/artifacts/hermes-phase1-5fc1cbc-debug.apk`。
+生成元は `app/build/outputs/apk/debug/app-debug.apk`。APK内 `GIT_SHA=5fc1cbc`、`versionName=1.0-dev`、
+`versionCode=1`、`applicationId=com.m57.hermescontrol`。このcommit以降の変更はテスト/文書だけ。
+SHA-256: `43d6a80a5253c12e828f641a8b4fe084a3197d980bd8faf6109161377eea2184`。
+更新前後の比較は `pr11-emulator-update-final.json` に保存した。
+Debug署名のローカル成果物であり、個人実機用の署名互換性や本番配布の承認ではない。
+
+画面は `../phase1-validation/screenshots/` に保存した。内容と各ファイルは [SCREEN_MAP.md](SCREEN_MAP.md) を参照。
+01〜11・19はproduction UIに合成入力を与えた画面、15〜17は実APKの手動操作である。
+17は更新後の起動、11は実ナビゲーションのIME、19は実メニューからのAdvanced、04は文字200％の承認詳細を示す。
+TalkBackと未認証OS再生成は同じ製品コードの`d0c79a4` APKで実施し、最終APKは埋込みGIT_SHAのみ`5fc1cbc`に更新された。
+スクリーンショットの取得にはAndroidのadditional test outputも使い、hostへ回収した。
+
+### Unknown / disabled / 残る確認条件
+
+| 項目 | 状態 | 解除・追加確認に必要なもの |
+|---|---|---|
+| 実Hermesとの通し動作 | 未確認 | 稼働commit、認証方式、安全なtest profile/接続先と実接続の許可。継続session・exact request・ACK・失効・replay・結果不明をその版で確認 |
+| API Server write | disabled | discovery広告だけでは解除しない。継続session、approval、idempotencyのlive契約確認と別途の実装範囲の承認 |
+| 未観測/欠落/別scope/冷起動の要求 | Unknownまたは操作不可 | 同じ接続scopeからの正確な元要求と確定状態。入力やrequest IDを推測して補完しない |
+| 永続Run履歴 | Phase 1では提供しない | 広告された実server契約が必要。現状はプロセス内の限定観測であり架空Run IDを作らない |
+| Mini App・就活等の業務機能 | 準備中、未許可、実行disabled | renderer/業務feature/配布/権限設計と実装の別依頼。manifestの読取だけでは解除しない |
+| 壊れた/鍵不明のDB | データを保持してBlocked | 正しい元鍵・対応schema・復旧方法の確認。初期化やアンインストールで回避しない |
+| 実機・認証済みprocess death・実通知配送 | 未確認 | 対象環境と検証範囲の別承認。今回のローカルfixture試験で代替したとは扱わない |
+| TalkBack読み上げ実音・新規詳細の全順序 | 未確認 | 音声を聞ける環境での読み上げ・フォーカス順確認 |
+
+承認範囲の実装・ローカル検証を妨げる未解決Blockedはない。今回の成果物を確認するための追加入力は不要。
+実環境検証へ進む場合だけ、上表の接続情報・対象範囲の指定が必要。秘密値をこの報告書へ保存しない。
+Phase 2、遠隔Mini App実行、FCM、実端末更新、push/merge/PR公開には進まず、このPhase 1で終了する。
