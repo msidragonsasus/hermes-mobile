@@ -10,7 +10,9 @@ import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.data.ws.WsEvent
 import com.m57.hermescontrol.data.ws.WsMethods
 import com.m57.hermescontrol.ui.chat.fakes.FakeChatPersistenceRepository
+import com.m57.hermescontrol.ui.chat.fakes.FakeOutgoingDraftStore
 import com.m57.hermescontrol.ui.chat.fakes.FakeSlashUsageStore
+import com.m57.hermescontrol.ui.chat.fakes.FakeSubmissionTransport
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
@@ -138,7 +140,16 @@ class SlashCommandDispatchRpcTest {
     }
 
     private suspend fun TestScope.createViewModelWithSession(): Pair<ChatViewModel, String> {
-        val vm = ChatViewModel(app, false, fakeRepo, FakeSlashUsageStore(), ioDispatcher = testDispatcher)
+        val vm =
+            ChatViewModel(
+                app,
+                false,
+                fakeRepo,
+                FakeSlashUsageStore(),
+                ioDispatcher = testDispatcher,
+                draftStore = FakeOutgoingDraftStore(),
+                submissionTransport = FakeSubmissionTransport(),
+            )
         advanceUntilIdle()
         mockConnectionStatus.value = ConnectionStatus.CONNECTED
         mockEventsFlow.emit(WsEvent.GatewayReady(null))

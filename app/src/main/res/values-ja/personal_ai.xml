@@ -3,4 +3,25 @@
     <string name="storage_startup_title">保存データの確認</string>
     <string name="storage_startup_loading">保存データを確認しています…</string>
     <string name="storage_startup_blocked">保存データまたは暗号鍵を開けませんでした。データを保護するため、アプリの動作を停止しています。データベースの削除・再作成はしていません。アプリを終了し、元の鍵へのアクセスの復旧または検証済みの移行を行ってから再起動してください。アプリのデータ消去やアンインストールはしないでください。</string>
+    <plurals name="outgoing_drafts_count">
+        <item quantity="other">下書き・未確認の送信（%1$d件）</item>
+    </plurals>
+    <string name="draft_saved_hint">再接続しても自動送信されません。下書きを開いて内容を確認できます。</string>
+    <string name="draft_unknown_hint">Hermesに届いた可能性があります。元の会話を確認してください。この記録から再送はできません。</string>
+    <string name="draft_sending">送信の準備・確認中</string>
+    <string name="draft_not_sent">未送信の下書き</string>
+    <string name="draft_result_unknown">送信結果が不明</string>
+    <string name="draft_storage_unavailable">下書きを保存・読込できません。未保存の入力はこの画面に保持しています。</string>
+    <string name="draft_target_unavailable">接続先を確認できません。入力を元に戻しました。</string>
+    <string name="draft_attachment_unavailable">添付ファイルを読み込めませんでした。選び直してから送信してください。</string>
+    <string name="draft_attachment_hint">添付ファイルは選び直しが必要な場合があります。</string>
+    <string name="draft_preview">プレビュー</string>
+    <string name="draft_conversation">元の会話：%1$s</string>
+    <string name="draft_new_conversation">新しい会話</string>
+    <string name="draft_open">下書きを開く</string>
+    <string name="draft_open_conversation">元の会話を開く</string>
+    <string name="draft_discard">下書きを削除</string>
+    <string name="draft_remove_checked">確認したので記録を削除</string>
+    <string name="subagent_correction_requested">修正を依頼：%1$s</string>
+    <string name="subagent_stop_requested">停止を依頼</string>
 </resources>
