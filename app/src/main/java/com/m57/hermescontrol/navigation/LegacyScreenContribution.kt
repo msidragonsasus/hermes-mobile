@@ -79,11 +79,30 @@ class LegacyScreenContribution(
                     SettingsScreen -> "settings"
                     else -> error("Legacy screen has no stable route")
                 }
-            DestinationMetadata("legacy.$route", "hermes/$route", screen.key::class, index, screen)
+            DestinationMetadata(
+                "legacy.$route",
+                "hermes/$route",
+                screen.key::class,
+                index,
+                screen,
+                role = if (screen.key == ChatScreen) NavigationRole.ROOT else NavigationRole.ADVANCED,
+            )
         } +
             listOf(
-                DestinationMetadata("legacy.landing", "hermes/landing", LandingScreen::class, screens.size + 0),
-                DestinationMetadata("legacy.auth-login", "hermes/auth-login", AuthLoginScreen::class, screens.size + 1),
+                DestinationMetadata(
+                    "legacy.landing",
+                    "hermes/landing",
+                    LandingScreen::class,
+                    screens.size + 0,
+                    role = NavigationRole.AUTH,
+                ),
+                DestinationMetadata(
+                    "legacy.auth-login",
+                    "hermes/auth-login",
+                    AuthLoginScreen::class,
+                    screens.size + 1,
+                    role = NavigationRole.AUTH,
+                ),
                 DestinationMetadata(
                     "legacy.settings-connection",
                     "hermes/settings-connection",

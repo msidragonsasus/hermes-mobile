@@ -1264,6 +1264,45 @@ class ChatViewModelTest {
             verify(inverse = true) { HermesWsClient.send(WsMethods.SESSION_CREATE, any(), any()) }
         }
 
+    @Test
+    fun testGatewayReady_pendingNotificationResumesWithoutCreatingSession() =
+        runTest {
+            stubEmptySessionRests("session-from-notification")
+            every { HermesWsClient.send(WsMethods.SESSION_RESUME, any(), any()) } answers {
+                arg<((String) -> Unit)?>(2)?.invoke("notification-resume")
+                "notification-resume"
+            }
+            val controller = com.m57.hermescontrol.NavigationController
+            controller.backStack = null
+            controller.openChatSessionFromNotification("session-from-notification")
+            try {
+                val vm = createViewModel()
+                advanceUntilIdle()
+                mockConnectionStatus.value = ConnectionStatus.CONNECTED
+                mockEventsFlow.emit(WsEvent.GatewayReady(null))
+                runCurrent()
+                mockEventsFlow.emit(
+                    WsEvent.RpcResult(
+                        "notification-resume",
+                        mapOf("session_id" to "runtime-notification"),
+                    ),
+                )
+                advanceUntilIdle()
+                assertEquals("session-from-notification", vm.uiState.value.currentSessionId)
+                assertEquals("session-from-notification", controller.pendingSessionId)
+                verify(exactly = 0) { HermesWsClient.send(WsMethods.SESSION_CREATE, any(), any()) }
+                verify(exactly = 1) {
+                    HermesWsClient.send(
+                        WsMethods.SESSION_RESUME,
+                        mapOf("session_id" to "session-from-notification", "omit_messages" to true),
+                        any(),
+                    )
+                }
+            } finally {
+                controller.consumePendingChatNavigation()
+            }
+        }
+
     // ── RPC result tests ─────────────────────────────────────────────────────
 
     @Test

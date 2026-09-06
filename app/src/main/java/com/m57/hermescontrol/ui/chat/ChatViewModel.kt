@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.local.HermesDatabase
@@ -886,6 +887,12 @@ class ChatViewModel(
         fetchCommandCatalog()
         preloadModelOptions()
         val currentId = _uiState.value.currentSessionId
+        val requestedSession = NavigationController.pendingSessionId ?: initialSessionId
+        if (!requestedSession.isNullOrBlank() && requestedSession != currentId) {
+            initialSessionId = null
+            switchSession(requestedSession)
+            return
+        }
         if (currentId != null) {
             if (sessionHasServerPresence) {
                 resumeSession(currentId, sessionGeneration)

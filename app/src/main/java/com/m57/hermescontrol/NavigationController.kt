@@ -5,7 +5,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.navigation3.runtime.NavBackStack
 import androidx.navigation3.runtime.NavKey
+import com.m57.hermescontrol.navigation.NavigationRole
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 
+@Serializable
 data class PendingChatNavigation(
     val sessionId: String,
     val scrollToBottom: Boolean,
@@ -30,13 +34,16 @@ object NavigationController {
     val pendingSessionId: String? get() = pendingChatNavigation?.sessionId
 
     private var nextChatNavigationRequestId = 0L
+    private var lastConsumedChatNavigationId = 0L
+
+    fun roleOf(key: NavKey): NavigationRole? = ScreenRegistry.contributions.forKey(key::class)?.role
 
     /**
      * Top-level primary screens (all drawer-accessible screens).
      * Navigating to any of these clears the stack to `[ChatScreen, key]` (or `[ChatScreen]` for Chat),
      * ensuring swiping back returns to ChatScreen.
      */
-    fun isPrimaryScreen(key: NavKey): Boolean = key == ChatScreen || ScreenRegistry.ALL_SCREENS.any { it.key == key }
+    fun isPrimaryScreen(key: NavKey): Boolean = roleOf(key) in setOf(NavigationRole.ROOT, NavigationRole.ADVANCED)
 
     fun navigateTo(key: NavKey) {
         val stack = backStack ?: return
@@ -84,11 +91,31 @@ object NavigationController {
                 scrollToBottom = scrollToBottom,
                 requestId = ++nextChatNavigationRequestId,
             )
-        navigateTo(ChatScreen)
+        // A notification received before login stays pending until an authenticated stack attaches.
+        if (backStack?.any { roleOf(it) == NavigationRole.AUTH } != true) navigateTo(ChatScreen)
+    }
+
+    fun savePendingChatNavigation(): String? = pendingChatNavigation?.let { Json.encodeToString(it) }
+
+    fun restorePendingChatNavigation(encoded: String?) {
+        val restored =
+            encoded?.let { runCatching { Json.decodeFromString<PendingChatNavigation>(it) }.getOrNull() }
+                ?: return
+        if (restored.sessionId.isBlank() || restored.requestId <= 0 || restored.requestId == Long.MAX_VALUE) return
+        if (restored.requestId <= lastConsumedChatNavigationId ||
+            restored.requestId <= (pendingChatNavigation?.requestId ?: 0)
+        ) {
+            return
+        }
+        nextChatNavigationRequestId = maxOf(nextChatNavigationRequestId, restored.requestId)
+        pendingChatNavigation = restored
     }
 
     fun consumePendingChatNavigation(): PendingChatNavigation? =
-        pendingChatNavigation.also { pendingChatNavigation = null }
+        pendingChatNavigation.also {
+            if (it != null) lastConsumedChatNavigationId = maxOf(lastConsumedChatNavigationId, it.requestId)
+            pendingChatNavigation = null
+        }
 
     fun consumePendingSessionId(): String? = consumePendingChatNavigation()?.sessionId
 

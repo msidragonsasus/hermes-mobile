@@ -30,6 +30,8 @@ import com.m57.hermescontrol.util.LocaleContextWrapper
 
 class MainActivity : ComponentActivity() {
     companion object {
+        private const val SAVED_PENDING_CHAT = "pending_chat_navigation"
+
         /**
          * Action that identifies notification-driven "open this chat" intents.
          * [ChatNotificationService] stamps it on the content intent; the
@@ -56,6 +58,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        NavigationController.backStack = null
+        NavigationController.restorePendingChatNavigation(savedInstanceState?.getString(SAVED_PENDING_CHAT))
         consumeNotificationIntent(intent)
 
         enableEdgeToEdge()
@@ -103,6 +107,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        NavigationController.savePendingChatNavigation()?.let { outState.putString(SAVED_PENDING_CHAT, it) }
+        super.onSaveInstanceState(outState)
     }
 
     override fun onNewIntent(intent: Intent) {

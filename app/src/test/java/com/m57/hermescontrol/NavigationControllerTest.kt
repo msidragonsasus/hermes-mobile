@@ -277,4 +277,56 @@ class NavigationControllerTest {
         assertFalse("GroupChatKey should NOT be primary", NavigationController.isPrimaryScreen(GroupChatKey("room")))
         assertFalse("AuthLoginScreen should NOT be primary", NavigationController.isPrimaryScreen(AuthLoginScreen))
     }
+
+    @Test
+    fun `roles distinguish root advanced detail and authentication`() {
+        assertEquals(com.m57.hermescontrol.navigation.NavigationRole.ROOT, NavigationController.roleOf(ChatScreen))
+        assertEquals(
+            com.m57.hermescontrol.navigation.NavigationRole.ADVANCED,
+            NavigationController.roleOf(SkillsScreen),
+        )
+        assertEquals(
+            com.m57.hermescontrol.navigation.NavigationRole.DRILL_DOWN,
+            NavigationController.roleOf(SettingsAbout),
+        )
+        assertEquals(com.m57.hermescontrol.navigation.NavigationRole.AUTH, NavigationController.roleOf(AuthLoginScreen))
+    }
+
+    @Test
+    fun `notification remains pending while authentication is visible`() {
+        NavigationController.backStack = NavBackStack<NavKey>(LandingScreen, AuthLoginScreen)
+        NavigationController.openChatSessionFromNotification("stored")
+        assertEquals(listOf(LandingScreen, AuthLoginScreen), NavigationController.backStack!!.toList())
+        assertEquals("stored", NavigationController.pendingSessionId)
+    }
+
+    @Test
+    fun `pending navigation saves its exact intent and restored IDs remain monotonic`() {
+        NavigationController.openChatSessionFromNotification("stored")
+        val first = NavigationController.consumePendingChatNavigation()!!
+        val restored = first.copy(requestId = first.requestId + 100)
+        val encoded =
+            kotlinx.serialization.json.Json
+                .encodeToString(restored)
+        NavigationController.restorePendingChatNavigation(encoded)
+        assertEquals(restored, NavigationController.pendingChatNavigation)
+        assertEquals(encoded, NavigationController.savePendingChatNavigation())
+        NavigationController.openChatSession("newer")
+        assertTrue(NavigationController.pendingChatNavigation!!.requestId > restored.requestId)
+        NavigationController.restorePendingChatNavigation(encoded)
+        assertEquals("newer", NavigationController.pendingSessionId)
+    }
+
+    @Test
+    fun `consumed and malformed snapshots cannot revive a pending notification`() {
+        NavigationController.openChatSessionFromNotification("stored")
+        val saved = NavigationController.savePendingChatNavigation()
+        NavigationController.consumePendingChatNavigation()
+        NavigationController.restorePendingChatNavigation(saved)
+        assertNull(NavigationController.pendingChatNavigation)
+        for (encoded in listOf(null, "broken", "{}", "{\"sessionId\":\"x\",\"scrollToBottom\":true,\"requestId\":0}")) {
+            NavigationController.restorePendingChatNavigation(encoded)
+            assertNull(NavigationController.pendingChatNavigation)
+        }
+    }
 }

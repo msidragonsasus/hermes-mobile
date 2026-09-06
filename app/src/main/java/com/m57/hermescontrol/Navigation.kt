@@ -31,6 +31,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -44,13 +46,13 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation3.runtime.NavBackStack
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.ui.NavDisplay
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.ws.ConnectionStatus
 import com.m57.hermescontrol.data.ws.HermesWsClient
+import com.m57.hermescontrol.navigation.rememberAppBackStack
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.ui.common.DisableDrawerGestures
 import com.m57.hermescontrol.ui.common.DrawerGestureController
@@ -176,8 +178,15 @@ fun MainNavigation(sessionId: String? = null) {
     val hasToken = !token.isNullOrBlank()
     val startScreen: NavKey = if (hasToken) ChatScreen else LandingScreen
 
-    val backStack = remember(startScreen) { NavBackStack(startScreen) }
+    val backStack = rememberAppBackStack(hasToken)
     NavigationController.backStack = backStack
+    DisposableEffect(backStack) {
+        onDispose { if (NavigationController.backStack === backStack) NavigationController.backStack = null }
+    }
+    val pendingNavigation = NavigationController.pendingChatNavigation
+    LaunchedEffect(hasToken, pendingNavigation?.requestId) {
+        if (hasToken && pendingNavigation != null) NavigationController.navigateTo(ChatScreen)
+    }
 
     val currentScreen = backStack.lastOrNull() ?: startScreen
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)

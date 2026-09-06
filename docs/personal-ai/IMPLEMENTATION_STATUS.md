@@ -256,3 +256,18 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
 - Debug/Release両方でContributionRegistryTest 5件と既存NavigationControllerTestが成功。
   ktlint対象5ファイルと差分チェック成功。証跡は `../phase1-validation/pr07-*`。
   新shell・復元・画面操作の検証はPR08以降。画面到達性の最終確認はまだ実施していない。
+
+## PR08a: 画面role・保存可能な履歴・通知待機
+
+- 既存38画面をROOT/ADVANCED/DRILL_DOWN/AUTHに分類。controllerの同一画面連打防止と既存Backを維持する。
+- Navigation 3の`rememberNavBackStack`を使用し、認証状態ごとに保存状態を分離する。
+  ログアウトした復元では内部画面を表示しない。古いCompositionが新しいcontrollerを切り離さないようにする。
+  設計参照: [Android Navigation 3の状態保存](https://developer.android.com/guide/navigation/navigation-3/save-state)。
+- 通知のsession ID・スクロール要求・要求番号をActivity saved stateへ保存する。
+  処理済み・新しい通知より古いsnapshotを復活させず、未認証中はログインを越えて遷移しない。
+  接続復帰は通知先sessionのresumeを優先し、不要なsession.createを呼ばない。
+- Debug/Release各31件成功（NavigationController 23、Contribution 5、GatewayReady 3）。
+  専用エミュレーター `emulator-5580` の保存状態復元2件成功（詳細引数の復元、logout/login分離）。
+  これはStateRestorationTesterによる保存・再生成であり、OSによる実process killや実通知配送の確認ではない。
+  ktlint・diff check成功。証跡は `../phase1-validation/pr08a-*`。
+- タブ選択・タブごとの保持はPR08bで4タブと合わせて接続する。実Hermes接続・実端末更新は未実施。
