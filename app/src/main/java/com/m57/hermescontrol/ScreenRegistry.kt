@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation3.runtime.NavKey
 import com.m57.hermescontrol.navigation.ContributionRegistry
 import com.m57.hermescontrol.navigation.LegacyScreenContribution
+import com.m57.hermescontrol.navigation.ShellContribution
 import com.m57.hermescontrol.ui.common.NeurologyIcon
 import com.m57.hermescontrol.ui.achievements.AchievementsScreen as AchievementsScreenContent
 import com.m57.hermescontrol.ui.analytics.AnalyticsScreen as AnalyticsScreenContent
@@ -253,7 +254,13 @@ object ScreenRegistry {
             },
         )
 
-    val contributions = ContributionRegistry(listOf(LegacyScreenContribution(LEGACY_SCREENS)))
+    val contributions =
+        ContributionRegistry(
+            listOf(
+                LegacyScreenContribution(LEGACY_SCREENS),
+                ShellContribution(),
+            ),
+        )
 
     /** Compatibility entry point for the existing drawer and Navigation3 content installer. */
     val ALL_SCREENS: List<ScreenDefinition> = contributions.destinations.mapNotNull { it.screen }

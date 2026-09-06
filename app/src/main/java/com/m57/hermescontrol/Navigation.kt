@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -35,13 +36,16 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -52,11 +56,22 @@ import androidx.navigation3.ui.NavDisplay
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.ws.ConnectionStatus
 import com.m57.hermescontrol.data.ws.HermesWsClient
+import com.m57.hermescontrol.navigation.ActivityScreen
+import com.m57.hermescontrol.navigation.AdvancedScreen
+import com.m57.hermescontrol.navigation.AppsScreen
+import com.m57.hermescontrol.navigation.ShellTab
+import com.m57.hermescontrol.navigation.TodayScreen
 import com.m57.hermescontrol.navigation.rememberAppBackStack
+import com.m57.hermescontrol.navigation.rememberShellNavigation
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
+import com.m57.hermescontrol.ui.common.AdvancedScreenContent
 import com.m57.hermescontrol.ui.common.DisableDrawerGestures
 import com.m57.hermescontrol.ui.common.DrawerGestureController
 import com.m57.hermescontrol.ui.common.LocalDrawerGestureController
+import com.m57.hermescontrol.ui.common.LocalShellMenu
+import com.m57.hermescontrol.ui.common.ShellBottomBar
+import com.m57.hermescontrol.ui.common.ShellMenu
+import com.m57.hermescontrol.ui.common.ShellRootScreen
 import com.m57.hermescontrol.ui.plugins.MemoryProviderDetailScreen
 import com.m57.hermescontrol.ui.settings.SettingsAboutPage
 import com.m57.hermescontrol.ui.settings.SettingsAppearancePage
@@ -74,6 +89,10 @@ private fun appEntryProvider(
     sessionId: String?,
     openDrawer: () -> Unit,
 ) = entryProvider {
+    entry<TodayScreen> { ShellRootScreen(ShellTab.TODAY) }
+    entry<ActivityScreen> { ShellRootScreen(ShellTab.ACTIVITY) }
+    entry<AppsScreen> { ShellRootScreen(ShellTab.APPS) }
+    entry<AdvancedScreen> { AdvancedScreenContent() }
     entry<LandingScreen> {
         // B7 (Jun 30 2026, kanban t_424): route landing screen buttons through navigateTo to prevent duplicate screens
         LandingScreenContent(
@@ -176,12 +195,20 @@ private fun appEntryProvider(
 fun MainNavigation(sessionId: String? = null) {
     val token by AuthManager.tokenFlow.collectAsState()
     val hasToken = !token.isNullOrBlank()
-    val startScreen: NavKey = if (hasToken) ChatScreen else LandingScreen
+    val startScreen: NavKey = if (hasToken) TodayScreen else LandingScreen
 
-    val backStack = rememberAppBackStack(hasToken)
-    NavigationController.backStack = backStack
-    DisposableEffect(backStack) {
-        onDispose { if (NavigationController.backStack === backStack) NavigationController.backStack = null }
+    val authStack = rememberAppBackStack(hasToken)
+    val shell = rememberShellNavigation(hasToken)
+    val backStack = shell?.backStack ?: authStack
+    if (shell != null) NavigationController.attachShell(shell) else NavigationController.attachAuth(authStack)
+    DisposableEffect(shell, authStack) {
+        onDispose {
+            if (shell != null) {
+                NavigationController.detachShell(shell)
+            } else if (NavigationController.backStack === authStack) {
+                NavigationController.backStack = null
+            }
+        }
     }
     val pendingNavigation = NavigationController.pendingChatNavigation
     LaunchedEffect(hasToken, pendingNavigation?.requestId) {
@@ -209,8 +236,8 @@ fun MainNavigation(sessionId: String? = null) {
     var lastBackPressTime by remember { mutableLongStateOf(0L) }
     val backToastText = stringResource(R.string.press_back_again_to_exit)
 
-    // Double-back to exit on root ChatScreen
-    BackHandler(enabled = currentScreen == ChatScreen && backStack.size == 1) {
+    // Double-back to exit on Today. Other tab roots return to Today.
+    BackHandler(enabled = currentScreen == TodayScreen && backStack.size == 1) {
         val now = System.currentTimeMillis()
         if (now - lastBackPressTime < 2000L) {
             (context as? Activity)?.finish()
@@ -220,14 +247,19 @@ fun MainNavigation(sessionId: String? = null) {
         }
     }
 
-    // Safety fallback: if a non-chat screen somehow sits alone on stack, swipe back returns to ChatScreen
+    // Tab roots return to Today; unauthenticated navigation retains the controller fallback.
     BackHandler(
-        enabled = currentScreen != ChatScreen && currentScreen != LandingScreen && backStack.size == 1,
+        enabled = currentScreen != TodayScreen && currentScreen != LandingScreen && backStack.size == 1,
     ) {
         NavigationController.goBack()
     }
 
-    CompositionLocalProvider(LocalDrawerGestureController provides gestureController) {
+    val shellMenu: (@Composable () -> Unit)? = if (hasToken) ({ ShellMenu() }) else null
+    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    CompositionLocalProvider(
+        LocalDrawerGestureController provides gestureController,
+        LocalShellMenu provides shellMenu,
+    ) {
         ModalNavigationDrawer(
             drawerState = drawerState,
             gesturesEnabled = gestureController.enabled,
@@ -322,18 +354,25 @@ fun MainNavigation(sessionId: String? = null) {
         ) {
             Scaffold(
                 contentWindowInsets = WindowInsets.navigationBars,
+                // Chat owns IME padding. Do not reserve another tab-bar row above the keyboard.
+                bottomBar = { if (!imeVisible) shell?.let { ShellBottomBar(it.selectedTab) } },
             ) { paddingValues ->
-                NavDisplay(
-                    backStack = backStack,
-                    onBack = { NavigationController.goBack() },
-                    entryProvider =
-                        appEntryProvider(sessionId, openDrawer),
-                    modifier =
-                        Modifier
-                            .padding(paddingValues)
-                            .consumeWindowInsets(paddingValues)
-                            .fillMaxSize(),
-                )
+                key(hasToken) {
+                    val stateHolder = rememberSaveableStateHolder()
+                    stateHolder.SaveableStateProvider(shell?.selectedTab?.name ?: "auth") {
+                        NavDisplay(
+                            backStack = backStack,
+                            onBack = { NavigationController.goBack() },
+                            entryProvider =
+                                appEntryProvider(sessionId, openDrawer),
+                            modifier =
+                                Modifier
+                                    .padding(paddingValues)
+                                    .consumeWindowInsets(paddingValues)
+                                    .fillMaxSize(),
+                        )
+                    }
+                }
             }
         }
     }

@@ -3,7 +3,9 @@ package com.m57.hermescontrol.navigation
 import androidx.compose.runtime.mutableStateOf
 import androidx.navigation3.runtime.NavBackStack
 import androidx.navigation3.runtime.NavKey
+import com.m57.hermescontrol.AuthLoginScreen
 import com.m57.hermescontrol.ChatScreen
+import com.m57.hermescontrol.LandingScreen
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.SettingsScreen
 import com.m57.hermescontrol.ToolsetDetailKey
@@ -56,6 +58,18 @@ class ShellControllerTest {
         assertEquals("session-one", NavigationController.pendingSessionId)
         NavigationController.selectTab(ShellTab.TODAY)
         assertEquals(listOf(TodayScreen, AdvancedScreen), shell.backStack.toList())
+    }
+
+    @Test
+    fun authAttachmentSurvivesPreviousShellDisposalAndStopsPrivateTabRouting() {
+        val auth = NavBackStack<NavKey>(LandingScreen)
+        NavigationController.attachAuth(auth)
+        NavigationController.detachShell(shell)
+        NavigationController.selectTab(ShellTab.CHAT)
+        NavigationController.navigateTo(AuthLoginScreen)
+        assertSame(auth, NavigationController.backStack)
+        assertEquals(listOf(LandingScreen, AuthLoginScreen), auth.toList())
+        NavigationController.backStack = null
     }
 
     @Test

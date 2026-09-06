@@ -289,3 +289,12 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
 - Added guarded shell attachment and synchronous selected-stack routing for tab switches, notification Chat navigation, root reset, and Back. Existing non-shell navigation remains available until the UI migration.
 - Verified Debug unit tests: 3 ShellControllerTest and 23 NavigationControllerTest passed (0 failures/errors). New coverage checks consecutive callbacks without recomposition, notification routing with retained Today history, and stale disposal after a replacement attaches.
 - Targeted ktlint formatting/check and git diff --check passed. UI attachment and bottom navigation are the next PR08b step; these tests do not claim rendered UI completion.
+
+### PR08b-3 — Four-tab UI and Advanced entry
+
+- Authenticated navigation now starts at Today with Today / Chat / Activity / Apps tabs, separate saved stacks and a per-tab SaveableStateHolder. Chat retains its existing content and Activity-scoped ViewModel; the shared top bar adds Settings / Connection / Profiles / Advanced. Advanced lists all 27 existing screen definitions and keeps their original content and drill-down wiring.
+- ShellContribution adds 3 roots plus Advanced; the existing 38 legacy entries and their routes remain covered by registry tests. Authentication attachment explicitly clears the old shell controller binding before disposal can run.
+- Root content is deliberately only navigation entry points at this migration step. Today/Activity observation content (PR09) and Apps manifest information (PR10) are not completed here.
+- Debug unit checks passed: NavigationControllerTest 23, ShellNavigationTest 3, ContributionRegistryTest 6, ShellControllerTest 4 (including auth attachment). Debug main and instrumentation compilation passed. Dedicated emulator-5580/API 36 ran ShellChromeTest 1 and AppBackStackTest 4: all 5 passed, none skipped. These prove touch navigation/menu and saved-state restoration, not a live-server session or real-device update.
+- The shell now hides its bottom bar while IME insets are present so Chat remains the IME owner. This final inset adjustment receives compilation/color checks separately; full Chat keyboard, large-font, screenshots and live-scope limitations remain for PR11 integration checks. No real server/device, push, merge or deployment was used.
+- Final inset-adjusted Debug compilation and checkColorLiterals passed; modified Kotlin files received targeted ktlint formatting/check, and git diff --check passed.

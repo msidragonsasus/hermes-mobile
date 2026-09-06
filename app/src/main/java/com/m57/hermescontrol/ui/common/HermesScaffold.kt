@@ -150,6 +150,7 @@ fun HermesScaffold(
     content: @Composable (PaddingValues) -> Unit,
 ) {
     val gestureController = LocalDrawerGestureController.current
+    val shellMenu = LocalShellMenu.current
     SideEffect { gestureController?.reconcile(drawerGesturesEnabled) }
 
     val scrollBehavior =
@@ -202,6 +203,7 @@ fun HermesScaffold(
                         }
                     }
                     actions()
+                    shellMenu?.invoke()
                 },
                 colors =
                     TopAppBarDefaults.topAppBarColors(

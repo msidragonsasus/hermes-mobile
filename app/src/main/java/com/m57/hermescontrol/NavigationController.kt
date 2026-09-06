@@ -33,6 +33,11 @@ object NavigationController {
     var backStack: NavBackStack<NavKey>? = null
     private var shellNavigation: ShellNavigation? = null
 
+    internal fun attachAuth(stack: NavBackStack<NavKey>) {
+        shellNavigation = null
+        backStack = stack
+    }
+
     internal fun attachShell(shell: ShellNavigation) {
         shellNavigation = shell
         backStack = shell.backStack

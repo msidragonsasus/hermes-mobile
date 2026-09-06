@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shell_open_chat">What would you like to do?</string>
+    <string name="shell_today">Today</string>
+    <string name="shell_chat">Chat</string>
+    <string name="shell_activity">Activity</string>
+    <string name="shell_apps">Apps</string>
+    <string name="shell_advanced">Advanced</string>
+    <string name="shell_connection">Connection</string>
+    <string name="shell_menu">Settings and management</string>
+</resources>

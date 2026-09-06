@@ -77,7 +77,8 @@ class ContributionRegistryTest {
 
     @Test
     fun reservesEverySpecializedNavigationEntryWithoutReplacingItsContent() {
-        val specialized = ScreenRegistry.contributions.destinations.filter { it.screen == null }
+        val legacy = ScreenRegistry.contributions.destinations.filter { it.route.startsWith("hermes/") }
+        val specialized = legacy.filter { it.screen == null }
         assertEquals(
             listOf(
                 LandingScreen::class,
@@ -94,9 +95,20 @@ class ContributionRegistryTest {
             ),
             specialized.map { it.keyType },
         )
-        assertEquals(38, ScreenRegistry.contributions.destinations.size)
+        assertEquals(38, legacy.size)
+        assertEquals(42, ScreenRegistry.contributions.destinations.size)
         assertSame(specialized.last(), ScreenRegistry.contributions.forRoute("hermes/group-chat"))
         assertSame(specialized.last(), ScreenRegistry.contributions.forKey(GroupChatKey::class))
+    }
+
+    @Test
+    fun shellAddsThreeRootsAndAdvancedWhileChatKeepsItsLegacyIdentity() {
+        val registry = ScreenRegistry.contributions
+        listOf(TodayScreen, ActivityScreen, AppsScreen).forEach {
+            assertEquals(NavigationRole.ROOT, registry.forKey(it::class)?.role)
+        }
+        assertEquals(NavigationRole.ADVANCED, registry.forKey(AdvancedScreen::class)?.role)
+        assertEquals("hermes/chat", registry.forKey(ChatScreen::class)?.route)
     }
 
     @Test
