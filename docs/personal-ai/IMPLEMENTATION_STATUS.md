@@ -22,7 +22,7 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
 | PR03 | 完了 `5136a02` | 関連unit Debug/Release各46件、SQLCipher移行・保全・起動停止UIのemulator 3件成功 |
 | PR04 | 完了 `7bf9270` | 単一socketの固定scope/event/read境界。既存WebSocket 54件、新contract 6件。自己レビューで固定所属とno-queueを確認 |
 | PR05 | 完了 `ad29751` | scopeごとのread probe、Unknown/Blocked区別、API専用offline decoder。追加4件。live writeはdisabled |
-| PR06a | 実装中 `b6d161d` | offline writeのqueue禁止を検証済み。永続draft・結果不明・Chat/通知入口の固定scope統合は残作業 |
+| PR06a | 実装中 `b6d161d` / `8491e8e` | queue禁止と暗号化draft保存を検証済み。結果不明・Chat/通知入口の固定scope統合は残作業 |
 | PR06b | 未着手 | 固定要求とACK、once/deny、失効と古い応答 |
 | PR07〜08b | 未着手 | 既存27画面を保持してregistry/復元/4-tabを統合 |
 | PR09a〜09b | 未着手 | 実イベントの観測範囲と正確なAttention通知 |
@@ -108,4 +108,13 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
   自己レビューで別操作の拒否が進行中の応答待ちを消す問題を修正し、追加ケースとoffline拒否を
   Debug/Release各2件で成功確認した。追加テストのprivate setter直接参照による初回compile失敗も修正済み。
 - 最終4ファイルktlint、diff check成功。証跡はcheckout外`../phase1-validation/pr06a-*`。
-  永続下書き、送信結果不明の表示、Chat/通知の固定scope submitは未実装なのでPR06a完了とはしない。
+  送信結果不明の表示、Chat/通知の固定scope submitは未実装なのでPR06a完了とはしない。
+- `8491e8e`: SQLCipher Room v7へ`outgoing_drafts`を追加する明示的6→7 migration。
+  scope・saved/runtime session・本文・添付情報・DRAFT/UNKNOWNを暗号化DB内へ保存する。
+  世代/process変更後も同じserver/profileの記録だけ復元し、別profileからの削除を拒否。
+  repository自身に送信・再試行の機能はなく、破損記録を黙って無視しない。
+- 保存関連unitはDebug/Release各3件成功。専用emulatorのDB保全4件成功。
+  v2〜v6からv7への既存本文等の保持、v7再openでUNKNOWNと添付を保持、別profile削除拒否、
+  鍵不一致/version 99のbyte保全、起動停止UIを検証した。初回instrumentation compileで
+  RoomDatabaseへの`use`非対応を検出し、既存方式の`try/finally`へ修正後に4件成功。
+  最終対象ktlint/diff check成功。schema 7はKSP生成。Chat/通知/UIへの接続はまだ行っていない。
