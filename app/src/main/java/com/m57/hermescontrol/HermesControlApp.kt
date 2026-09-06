@@ -12,12 +12,22 @@ import coil3.request.crossfade
 import com.m57.hermescontrol.data.local.StorageStartup
 import com.m57.hermescontrol.data.remote.NetworkMonitor
 import com.m57.hermescontrol.data.remote.OkHttpProvider
+import com.m57.hermescontrol.data.transport.DashboardRpcTransport
 import com.m57.hermescontrol.data.update.UpdateNoticeManager
+import com.m57.hermescontrol.domain.hermes.AttentionRepository
+import com.m57.hermescontrol.domain.hermes.RunRepository
 import com.m57.hermescontrol.ui.analytics.AnalyticsPreloader
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 class HermesControlApp :
     Application(),
     SingletonImageLoader.Factory {
+    val attentionRepository = AttentionRepository()
+    val runRepository by lazy { RunRepository(DashboardRpcTransport()) }
+    private val observationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
     override fun onCreate() {
         super.onCreate()
         NetworkMonitor.init(this)
@@ -26,6 +36,7 @@ class HermesControlApp :
         // cold backend). Fire-and-forget; never blocks UI startup.
         // PR03: preserve unreadable storage and block normal startup instead of recreating it.
         StorageStartup.start(this) {
+            runRepository.start(observationScope)
             AnalyticsPreloader.preload(this)
             // Issue #890: retain the existing update notice after storage validation.
             UpdateNoticeManager.checkOnLaunch()

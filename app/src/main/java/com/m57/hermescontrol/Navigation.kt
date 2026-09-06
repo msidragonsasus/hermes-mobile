@@ -69,6 +69,7 @@ import com.m57.hermescontrol.ui.common.DisableDrawerGestures
 import com.m57.hermescontrol.ui.common.DrawerGestureController
 import com.m57.hermescontrol.ui.common.LocalDrawerGestureController
 import com.m57.hermescontrol.ui.common.LocalShellMenu
+import com.m57.hermescontrol.ui.common.ObservedActivityScreen
 import com.m57.hermescontrol.ui.common.ShellBottomBar
 import com.m57.hermescontrol.ui.common.ShellMenu
 import com.m57.hermescontrol.ui.common.ShellRootScreen
@@ -89,8 +90,8 @@ private fun appEntryProvider(
     sessionId: String?,
     openDrawer: () -> Unit,
 ) = entryProvider {
-    entry<TodayScreen> { ShellRootScreen(ShellTab.TODAY) }
-    entry<ActivityScreen> { ShellRootScreen(ShellTab.ACTIVITY) }
+    entry<TodayScreen> { ObservedActivityScreen(today = true) }
+    entry<ActivityScreen> { ObservedActivityScreen(today = false) }
     entry<AppsScreen> { ShellRootScreen(ShellTab.APPS) }
     entry<AdvancedScreen> { AdvancedScreenContent() }
     entry<LandingScreen> {

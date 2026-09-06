@@ -1,0 +1,32 @@
+<resources>
+    <string name="activity_event_started">応答開始</string>
+    <string name="activity_event_tool_started">ツール実行開始</string>
+    <string name="activity_event_tool_completed">ツール実行終了</string>
+    <string name="activity_event_expired">質問の期限切れ</string>
+    <string name="activity_observation_scope">このアプリが受信した範囲を表示します。サーバーの全履歴ではありません。アプリのプロセス終了時に記録は消えます。</string>
+    <string name="activity_loading">セッション名を取得中…</string>
+    <string name="activity_read_unavailable">セッション履歴を取得できませんでした。受信済みのイベントのみ表示します。</string>
+    <string name="activity_needs_you">あなたの確認待ち</string>
+    <string name="activity_no_observed_requests">確認や入力の依頼は、まだ受信していません。</string>
+    <string name="activity_observed_sessions">確認できた動き</string>
+    <string name="activity_no_observations">実行イベントをまだ受信していません。</string>
+    <string name="activity_timeline">受信したイベント</string>
+    <string name="activity_observed_at">受信：%1$s</string>
+    <string name="activity_event_gap">イベントが一部欠けている可能性があります</string>
+    <string name="activity_session">セッション</string>
+    <string name="activity_last_confirmed">最後に確認できた状態です。現在の進み具合は不明です。</string>
+    <string name="activity_open_session">セッションを開く</string>
+    <string name="activity_session_unavailable">保存済みセッションのIDをまだ確認できていません。</string>
+    <string name="activity_offline">オフライン</string>
+    <string name="activity_connecting">接続中</string>
+    <string name="activity_connected">接続済み</string>
+    <string name="activity_reconnecting">再接続中</string>
+    <string name="activity_auth_required">再ログインが必要です</string>
+    <string name="activity_unknown">状態不明</string>
+    <string name="activity_running">実行中</string>
+    <string name="activity_needs_input">入力待ち</string>
+    <string name="activity_waiting_approval">承認待ち</string>
+    <string name="activity_completed">完了</string>
+    <string name="activity_failed">失敗</string>
+    <string name="activity_canceled">中止</string>
+</resources>

@@ -529,7 +529,8 @@ class ChatViewModel(
         OutgoingDraftRepository(HermesDatabase.get(application).outgoingDraftDao()),
     private val submissionTransport: HermesSubmissionTransport = DashboardRpcTransport(),
     private val attentionTransport: HermesAttentionTransport = DashboardRpcTransport(),
-    private val attentionRepository: AttentionRepository = AttentionRepository(),
+    private val attentionRepository: AttentionRepository =
+        (application as? com.m57.hermescontrol.HermesControlApp)?.attentionRepository ?: AttentionRepository(),
 ) : AndroidViewModel(application) {
     constructor(application: Application) : this(application, startCleanup = true)
 
