@@ -6,6 +6,8 @@ import androidx.compose.runtime.setValue
 import androidx.navigation3.runtime.NavBackStack
 import androidx.navigation3.runtime.NavKey
 import com.m57.hermescontrol.navigation.NavigationRole
+import com.m57.hermescontrol.navigation.ShellNavigation
+import com.m57.hermescontrol.navigation.ShellTab
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -29,6 +31,26 @@ data class PendingChatNavigation(
  */
 object NavigationController {
     var backStack: NavBackStack<NavKey>? = null
+    private var shellNavigation: ShellNavigation? = null
+
+    internal fun attachShell(shell: ShellNavigation) {
+        shellNavigation = shell
+        backStack = shell.backStack
+    }
+
+    internal fun detachShell(shell: ShellNavigation) {
+        if (shellNavigation !== shell) return
+        shellNavigation = null
+        backStack = null
+    }
+
+    fun selectTab(tab: ShellTab) {
+        val shell = shellNavigation ?: return
+        shell.select(tab)
+        // Update synchronously: a second callback can arrive before recomposition.
+        backStack = shell.backStack
+    }
+
     var pendingChatNavigation: PendingChatNavigation? by mutableStateOf(null)
         private set
     val pendingSessionId: String? get() = pendingChatNavigation?.sessionId
@@ -46,6 +68,12 @@ object NavigationController {
     fun isPrimaryScreen(key: NavKey): Boolean = roleOf(key) in setOf(NavigationRole.ROOT, NavigationRole.ADVANCED)
 
     fun navigateTo(key: NavKey) {
+        val shell = shellNavigation
+        if (shell != null && roleOf(key) != NavigationRole.AUTH) {
+            shell.navigate(key)
+            backStack = shell.backStack
+            return
+        }
         val stack = backStack ?: return
         if (stack.lastOrNull() == key) return
 
@@ -121,6 +149,10 @@ object NavigationController {
 
     /** Clear the stack and navigate to the given screen atomically. */
     fun resetTo(screen: NavKey) {
+        if (shellNavigation != null && ShellTab.entries.any { it.root == screen }) {
+            navigateTo(screen)
+            return
+        }
         val stack = backStack ?: return
         stack.clear()
         stack.add(screen)
@@ -132,6 +164,10 @@ object NavigationController {
      */
     fun goBack(fallback: NavKey = ChatScreen) {
         val stack = backStack ?: return
+        if (shellNavigation != null && stack.size == 1) {
+            selectTab(ShellTab.TODAY)
+            return
+        }
         if (stack.size > 1) {
             stack.removeLastOrNull()
         } else if (stack.size == 1) {

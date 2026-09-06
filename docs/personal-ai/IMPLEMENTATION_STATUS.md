@@ -283,3 +283,9 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
   StateRestorationTesterによる検証であり、OSの実process killではない。
 - この段階では状態モデルを追加したのみ。画面・下部バー・controllerへの接続は次の変更で行う。
   証跡: `../phase1-validation/pr08b-shell-state.log` と `pr08b-shell-restore.log`。
+
+### PR08b-2 — Shell controller attachment
+
+- Added guarded shell attachment and synchronous selected-stack routing for tab switches, notification Chat navigation, root reset, and Back. Existing non-shell navigation remains available until the UI migration.
+- Verified Debug unit tests: 3 ShellControllerTest and 23 NavigationControllerTest passed (0 failures/errors). New coverage checks consecutive callbacks without recomposition, notification routing with retained Today history, and stale disposal after a replacement attaches.
+- Targeted ktlint formatting/check and git diff --check passed. UI attachment and bottom navigation are the next PR08b step; these tests do not claim rendered UI completion.
