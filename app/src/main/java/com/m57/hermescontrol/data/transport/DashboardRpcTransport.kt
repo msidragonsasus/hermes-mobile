@@ -1,19 +1,23 @@
 package com.m57.hermescontrol.data.transport
 
+import com.m57.hermescontrol.data.model.Attachment
 import com.m57.hermescontrol.data.ws.ConnectionStatus
 import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.data.ws.ScopedWsEvent
 import com.m57.hermescontrol.data.ws.WsEvent
+import com.m57.hermescontrol.data.ws.WsMethods
 import com.m57.hermescontrol.domain.hermes.ConnectionScope
 import com.m57.hermescontrol.domain.hermes.ExecutionState
 import com.m57.hermescontrol.domain.hermes.HermesObservation
 import com.m57.hermescontrol.domain.hermes.LinkState
 import com.m57.hermescontrol.domain.hermes.ObservationKind
+import com.m57.hermescontrol.domain.hermes.PromptAcceptance
 import com.m57.hermescontrol.domain.hermes.ReadFailure
 import com.m57.hermescontrol.domain.hermes.RequestRef
 import com.m57.hermescontrol.domain.hermes.SessionRead
 import com.m57.hermescontrol.domain.hermes.SessionRef
 import com.m57.hermescontrol.domain.hermes.SessionSummary
+import com.m57.hermescontrol.domain.hermes.SubmissionResult
 import com.m57.hermescontrol.domain.hermes.TransportConnection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -23,8 +27,106 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 
-class DashboardRpcTransport : HermesTransport {
+class DashboardRpcTransport :
+    HermesTransport,
+    HermesSubmissionTransport {
+    override fun configuredScope(): ConnectionScope? = HermesWsClient.configuredScope()
+
+    override fun isReady(scope: ConnectionScope): Boolean =
+        HermesWsClient.matchesCurrentScope(scope) && HermesWsClient.isConnected
+
+    override suspend fun submitPrompt(
+        scope: ConnectionScope,
+        session: SessionRef,
+        text: String,
+        redirect: Boolean,
+        queued: Boolean,
+    ): SubmissionResult<PromptAcceptance> {
+        if (redirect && (text.isBlank() || queued)) return SubmissionResult.NotSent
+        return execute(
+            scope,
+            if (redirect) WsMethods.SESSION_REDIRECT else WsMethods.PROMPT_SUBMIT,
+            buildMap {
+                put("session_id", session.runtimeId)
+                put("text", text)
+                if (queued) put("queued", true)
+            },
+        ) { result ->
+            when (result.string("status")) {
+                "streaming" -> PromptAcceptance.STREAMING.takeUnless { redirect }
+                "queued" -> PromptAcceptance.QUEUED
+                "redirected" -> PromptAcceptance.REDIRECTED
+                "steered" -> PromptAcceptance.STEERED.takeUnless { redirect }
+                else -> null
+            }
+        }
+    }
+
+    override suspend fun attach(
+        scope: ConnectionScope,
+        session: SessionRef,
+        attachment: Attachment,
+        dataUrl: String,
+    ): SubmissionResult<String?> =
+        if (attachment.isImage) {
+            when (
+                val result =
+                    execute(
+                        scope,
+                        WsMethods.IMAGE_ATTACH_BYTES,
+                        mapOf(
+                            "session_id" to session.runtimeId,
+                            "content_base64" to dataUrl,
+                            "filename" to attachment.name,
+                            "ext" to attachment.fileExtension,
+                        ),
+                    ) { body -> true.takeIf { body.isTrue("attached") } }
+            ) {
+                is SubmissionResult.Confirmed -> SubmissionResult.Confirmed(result.requestId, null)
+                SubmissionResult.NotSent -> SubmissionResult.NotSent
+                SubmissionResult.Unknown -> SubmissionResult.Unknown
+            }
+        } else {
+            execute(
+                scope,
+                WsMethods.FILE_ATTACH,
+                mapOf("session_id" to session.runtimeId, "data_url" to dataUrl, "name" to attachment.name),
+            ) { body -> body.string("ref_text")?.takeIf { it.isNotBlank() && body.isTrue("attached") } }
+        }
+
+    override suspend fun resume(
+        scope: ConnectionScope,
+        savedSessionId: String,
+    ): SubmissionResult<SessionRef> =
+        execute(scope, WsMethods.SESSION_RESUME, mapOf("session_id" to savedSessionId, "omit_messages" to true)) {
+            it.string("session_id")?.takeIf(String::isNotBlank)?.let { runtime -> SessionRef(runtime, savedSessionId) }
+        }
+
+    private suspend fun <T : Any> execute(
+        scope: ConnectionScope,
+        method: String,
+        params: Map<String, Any>,
+        decode: (JsonObject) -> T?,
+    ): SubmissionResult<T> {
+        val call = HermesWsClient.writeScoped(scope, method, params)
+        if (!call.accepted) return SubmissionResult.NotSent
+        return try {
+            val response = call.response.await() as? JsonObject
+            val decoded = response?.let(decode)
+            if (decoded != null && HermesWsClient.matchesCurrentScope(scope)) {
+                SubmissionResult.Confirmed(requireNotNull(call.requestId), decoded)
+            } else {
+                SubmissionResult.Unknown
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: HermesWsClient.HermesRpcException) {
+            SubmissionResult.Unknown
+        }
+    }
+
     override val connection =
         combine(HermesWsClient.connectionScope, HermesWsClient.connectionStatus) { scope, status ->
             TransportConnection(
@@ -68,6 +170,11 @@ class DashboardRpcTransport : HermesTransport {
         }
     }
 }
+
+private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+private fun JsonObject.isTrue(key: String): Boolean =
+    (this[key] as? JsonPrimitive)?.let { !it.isString && it.booleanOrNull == true } == true
 
 internal fun decodeDashboardSessions(
     scope: ConnectionScope,
