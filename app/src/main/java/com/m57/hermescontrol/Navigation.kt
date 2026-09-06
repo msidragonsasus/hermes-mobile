@@ -65,6 +65,7 @@ import com.m57.hermescontrol.navigation.TodayScreen
 import com.m57.hermescontrol.navigation.rememberAppBackStack
 import com.m57.hermescontrol.navigation.rememberShellNavigation
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
+import com.m57.hermescontrol.ui.apps.MiniAppsScreen
 import com.m57.hermescontrol.ui.attention.AttentionDetailScreen
 import com.m57.hermescontrol.ui.common.AdvancedScreenContent
 import com.m57.hermescontrol.ui.common.DisableDrawerGestures
@@ -74,7 +75,6 @@ import com.m57.hermescontrol.ui.common.LocalShellMenu
 import com.m57.hermescontrol.ui.common.ObservedActivityScreen
 import com.m57.hermescontrol.ui.common.ShellBottomBar
 import com.m57.hermescontrol.ui.common.ShellMenu
-import com.m57.hermescontrol.ui.common.ShellRootScreen
 import com.m57.hermescontrol.ui.plugins.MemoryProviderDetailScreen
 import com.m57.hermescontrol.ui.settings.SettingsAboutPage
 import com.m57.hermescontrol.ui.settings.SettingsAppearancePage
@@ -94,7 +94,7 @@ private fun appEntryProvider(
 ) = entryProvider {
     entry<TodayScreen> { ObservedActivityScreen(today = true) }
     entry<ActivityScreen> { ObservedActivityScreen(today = false) }
-    entry<AppsScreen> { ShellRootScreen(ShellTab.APPS) }
+    entry<AppsScreen> { MiniAppsScreen() }
     entry<AdvancedScreen> { AdvancedScreenContent() }
     entry<AttentionDetailKey> { AttentionDetailScreen(it.ref) }
     entry<LandingScreen> {
