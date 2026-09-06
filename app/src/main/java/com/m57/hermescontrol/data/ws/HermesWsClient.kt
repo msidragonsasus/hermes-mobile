@@ -9,6 +9,7 @@ import com.m57.hermescontrol.data.remote.DashboardSessionTokenRefresher
 import com.m57.hermescontrol.data.remote.NetworkMonitor
 import com.m57.hermescontrol.data.remote.OkHttpProvider
 import com.m57.hermescontrol.data.session.ActiveSessionHolder
+import com.m57.hermescontrol.domain.hermes.ConnectionScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,11 +35,14 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.utf8Size
+import java.security.MessageDigest
 import java.util.Collections
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Connection status for the WebSocket client.
@@ -244,6 +248,25 @@ object HermesWsClient {
 
     /** Collect this from ViewModels to receive all parsed [WsEvent]s. */
     val events: SharedFlow<WsEvent> = parsedEvents.asSharedFlow()
+
+    private val processIdentity = UUID.randomUUID().toString()
+    private val observationOrdinal = AtomicLong()
+    private val _connectionScope = MutableStateFlow<ConnectionScope?>(null)
+
+    @Volatile private var connectionBaseUrl: String? = null
+    val connectionScope: StateFlow<ConnectionScope?> = _connectionScope.asStateFlow()
+    private val _scopedEvents =
+        MutableSharedFlow<ScopedWsEvent>(extraBufferCapacity = 512, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    val scopedEvents: SharedFlow<ScopedWsEvent> = _scopedEvents.asSharedFlow()
+
+    private fun emitScoped(
+        scope: ConnectionScope?,
+        event: WsEvent? = null,
+        gap: Boolean = false,
+    ) {
+        if (scope == null || !isCurrentGeneration(scope.generation)) return
+        _scopedEvents.tryEmit(ScopedWsEvent(scope, observationOrdinal.incrementAndGet(), event, gap))
+    }
 
     // ── Connection status flow ──────────────────────────────────────────
     private val _connectionStatus = MutableStateFlow(ConnectionStatus.DISCONNECTED)
@@ -655,6 +678,7 @@ object HermesWsClient {
     /** Thrown when an awaited [request] is neither answered nor rejected within [REQUEST_TIMEOUT_MS], or is rejected by a disconnect. */
     class HermesRpcException(
         message: String,
+        val code: Int? = null,
     ) : Exception(message)
 
     /**
@@ -703,6 +727,43 @@ object HermesWsClient {
         return deferred
     }
 
+    /** A fixed-scope, read-only request. No reconnect, queue, or protocol fallback. */
+    fun readSessions(
+        scope: ConnectionScope,
+        timeoutMs: Long = 5_000L,
+    ): CompletableDeferred<Any?> =
+        synchronized(outboundLock) {
+            val result = CompletableDeferred<Any?>()
+            if (!matchesCurrentScope(scope) || !connected.get()) {
+                result.completeExceptionally(HermesRpcException("Connection scope unavailable"))
+                return@synchronized result
+            }
+            val id = requestId.incrementAndGet().toString()
+            val params = scope.serverProfileId?.let { mapOf("profile" to it) } ?: emptyMap()
+            val request =
+                JsonRpcRequest(
+                    id = id,
+                    method = WsMethods.SESSION_LIST,
+                    params = params.mapValues { it.value.toJsonElement() },
+                )
+            pendingCalls[id] = PendingCall(WsMethods.SESSION_LIST, result)
+            if (webSocket?.send(OkHttpProvider.json.encodeToString(request)) != true) {
+                resolvePending(id, null, JsonRpcError(-1, "Read unavailable"))
+            } else {
+                pendingCalls[id]?.timeoutJob =
+                    wsScope.launch {
+                        delay(timeoutMs)
+                        resolvePending(id, null, JsonRpcError(-1, "Read timed out"))
+                    }
+            }
+            result
+        }
+
+    fun matchesCurrentScope(scope: ConnectionScope): Boolean =
+        _connectionScope.value == scope && isCurrentGeneration(scope.generation) &&
+            AuthManager.getSelectedProfileId() == scope.connectionProfileId &&
+            AuthManager.activeProfileId.value == scope.serverProfileId && AuthManager.getBaseUrl() == connectionBaseUrl
+
     /** Complete (or fail) a single pending call and cancel its timer. */
     private fun resolvePending(
         id: String,
@@ -713,7 +774,7 @@ object HermesWsClient {
         removeQueuedMessage(id)
         call.timeoutJob?.cancel()
         if (error != null) {
-            call.deferred.completeExceptionally(HermesRpcException(error.message))
+            call.deferred.completeExceptionally(HermesRpcException(error.message, error.code))
         } else {
             call.deferred.complete(result)
         }
@@ -898,6 +959,7 @@ object HermesWsClient {
 
     private suspend fun fetchReplay() {
         if (replayInFlight || lastSeenSeq.isEmpty()) return
+        val scope = _connectionScope.value
         replayInFlight = true
         val sessionsToReplay = lastSeenSeq.keys().toList()
         for (sid in sessionsToReplay) {
@@ -923,9 +985,11 @@ object HermesWsClient {
                             else -> null
                         }
                     if (resultMap != null) {
+                        if (resultMap["truncated"] == true) emitScoped(scope, gap = true)
                         val epoch = resultMap["epoch"] as? String
                         if (!epoch.isNullOrEmpty()) {
                             if (replayEpoch != null && replayEpoch != epoch) {
+                                emitScoped(scope, gap = true)
                                 replayEpoch = epoch
                                 lastSeenSeq.clear()
                                 continue
@@ -955,10 +1019,12 @@ object HermesWsClient {
                                         parsedEvent
                                     }
                                 parsedEvents.tryEmit(finalEvent)
+                                emitScoped(scope, finalEvent)
                             }
                         }
                     }
                 } catch (e: Exception) {
+                    emitScoped(scope, gap = true)
                     Log.w(TAG, "Replay failed: ${e.javaClass.simpleName}")
                 }
             }
@@ -974,6 +1040,7 @@ object HermesWsClient {
                                 lastSeenSeq[sid] = heldSeq
                             }
                             parsedEvents.tryEmit(heldEvent)
+                            emitScoped(scope, heldEvent)
                         }
                     }
                 }
@@ -1017,6 +1084,9 @@ object HermesWsClient {
     // ── Internal ─────────────────────────────────────────────────────────
 
     private fun openSocket() {
+        val connectionProfileId = AuthManager.getSelectedProfileId()
+        val serverProfileId = AuthManager.activeProfileId.value
+        val baseUrl = AuthManager.getBaseUrl()
         val generation =
             synchronized(outboundLock) {
                 if (intentionalClose.get()) return
@@ -1028,10 +1098,40 @@ object HermesWsClient {
         }
         if (!isCurrentGeneration(generation)) return
         val url = AuthManager.wsUrl()
+        if (connectionProfileId != AuthManager.getSelectedProfileId() ||
+            serverProfileId != AuthManager.activeProfileId.value ||
+            baseUrl != AuthManager.getBaseUrl() || !isCurrentGeneration(generation)
+        ) {
+            return
+        }
         if (BuildConfig.DEBUG) Log.d(TAG, "Opening WebSocket")
 
         val request = Request.Builder().url(url).build()
-        val newSocket = OkHttpProvider.websocket.newWebSocket(request, WsListenerImpl(generation))
+        val endpoint =
+            request.url
+                .newBuilder()
+                .username("")
+                .password("")
+                .query(null)
+                .fragment(null)
+                .build()
+                .toString()
+        val scope =
+            ConnectionScope(
+                MessageDigest.getInstance("SHA-256").digest(endpoint.toByteArray(Charsets.UTF_8)).joinToString("") {
+                    "%02x".format(it)
+                },
+                connectionProfileId,
+                serverProfileId,
+                processIdentity,
+                generation,
+            )
+        synchronized(outboundLock) {
+            if (!isCurrentGeneration(generation)) return
+            connectionBaseUrl = baseUrl
+            _connectionScope.value = scope
+        }
+        val newSocket = OkHttpProvider.websocket.newWebSocket(request, WsListenerImpl(generation, scope))
         synchronized(outboundLock) {
             if (connectionGeneration.get() == generation && !intentionalClose.get()) {
                 webSocket = newSocket
@@ -1093,6 +1193,7 @@ object HermesWsClient {
 
     private class WsListenerImpl(
         private val generation: Int,
+        private val scope: ConnectionScope,
     ) : WebSocketListener() {
         private fun isCurrent(): Boolean = isCurrentGeneration(generation)
 
@@ -1187,6 +1288,7 @@ object HermesWsClient {
                             }
                             lastSeenSeq[sid] = seq
                             parsedEvents.tryEmit(finalEvent)
+                            emitScoped(scope, finalEvent)
                             return
                         }
                     }
@@ -1229,6 +1331,7 @@ object HermesWsClient {
             // buffer is full AND no subscriber is draining; with extraBuffer=512
             // and always-on init collectors this is unreachable in practice.
             parsedEvents.tryEmit(event)
+            emitScoped(scope, event)
         }
 
         override fun onClosing(

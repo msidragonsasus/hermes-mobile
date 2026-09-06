@@ -10,6 +10,7 @@ import com.m57.hermescontrol.data.remote.NetworkMonitor
 import com.m57.hermescontrol.data.remote.ServerEndpoint
 import com.m57.hermescontrol.data.remote.buildFakePersistentCookieJar
 import com.m57.hermescontrol.data.session.ActiveSessionHolder
+import com.m57.hermescontrol.domain.hermes.ConnectionScope
 import com.m57.hermescontrol.util.captureDiagnosticLogs
 import io.mockk.every
 import io.mockk.mockk
@@ -17,6 +18,7 @@ import io.mockk.mockkObject
 import io.mockk.mockkStatic
 import io.mockk.unmockkAll
 import io.mockk.verify
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -259,6 +261,71 @@ class HermesWsClientTest {
         assertFalse(logs.joinToString("\n").contains("SYNTHETIC_PRIVATE"))
     }
 
+    @Test
+    fun testScopedListenerKeepsCapturedProfileAndNormalizesLikeFake() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            val received = CompletableDeferred<ScopedWsEvent>()
+            val collector =
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    received.complete(HermesWsClient.scopedEvents.first())
+                }
+            every { AuthManager.getSelectedProfileId() } returns "new-profile"
+            listener.onMessage(
+                socket,
+                """{"jsonrpc":"2.0","method":"event","params":{"type":"message.start","session_id":"runtime-a"}}""",
+            )
+            val envelope = withTimeout(5000) { received.await() }
+            assertEquals("synthetic", envelope.scope.serverIdentity)
+            assertNull(envelope.scope.connectionProfileId)
+            val observation =
+                com.m57.hermescontrol.data.transport
+                    .normalizeDashboardEvent(envelope)
+            assertEquals(com.m57.hermescontrol.domain.hermes.ObservationKind.STARTED, observation?.kind)
+            assertEquals("runtime-a", observation?.session?.runtimeId)
+            collector.join()
+        }
+
+    @Test
+    fun testScopedReadNeverQueuesAndRejectsChangedProfile() {
+        val socket = mockk<WebSocket>(relaxed = true)
+        diagnosticListener(socket)
+
+        fun field(name: String) = HermesWsClient::class.java.getDeclaredField(name).apply { isAccessible = true }
+        val generation = (field("connectionGeneration").get(HermesWsClient) as AtomicInteger).get()
+        val scope = ConnectionScope("synthetic", null, null, "test", generation)
+
+        @Suppress("UNCHECKED_CAST")
+        val scopeFlow = field("_connectionScope").get(HermesWsClient) as MutableStateFlow<ConnectionScope?>
+        scopeFlow.value = scope
+        field("connectionBaseUrl").set(HermesWsClient, AuthManager.getBaseUrl())
+        every { AuthManager.getSelectedProfileId() } returns null
+        every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+        every { socket.send(any<String>()) } returns false
+        assertTrue(HermesWsClient.readSessions(scope).isCancelled)
+        @Suppress("UNCHECKED_CAST")
+        val queue = field("messageQueue").get(HermesWsClient) as java.util.concurrent.ConcurrentLinkedQueue<String>
+        assertTrue(queue.isEmpty())
+        verify(exactly = 1) { socket.send(any<String>()) }
+        every { socket.send(any<String>()) } returns true
+        val timedOut = HermesWsClient.readSessions(scope, timeoutMs = 1)
+        runBlocking {
+            try {
+                withTimeout(5000) { timedOut.await() }
+                org.junit.Assert.fail("Unanswered read must time out")
+            } catch (e: HermesWsClient.HermesRpcException) {
+                assertEquals(-1, e.code)
+            }
+        }
+        assertTrue(timedOut.isCancelled)
+        assertTrue(queue.isEmpty())
+        every { AuthManager.getSelectedProfileId() } returns "other-profile"
+        assertTrue(HermesWsClient.readSessions(scope).isCancelled)
+        verify(exactly = 2) { socket.send(any<String>()) }
+        assertTrue(queue.isEmpty())
+    }
+
     private fun diagnosticListener(socket: WebSocket): WebSocketListener {
         HermesWsClient.clearSeqWatermarks()
 
@@ -273,7 +340,10 @@ class HermesWsClientTest {
                 .declaredConstructors
                 .single()
                 .apply { isAccessible = true }
-        return constructor.newInstance(generation) as WebSocketListener
+        return constructor.newInstance(
+            generation,
+            ConnectionScope("synthetic", null, null, "test", generation),
+        ) as WebSocketListener
     }
 
     @Test
@@ -388,7 +458,11 @@ class HermesWsClientTest {
         val listenerClass = Class.forName("com.m57.hermescontrol.data.ws.HermesWsClient\$WsListenerImpl")
         val constructor = listenerClass.declaredConstructors.single()
         constructor.isAccessible = true
-        val staleListener = constructor.newInstance(oldGeneration) as WebSocketListener
+        val staleListener =
+            constructor.newInstance(
+                oldGeneration,
+                ConnectionScope("synthetic", null, null, "test", oldGeneration),
+            ) as WebSocketListener
         var replacementOpens = 0
         val deferred = HermesWsClient.request(WsMethods.PROCESS_LIST, mapOf("session_id" to "s1"))
 
@@ -463,7 +537,11 @@ class HermesWsClientTest {
         val listenerClass = Class.forName("com.m57.hermescontrol.data.ws.HermesWsClient\$WsListenerImpl")
         val constructor = listenerClass.declaredConstructors.single()
         constructor.isAccessible = true
-        val replacementListener = constructor.newInstance(generation.get()) as WebSocketListener
+        val replacementListener =
+            constructor.newInstance(
+                generation.get(),
+                ConnectionScope("synthetic", null, null, "test", generation.get()),
+            ) as WebSocketListener
         replacementListener.onOpen(replacementSocket, mockk(relaxed = true))
 
         assertEquals(1, replacementOpens)
@@ -654,7 +732,11 @@ class HermesWsClientTest {
         val listenerClass = Class.forName("com.m57.hermescontrol.data.ws.HermesWsClient\$WsListenerImpl")
         val constructor = listenerClass.declaredConstructors.single()
         constructor.isAccessible = true
-        val listener = constructor.newInstance(1) as WebSocketListener
+        val listener =
+            constructor.newInstance(
+                1,
+                ConnectionScope("synthetic", null, null, "test", 1),
+            ) as WebSocketListener
         listener.onFailure(pressuredSocket, IOException("connection lost"), null)
 
         assertEquals(2_000L, backoffField.getLong(HermesWsClient))
@@ -688,7 +770,11 @@ class HermesWsClientTest {
         val listenerClass = Class.forName("com.m57.hermescontrol.data.ws.HermesWsClient\$WsListenerImpl")
         val constructor = listenerClass.declaredConstructors.single()
         constructor.isAccessible = true
-        val listener = constructor.newInstance(1) as WebSocketListener
+        val listener =
+            constructor.newInstance(
+                1,
+                ConnectionScope("synthetic", null, null, "test", 1),
+            ) as WebSocketListener
         listener.onOpen(pressuredSocket, mockk(relaxed = true))
 
         assertFalse(HermesWsClient.isConnected)
@@ -727,8 +813,16 @@ class HermesWsClientTest {
         val listenerClass = Class.forName("com.m57.hermescontrol.data.ws.HermesWsClient\$WsListenerImpl")
         val constructor = listenerClass.declaredConstructors.single()
         constructor.isAccessible = true
-        val staleListener = constructor.newInstance(1) as WebSocketListener
-        val currentListener = constructor.newInstance(2) as WebSocketListener
+        val staleListener =
+            constructor.newInstance(
+                1,
+                ConnectionScope("synthetic", null, null, "test", 1),
+            ) as WebSocketListener
+        val currentListener =
+            constructor.newInstance(
+                2,
+                ConnectionScope("synthetic", null, null, "test", 2),
+            ) as WebSocketListener
         val response = mockk<okhttp3.Response>(relaxed = true)
 
         staleListener.onOpen(staleSocket, response)
@@ -841,7 +935,11 @@ class HermesWsClientTest {
         val listenerClass = Class.forName("com.m57.hermescontrol.data.ws.HermesWsClient\$WsListenerImpl")
         val constructor = listenerClass.declaredConstructors.single()
         constructor.isAccessible = true
-        val listener = constructor.newInstance(1) as WebSocketListener
+        val listener =
+            constructor.newInstance(
+                1,
+                ConnectionScope("synthetic", null, null, "test", 1),
+            ) as WebSocketListener
 
         listener.onClosing(socket, 4401, "expired")
         HermesWsClient.send(WsMethods.PROMPT_SUBMIT, mapOf("session_id" to "s1", "text" to "hello"))
@@ -867,7 +965,11 @@ class HermesWsClientTest {
         val listenerClass = Class.forName("com.m57.hermescontrol.data.ws.HermesWsClient\$WsListenerImpl")
         val constructor = listenerClass.declaredConstructors.single()
         constructor.isAccessible = true
-        val listener = constructor.newInstance(1) as WebSocketListener
+        val listener =
+            constructor.newInstance(
+                1,
+                ConnectionScope("synthetic", null, null, "test", 1),
+            ) as WebSocketListener
 
         listener.onFailure(socket, IOException("network changed"), null)
 
