@@ -23,7 +23,7 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
 | PR04 | 完了 `7bf9270` | 単一socketの固定scope/event/read境界。既存WebSocket 54件、新contract 6件。自己レビューで固定所属とno-queueを確認 |
 | PR05 | 完了 `ad29751` | scopeごとのread probe、Unknown/Blocked区別、API専用offline decoder。追加4件。live writeはdisabled |
 | PR06a | 実装済み `b6d161d` / `8491e8e` / `39116b9` / `ffef902` / `51c1379` / `c7fa9a1` / `b1d55a9` | queue禁止・暗号化draft・固定scope submit・Chat下書きUI・通知返信を検証。commandのscope・下書き復元の本文/queue保持も確認。全体統合ゲートはPR11で実施 |
-| PR06b | 未着手 | 固定要求とACK、once/deny、失効と古い応答 |
+| PR06b | 基盤実装中 | 固定要求の状態管理・typed応答・once/deny通信制約を検証。Chat/UI・replay・通知への接続は未完了 |
 | PR07〜08b | 未着手 | 既存27画面を保持してregistry/復元/4-tabを統合 |
 | PR09a〜09b | 未着手 | 実イベントの観測範囲と正確なAttention通知 |
 | PR10 | 未着手 | strict manifest parser/意味検証、静的表示のみ |
@@ -196,3 +196,17 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
   `../phase1-validation/pr06a-draft-restore-{Debug,Release}-results`。
 - 直前のコマンド変更は`b1d55a9`。offline表示追加後のcommand classは両variant各21件成功。
   PR06aの実装単位はここまで。Phase 1全体・実接続・最終全品質ゲートの完了は示していない。
+
+## PR06b: 固定要求と応答基盤（途中）
+
+- `AttentionRepository` はscope・runtime/saved session・request ID・question IDをキーに保持する。
+  ACK前はSUBMITTING、exactな成功ACK後だけCONFIRMED。期限切れ・古いACK・重複タップを拒否し、
+  結果不明はUNKNOWNとして保持する。replayでは状態をリセットしない。未送信だけPENDINGに戻す。
+- `HermesAttentionTransport` を既存Dashboard adapterへ追加。承認はonce/denyと`all=false`、
+  `resolved=1`だけ成功と解釈。0/複数/不正型を完了へ変換しない。質問はrequest IDとbatch qidを
+  固定し、`status=ok`だけその質問のACKと解釈する。render受領ACKは応答と分離する。
+- `writeScoped` 自体にも要求ID必須・広範囲承認禁止を追加。既存socket/待機呼出/timeoutを使い、queueしない。
+- Debug/Release各13件成功（状態管理6、adapter6、実WSクライアントのsocket fixture1）。
+  ktlint対象7ファイルとdiff check成功。実Hermesとのlive通信や画面操作を行った結果ではない。
+- **未完了**: 既存Chatの最後のカード選択・ACK前消去を置換し、scoped event/replay/clarification batchと
+  画面へ接続する。既存UIのsession/always操作も残っており、PR06bの受入条件はまだ満たしていない。

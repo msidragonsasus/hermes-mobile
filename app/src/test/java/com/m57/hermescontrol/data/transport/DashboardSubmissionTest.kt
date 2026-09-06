@@ -6,6 +6,7 @@ import com.m57.hermescontrol.data.ws.ScopedRpcSubmission
 import com.m57.hermescontrol.data.ws.WsMethods
 import com.m57.hermescontrol.domain.hermes.ConnectionScope
 import com.m57.hermescontrol.domain.hermes.PromptAcceptance
+import com.m57.hermescontrol.domain.hermes.RequestRef
 import com.m57.hermescontrol.domain.hermes.SessionRef
 import com.m57.hermescontrol.domain.hermes.SubmissionResult
 import io.mockk.every
@@ -41,6 +42,75 @@ class DashboardSubmissionTest {
         every { HermesWsClient.writeScoped(scope, any(), any(), any()) } returns
             ScopedRpcSubmission("rpc", accepted, CompletableDeferred(Json.parseToJsonElement(body)))
     }
+
+    @Test
+    fun `approval allows only exact once or deny and requires one resolved request`() =
+        runTest {
+            val ref = RequestRef(scope, session, "approval")
+            for (choice in listOf("session", "always", "approve", "unexpected")) {
+                assertEquals(SubmissionResult.NotSent, transport.respondApproval(ref, choice))
+            }
+            verify(exactly = 0) { HermesWsClient.writeScoped(any(), any(), any(), any()) }
+            reply("""{"resolved":1}""")
+            assertEquals(SubmissionResult.Confirmed("rpc", true), transport.respondApproval(ref, "once"))
+            verify(exactly = 1) {
+                HermesWsClient.writeScoped(
+                    scope,
+                    WsMethods.APPROVAL_RESPOND,
+                    mapOf("session_id" to "runtime", "request_id" to "approval", "choice" to "once", "all" to false),
+                    any(),
+                )
+            }
+            for (count in listOf(0, 2, -1)) {
+                reply("""{"resolved":$count}""")
+                assertEquals(SubmissionResult.Confirmed("rpc", false), transport.respondApproval(ref, "deny"))
+            }
+            for (body in listOf("{}", """{"resolved":"1"}""", """{"resolved":true}""")) {
+                reply(body)
+                assertEquals(SubmissionResult.Unknown, transport.respondApproval(ref, "once"))
+            }
+        }
+
+    @Test
+    fun `clarification pins question id and expired status never confirms`() =
+        runTest {
+            val ref = RequestRef(scope, session, "batch", "q2")
+            reply("""{"status":"ok","remaining":["q1"]}""")
+            assertEquals(
+                SubmissionResult.Confirmed("rpc", true),
+                transport.respondClarification(ref, "synthetic answer"),
+            )
+            verify(exactly = 1) {
+                HermesWsClient.writeScoped(
+                    scope,
+                    WsMethods.CLARIFY_RESPOND,
+                    mapOf(
+                        "session_id" to "runtime",
+                        "request_id" to "batch",
+                        "clarify_id" to "batch",
+                        "question_id" to "q2",
+                        "answer" to "synthetic answer",
+                    ),
+                    any(),
+                )
+            }
+            reply("""{"status":"expired"}""")
+            assertEquals(SubmissionResult.Unknown, transport.respondClarification(ref, "synthetic answer"))
+            reply("""{"status":"ok"}""")
+            every { HermesWsClient.matchesCurrentScope(scope) } returns false
+            assertEquals(SubmissionResult.Unknown, transport.respondClarification(ref, "synthetic answer"))
+        }
+
+    @Test
+    fun `approval received is only a render acknowledgement`() =
+        runTest {
+            val ref = RequestRef(scope, session, "approval")
+            reply("""{"acknowledged":true}""")
+            assertEquals(SubmissionResult.Confirmed("rpc", true), transport.acknowledgeApproval(ref))
+            verify(exactly = 0) { HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, any(), any()) }
+            reply("""{"acknowledged":false}""")
+            assertEquals(SubmissionResult.Unknown, transport.acknowledgeApproval(ref))
+        }
 
     @Test
     fun `only verified prompt statuses confirm receipt`() =

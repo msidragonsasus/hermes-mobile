@@ -445,6 +445,37 @@ class HermesWsClientTest {
     }
 
     @Test
+    fun testScopedAttentionRejectsBroadOrMissingIdentityBeforeWire() {
+        val socket = mockk<WebSocket>(relaxed = true)
+        val (scope, _) = scopedWriteFixture(socket)
+        val params: Map<String, Any> =
+            mapOf("session_id" to "runtime", "request_id" to "approval", "choice" to "once", "all" to false)
+        for (choice in listOf("session", "always", "approve", "unexpected")) {
+            assertFalse(
+                HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, params + ("choice" to choice)).accepted,
+            )
+        }
+        assertFalse(HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, params + ("all" to true)).accepted)
+        for (method in listOf(WsMethods.APPROVAL_RESPOND, WsMethods.APPROVAL_RECEIVED, WsMethods.CLARIFY_RESPOND)) {
+            assertFalse(HermesWsClient.writeScoped(scope, method, params - "request_id").accepted)
+            assertFalse(HermesWsClient.writeScoped(scope.copy(generation = -1), method, params).accepted)
+            assertFalse(HermesWsClient.writeScoped(scope.copy(serverProfileId = "other"), method, params).accepted)
+        }
+        verify(exactly = 0) { socket.send(any<String>()) }
+        val frames = mutableListOf<String>()
+        every { socket.send(any<String>()) } answers {
+            frames.add(firstArg())
+            true
+        }
+        assertTrue(HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, params).accepted)
+        val wire = Json.parseToJsonElement(frames.single()).jsonObject["params"]!!.jsonObject
+        assertEquals("approval", wire["request_id"]!!.jsonPrimitive.content)
+        assertEquals("runtime", wire["session_id"]!!.jsonPrimitive.content)
+        assertEquals("profile-a", wire["profile"]!!.jsonPrimitive.content)
+        assertEquals("false", wire["all"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun testScopedWritesMatchReverseAcksAndKeepFixedProfile() =
         runBlocking {
             val legacyEvents = Channel<WsEvent>(Channel.UNLIMITED)
