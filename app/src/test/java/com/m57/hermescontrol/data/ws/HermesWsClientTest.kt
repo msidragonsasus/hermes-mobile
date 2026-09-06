@@ -1721,21 +1721,30 @@ class HermesWsClientTest {
         val ws = serverWebSocket
         assertNotNull(ws)
 
-        val receivedTokens = mutableListOf<String>()
+        // PR01 / R18: SharedFlow has no replay; subscribe before the server sends.
+        // Thread-safe storage and receive barriers replace fixed sleeps.
+        val receivedTokens = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val firstToken = CountDownLatch(1)
+        val secondToken = CountDownLatch(1)
         val collectorJob =
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                HermesWsClient.events.collect { event ->
-                    if (event is WsEvent.MessageToken) {
-                        receivedTokens.add(event.token)
+            kotlinx.coroutines
+                .CoroutineScope(
+                    kotlinx.coroutines.Dispatchers.IO,
+                ).launch(start = CoroutineStart.UNDISPATCHED) {
+                    HermesWsClient.events.collect { event ->
+                        if (event is WsEvent.MessageToken) {
+                            receivedTokens.add(event.token)
+                            if (event.token == "A") firstToken.countDown()
+                            if (event.token == "B") secondToken.countDown()
+                        }
                     }
                 }
-            }
 
         // Send seq 1
         ws!!.send(
             """{"method":"event","params":{"type":"message.token","session_id":"s1","seq":1,"payload":{"text":"A"}}}""",
         )
-        Thread.sleep(100)
+        assertTrue("First token was not delivered", firstToken.await(5, TimeUnit.SECONDS))
         assertEquals(1, HermesWsClient.getSeqWatermarks()["s1"])
         assertEquals(listOf("A"), receivedTokens)
 
@@ -1743,15 +1752,12 @@ class HermesWsClientTest {
         ws.send(
             """{"method":"event","params":{"type":"message.token","session_id":"s1","seq":1,"payload":{"text":"A-dup"}}}""",
         )
-        Thread.sleep(100)
-        assertEquals(1, HermesWsClient.getSeqWatermarks()["s1"])
-        assertEquals(listOf("A"), receivedTokens)
-
         // Send seq 2 -> should be accepted
         ws.send(
             """{"method":"event","params":{"type":"message.token","session_id":"s1","seq":2,"payload":{"text":"B"}}}""",
         )
-        Thread.sleep(100)
+        // Ordered WebSocket delivery makes B a barrier for the preceding duplicate.
+        assertTrue("Second token was not delivered", secondToken.await(5, TimeUnit.SECONDS))
         assertEquals(2, HermesWsClient.getSeqWatermarks()["s1"])
         assertEquals(listOf("A", "B"), receivedTokens)
 
