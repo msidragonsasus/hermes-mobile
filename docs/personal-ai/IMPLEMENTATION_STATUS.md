@@ -19,8 +19,9 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
 | PR00 | 完了 `33f69be` | 文書整合確認済み。PR00_REPORT参照 |
 | PR02 | 実装済み `c938404` | 追加6回帰成功、自己/独立レビュー済み。既存unit 2件・color guardはPR01、Release試験タスクは未提供。PR02_REPORT参照 |
 | PR01 | 完了 `8f48796` / `144b885` / `4f618ee` | Debug/Release各1,281件 failure/error/skip 0。ktlint/color成功。自己レビューで検査範囲と同期を確認 |
-| PR03 | 完了（本節と同じstorageコミット） | 関連unit Debug/Release各46件、SQLCipher移行・保全・起動停止UIのemulator 3件成功 |
-| PR04〜05 | 未着手 | 単一socketを委譲、scope/event/capabilityを検証 |
+| PR03 | 完了 `5136a02` | 関連unit Debug/Release各46件、SQLCipher移行・保全・起動停止UIのemulator 3件成功 |
+| PR04 | 完了 `7bf9270` | 単一socketの固定scope/event/read境界。既存WebSocket 54件、新contract 6件。自己レビューで固定所属とno-queueを確認 |
+| PR05 | 完了 `ad29751` | scopeごとのread probe、Unknown/Blocked区別、API専用offline decoder。追加4件。live writeはdisabled |
 | PR06a〜06b | 未着手 | offline write禁止、結果不明、固定要求とACK |
 | PR07〜08b | 未着手 | 既存27画面を保持してregistry/復元/4-tabを統合 |
 | PR09a〜09b | 未着手 | 実イベントの観測範囲と正確なAttention通知 |
@@ -77,3 +78,21 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
   実端末のDB/鍵、OS権限故障の実機再現、旧plaintextの変換・鍵復旧操作は未実施。
   plaintext/失われた鍵の復旧は元データと鍵を保持した別手順が必要で、自動初期化しない。
 - この時点の全体unit結果はPR01時のもの。Phase 1統合後に全体ゲートを再実行する。
+
+## PR04〜05の検証と制約
+
+- DashboardRpcTransportは既存socketを観測し、listenerで固定したserver/profile/process/generationを
+  付ける。本文/token/任意payloadを新しい観測モデルへコピーしない。saved/runtime session IDを分離。
+  token省略とイベント欠落を区別し、seq stream欠落・replay truncated・epoch変更はUnknownを通知する。
+- `session.list` readは既存request ID/pending/timeout解決を使い、scope/URLの変更を検査。
+  offline/送信拒否時にqueueや再接続を作らない。probeのtimeoutは5秒。受信後にもscopeを再確認する。
+- CapabilityRepositoryは接続世代ごとに証拠を破棄し、read成功した機能だけSupportedにする。
+  readyやAPI広告からRun/approval全体の対応を推測しない。API decoderは64KiB/深さ32で制限し、
+  advertised URLへアクセスしない。live API writeは常にdisabled。
+- 関連unit一式はDebug 63件、Release 64件成功。最後のepoch/depth/5秒timeout追加後は
+  対象12件を両variantで再実行して成功。各実行failure/error/skip 0。ktlintCheckと最終差分ktlint成功。
+- 初回は既存testのreflection constructor引数変更（10件）と追加testのimport不足を検出。
+  scope fixtureとimportを修正し、元のqueue/reconnect/diagnostic期待値を維持して成功させた。
+- 証跡: checkout外`../phase1-validation/pr04-05-*-results`、`pr04-05-final-*-results`、同prefixのlog。
+  自己レビューでは古いACK/別profileへの所属付け、readの遅延送信、本文ログ、広告URL追従がないことを確認。
+  新UIへの手動DI接続はPR08〜09で行う。実Hermesのversion/auth/Run/approval互換は未検証。
