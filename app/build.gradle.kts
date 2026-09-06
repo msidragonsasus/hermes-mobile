@@ -259,7 +259,9 @@ tasks.register("checkColorLiterals") {
     doLast {
         val offenders = mutableListOf<Pair<String, Int>>()
         srcDir.asFile.walkTopDown().filter { it.isFile && it.extension == "kt" }.forEach { file ->
-            if (exemptions.any { file.absolutePath.contains(it) }) return@forEach
+            // PR01 / R18: use source-relative portable paths, including on Windows.
+            val sourcePath = "/" + file.relativeTo(srcDir.asFile).invariantSeparatorsPath
+            if (exemptions.any { sourcePath.contains(it) }) return@forEach
             file.useLines { lines ->
                 lines.forEachIndexed { idx, raw ->
                     val line = raw.trim()
