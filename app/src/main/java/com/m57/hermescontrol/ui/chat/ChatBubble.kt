@@ -14,12 +14,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -30,15 +28,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -77,7 +72,6 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.model.Attachment
-import com.m57.hermescontrol.domain.hermes.AttentionStatus
 import com.m57.hermescontrol.theme.DarkOnSurface
 import com.m57.hermescontrol.theme.HermesStatusColors
 import com.m57.hermescontrol.theme.LightOnSurface
@@ -357,72 +351,14 @@ internal fun SystemBubble(
 
         if (approvalInfo != null) {
             Spacer(Modifier.height(8.dp))
-            val statusText =
-                when (approvalInfo.status) {
-                    AttentionStatus.SUBMITTING -> {
-                        "回答を送信中・確認待ち"
-                    }
-
-                    AttentionStatus.CONFIRMED -> {
-                        "回答を確認しました"
-                    }
-
-                    AttentionStatus.EXPIRED -> {
-                        "この依頼は失効しました"
-                    }
-
-                    AttentionStatus.UNKNOWN -> {
-                        "回答結果を確認できません。再送せず、状況を確認してください"
-                    }
-
-                    AttentionStatus.PENDING -> {
-                        if (approvalInfo.responseEnabled) "回答が必要です" else "接続または依頼を確認するまで回答を保留します"
-                    }
-                }
-            Text(statusText, style = MaterialTheme.typography.bodySmall)
-            approvalInfo.command?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-            Text("影響・可逆性：サーバーからの説明を確認してください", style = MaterialTheme.typography.bodySmall)
-            Text("有効期限：不明", style = MaterialTheme.typography.bodySmall)
+            com.m57.hermescontrol.ui.attention.AttentionStatusLabel(
+                approvalInfo.status,
+                approvalInfo.responseEnabled,
+            )
             approvalInfo.ref?.let { ref ->
-                Text("依頼元：${ref.session.runtimeId}", style = MaterialTheme.typography.bodySmall)
-                Text("依頼ID：${ref.requestId}", style = MaterialTheme.typography.bodySmall)
+                com.m57.hermescontrol.ui.attention
+                    .AttentionOpenButton(ref)
             }
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                for (choice in listOf("deny", "once")) {
-                    FilledTonalButton(
-                        onClick = { onRespondApproval(message.id, choice) },
-                        enabled = approvalInfo.responseEnabled && approvalInfo.status == AttentionStatus.PENDING,
-                        modifier =
-                            Modifier
-                                .heightIn(min = 48.dp)
-                                .testTag(if (choice == "deny") "deny_button" else "approve_button"),
-                        colors =
-                            ButtonDefaults.filledTonalButtonColors(
-                                containerColor =
-                                    if (choice == "deny") {
-                                        MaterialTheme.colorScheme.errorContainer
-                                    } else {
-                                        MaterialTheme.colorScheme.primaryContainer
-                                    },
-                            ),
-                    ) {
-                        Icon(
-                            imageVector = if (choice == "deny") Icons.Filled.Close else Icons.Filled.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(if (choice == "deny") "拒否" else "今回だけ許可")
-                    }
-                }
-                FilledTonalButton(onClick = {}, enabled = false, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Text("修正")
-                }
-            }
-            Text("この接続では依頼の修正に対応していません", style = MaterialTheme.typography.bodySmall)
         }
     }
 }

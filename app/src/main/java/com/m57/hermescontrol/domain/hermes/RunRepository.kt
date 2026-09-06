@@ -17,6 +17,7 @@ data class ObservedRun(
     val lastKind: ObservationKind,
     val observedAt: Long,
     val uncertain: Boolean = false,
+    val request: RequestRef? = null,
 )
 
 data class ObservedEvent(
@@ -152,7 +153,14 @@ class RunRepository(
 
                 else -> {
                     listOf(
-                        ObservedRun(observation.scope, session, observation.state, observation.kind, timestamp),
+                        ObservedRun(
+                            observation.scope,
+                            session,
+                            observation.state,
+                            observation.kind,
+                            timestamp,
+                            request = observation.request,
+                        ),
                     ) + previous.runs.filterNot { it.session.runtimeId == session.runtimeId }
                 }
             }

@@ -12,11 +12,13 @@ data class ConnectionScope(
     val generation: Int,
 )
 
+@Serializable
 data class SessionRef(
     val runtimeId: String,
     val savedId: String? = null,
 )
 
+@Serializable
 data class RequestRef(
     val scope: ConnectionScope,
     val session: SessionRef,

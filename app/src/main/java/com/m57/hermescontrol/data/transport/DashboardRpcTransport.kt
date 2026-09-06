@@ -33,7 +33,10 @@ import kotlinx.serialization.json.intOrNull
 class DashboardRpcTransport :
     HermesTransport,
     HermesSubmissionTransport,
-    HermesAttentionTransport {
+    HermesAttentionTransport,
+    HermesAttentionSource {
+    override val attentionSignals = normalizeDashboardAttention(HermesWsClient.scopedEvents)
+
     override suspend fun respondApproval(
         ref: RequestRef,
         choice: String,

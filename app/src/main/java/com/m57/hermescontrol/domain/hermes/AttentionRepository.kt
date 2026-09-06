@@ -15,6 +15,7 @@ data class AttentionItem(
     val title: String,
     val expiresAt: Long? = null,
     val status: AttentionStatus = AttentionStatus.PENDING,
+    val details: AttentionDetails? = null,
 )
 
 /** Exact identity includes server, both profiles, socket generation, session and question. */
@@ -30,8 +31,30 @@ class AttentionRepository {
                 .isNotBlank(),
         )
         val existing = mutableItems.value.firstOrNull { it.ref == item.ref }
-        if (existing != null) return existing
-        val pending = item.copy(status = AttentionStatus.PENDING)
+        if (existing != null) {
+            // Legacy Chat may record the same event first. Enrich absent metadata once;
+            // never replace an existing explanation or reset the response lifecycle.
+            if (existing.details == null && item.details != null) {
+                val enriched = existing.copy(details = item.details)
+                replace(item.ref) { enriched }
+                return enriched
+            }
+            return existing
+        }
+        // Reconnect replay is not a new permission to answer a request whose response
+        // was already attempted. Keep the new socket ref for display, but never retry it.
+        val previousAttempt =
+            mutableItems.value.firstOrNull {
+                it.kind == item.kind && it.status != AttentionStatus.PENDING &&
+                    it.ref.scope.copy(generation = item.ref.scope.generation) == item.ref.scope &&
+                    it.ref.session.runtimeId == item.ref.session.runtimeId &&
+                    it.ref.requestId == item.ref.requestId && it.ref.questionId == item.ref.questionId
+            }
+        val inheritedStatus =
+            previousAttempt?.status?.let {
+                if (it == AttentionStatus.SUBMITTING) AttentionStatus.UNKNOWN else it
+            }
+        val pending = item.copy(status = inheritedStatus ?: AttentionStatus.PENDING)
         mutableItems.value = mutableItems.value + pending
         return pending
     }
@@ -41,6 +64,20 @@ class AttentionRepository {
         replace(ref) { item ->
             if (item.status == AttentionStatus.CONFIRMED) item else item.copy(status = AttentionStatus.EXPIRED)
         }
+    }
+
+    @Synchronized
+    fun markScopeUnknown(scope: ConnectionScope) {
+        mutableItems.value =
+            mutableItems.value.map { item ->
+                if (item.ref.scope == scope &&
+                    item.status in setOf(AttentionStatus.PENDING, AttentionStatus.SUBMITTING)
+                ) {
+                    item.copy(status = AttentionStatus.UNKNOWN)
+                } else {
+                    item
+                }
+            }
     }
 
     @Synchronized

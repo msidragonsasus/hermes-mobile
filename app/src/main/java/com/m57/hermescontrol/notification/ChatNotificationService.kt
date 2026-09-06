@@ -15,9 +15,12 @@ import com.m57.hermescontrol.MainActivity
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.session.ActiveSessionHolder
+import com.m57.hermescontrol.data.transport.dashboardAttentionItems
 import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.data.ws.WsEvent
 import com.m57.hermescontrol.domain.hermes.ConnectionScope
+import com.m57.hermescontrol.domain.hermes.RequestRef
+import com.m57.hermescontrol.domain.hermes.RequestReferenceCodec
 import com.m57.hermescontrol.domain.hermes.draftTargetKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -135,7 +138,11 @@ class ChatNotificationService : Service() {
                                     }
 
                                     is WsEvent.ClarifyRequest -> {
-                                        showReplyNotification(getString(R.string.notif_clarification_needed), null)
+                                        showAttentionNotification(
+                                            event,
+                                            originalScope,
+                                            getString(R.string.notif_clarification_needed),
+                                        )
                                     }
 
                                     is WsEvent.SudoRequest -> {
@@ -151,11 +158,11 @@ class ChatNotificationService : Service() {
                                     }
 
                                     is WsEvent.ApprovalRequest -> {
-                                        val preview =
-                                            event.description?.takeIf { it.isNotBlank() }
-                                                ?: event.command?.takeIf { it.isNotBlank() }
-                                                ?: getString(R.string.notif_input_needed)
-                                        showReplyNotification(preview.take(100), null)
+                                        showAttentionNotification(
+                                            event,
+                                            originalScope,
+                                            getString(R.string.attention_pending),
+                                        )
                                     }
 
                                     else -> {}
@@ -216,6 +223,21 @@ class ChatNotificationService : Service() {
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(PENDING_NOTIFICATION_ID, builder.build())
+    }
+
+    private fun showAttentionNotification(
+        event: WsEvent,
+        scope: ConnectionScope,
+        text: String,
+    ) {
+        val ref = dashboardAttentionItems(scope, event).firstOrNull()?.ref?.takeIf(RequestReferenceCodec::isValid)
+        if (ref == null) {
+            showReplyNotification(text, null)
+            return
+        }
+        val notification = AttentionNotificationRoute.notification(this, ref, text)
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(AttentionNotificationRoute.tag(ref), PENDING_NOTIFICATION_ID, notification)
     }
 
     private fun buildContentIntent(sessionId: String?): PendingIntent {

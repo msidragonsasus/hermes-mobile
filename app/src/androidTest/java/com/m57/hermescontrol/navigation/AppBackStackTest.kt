@@ -17,6 +17,25 @@ class AppBackStackTest {
     @get:Rule val compose = createComposeRule()
 
     @Test
+    fun restoresExactAttentionIdentifiersWithoutRequestText() {
+        val restoration = StateRestorationTester(compose)
+        lateinit var shell: ShellNavigation
+        restoration.setContent { shell = rememberShellNavigation(true)!! }
+        val ref =
+            com.m57.hermescontrol.domain.hermes.RequestRef(
+                com.m57.hermescontrol.domain.hermes
+                    .ConnectionScope("synthetic", "connection", "profile", "process", 1),
+                com.m57.hermescontrol.domain.hermes
+                    .SessionRef("runtime"),
+                "request",
+                "q2",
+            )
+        compose.runOnIdle { shell.navigate(AttentionDetailKey(ref)) }
+        restoration.emulateSavedInstanceStateRestore()
+        compose.runOnIdle { assertEquals(listOf(TodayScreen, AttentionDetailKey(ref)), shell.backStack.toList()) }
+    }
+
+    @Test
     fun restoresSelectedTabAndInactiveTabDetail() {
         val restoration = StateRestorationTester(compose)
         lateinit var shell: ShellNavigation

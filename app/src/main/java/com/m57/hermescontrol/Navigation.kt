@@ -59,11 +59,13 @@ import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.navigation.ActivityScreen
 import com.m57.hermescontrol.navigation.AdvancedScreen
 import com.m57.hermescontrol.navigation.AppsScreen
+import com.m57.hermescontrol.navigation.AttentionDetailKey
 import com.m57.hermescontrol.navigation.ShellTab
 import com.m57.hermescontrol.navigation.TodayScreen
 import com.m57.hermescontrol.navigation.rememberAppBackStack
 import com.m57.hermescontrol.navigation.rememberShellNavigation
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
+import com.m57.hermescontrol.ui.attention.AttentionDetailScreen
 import com.m57.hermescontrol.ui.common.AdvancedScreenContent
 import com.m57.hermescontrol.ui.common.DisableDrawerGestures
 import com.m57.hermescontrol.ui.common.DrawerGestureController
@@ -94,6 +96,7 @@ private fun appEntryProvider(
     entry<ActivityScreen> { ObservedActivityScreen(today = false) }
     entry<AppsScreen> { ShellRootScreen(ShellTab.APPS) }
     entry<AdvancedScreen> { AdvancedScreenContent() }
+    entry<AttentionDetailKey> { AttentionDetailScreen(it.ref) }
     entry<LandingScreen> {
         // B7 (Jun 30 2026, kanban t_424): route landing screen buttons through navigateTo to prevent duplicate screens
         LandingScreenContent(
@@ -214,6 +217,10 @@ fun MainNavigation(sessionId: String? = null) {
     val pendingNavigation = NavigationController.pendingChatNavigation
     LaunchedEffect(hasToken, pendingNavigation?.requestId) {
         if (hasToken && pendingNavigation != null) NavigationController.navigateTo(ChatScreen)
+    }
+    val pendingAttention = NavigationController.pendingAttentionNavigation
+    LaunchedEffect(hasToken, pendingAttention?.requestId) {
+        if (hasToken && pendingAttention != null) NavigationController.revealPendingAttention()
     }
 
     val currentScreen = backStack.lastOrNull() ?: startScreen

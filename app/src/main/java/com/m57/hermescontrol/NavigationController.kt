@@ -5,6 +5,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.navigation3.runtime.NavBackStack
 import androidx.navigation3.runtime.NavKey
+import com.m57.hermescontrol.domain.hermes.RequestRef
+import com.m57.hermescontrol.domain.hermes.RequestReferenceCodec
+import com.m57.hermescontrol.navigation.AttentionDetailKey
 import com.m57.hermescontrol.navigation.NavigationRole
 import com.m57.hermescontrol.navigation.ShellNavigation
 import com.m57.hermescontrol.navigation.ShellTab
@@ -15,6 +18,12 @@ import kotlinx.serialization.json.Json
 data class PendingChatNavigation(
     val sessionId: String,
     val scrollToBottom: Boolean,
+    val requestId: Long,
+)
+
+@Serializable
+data class PendingAttentionNavigation(
+    val ref: RequestRef,
     val requestId: Long,
 )
 
@@ -62,6 +71,41 @@ object NavigationController {
 
     private var nextChatNavigationRequestId = 0L
     private var lastConsumedChatNavigationId = 0L
+    var pendingAttentionNavigation: PendingAttentionNavigation? by mutableStateOf(null)
+        private set
+    private var nextAttentionNavigationId = 0L
+    private var lastConsumedAttentionNavigationId = 0L
+
+    fun openAttentionFromNotification(ref: RequestRef) {
+        if (!RequestReferenceCodec.isValid(ref)) return
+        pendingChatNavigation = null
+        pendingAttentionNavigation = PendingAttentionNavigation(ref, ++nextAttentionNavigationId)
+    }
+
+    fun revealPendingAttention() {
+        val pending = pendingAttentionNavigation ?: return
+        val stack = backStack ?: return
+        if (stack.any { roleOf(it) == NavigationRole.AUTH }) return
+        navigateTo(AttentionDetailKey(pending.ref))
+        lastConsumedAttentionNavigationId = pending.requestId
+        pendingAttentionNavigation = null
+    }
+
+    fun savePendingAttentionNavigation(): String? = pendingAttentionNavigation?.let { Json.encodeToString(it) }
+
+    fun restorePendingAttentionNavigation(encoded: String?) {
+        if (encoded == null || encoded.length > RequestReferenceCodec.MAX_ENCODED_LENGTH + 128) return
+        val restored = runCatching { Json.decodeFromString<PendingAttentionNavigation>(encoded) }.getOrNull() ?: return
+        if (!RequestReferenceCodec.isValid(restored.ref) || restored.requestId <= 0 ||
+            restored.requestId == Long.MAX_VALUE ||
+            restored.requestId <= lastConsumedAttentionNavigationId ||
+            restored.requestId <= (pendingAttentionNavigation?.requestId ?: 0)
+        ) {
+            return
+        }
+        nextAttentionNavigationId = maxOf(nextAttentionNavigationId, restored.requestId)
+        pendingAttentionNavigation = restored
+    }
 
     fun roleOf(key: NavKey): NavigationRole? = ScreenRegistry.contributions.forKey(key::class)?.role
 
@@ -118,6 +162,7 @@ object NavigationController {
         scrollToBottom: Boolean,
     ) {
         if (sessionId.isBlank()) return
+        pendingAttentionNavigation = null
         pendingChatNavigation =
             PendingChatNavigation(
                 sessionId = sessionId,

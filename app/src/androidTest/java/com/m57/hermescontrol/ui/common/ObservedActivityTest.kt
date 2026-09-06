@@ -1,6 +1,7 @@
 package com.m57.hermescontrol.ui.common
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -24,6 +25,48 @@ class ObservedActivityTest {
     @get:Rule val compose = createComposeRule()
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
     private val scope = ConnectionScope("synthetic", "connection", "profile", "process", 1)
+
+    @Test
+    fun confirmedResponseLeavesNeedsYouWithoutClaimingTheRunCompleted() {
+        val ref =
+            com.m57.hermescontrol.domain.hermes
+                .RequestRef(scope, SessionRef("runtime"), "request")
+        val item =
+            com.m57.hermescontrol.domain.hermes.AttentionItem(
+                ref,
+                com.m57.hermescontrol.domain.hermes.AttentionKind.APPROVAL,
+                "Synthetic approval",
+            )
+        val attention = mutableStateOf(listOf(item))
+        val run =
+            ObservedRun(scope, ref.session, ExecutionState.WAITING_APPROVAL, ObservationKind.APPROVAL, 1, request = ref)
+        val snapshot =
+            RunSnapshot(
+                connection =
+                    com.m57.hermescontrol.domain.hermes.TransportConnection(
+                        scope,
+                        com.m57.hermescontrol.domain.hermes.LinkState.CONNECTED,
+                    ),
+                runs = listOf(run),
+            )
+        compose.setContent { MaterialTheme { ObservedActivityContent(snapshot, true, attention.value) } }
+        compose.onNodeWithText(context.getString(R.string.attention_open_details)).performScrollTo().assertIsDisplayed()
+        compose.runOnIdle {
+            attention.value =
+                listOf(item.copy(status = com.m57.hermescontrol.domain.hermes.AttentionStatus.CONFIRMED))
+        }
+        compose.onNodeWithText(context.getString(R.string.attention_open_details)).assertDoesNotExist()
+        compose
+            .onNodeWithText(
+                context.getString(R.string.activity_no_observed_requests),
+            ).performScrollTo()
+            .assertIsDisplayed()
+        compose
+            .onNodeWithText(
+                context.getString(R.string.activity_last_confirmed),
+            ).performScrollTo()
+            .assertIsDisplayed()
+    }
 
     @Test
     fun offlineObservationShowsUncertaintyAndOpensExactSavedSession() {

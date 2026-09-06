@@ -28,6 +28,7 @@ import com.m57.hermescontrol.data.session.ProfileSwitchCoordinator
 import com.m57.hermescontrol.data.transport.DashboardRpcTransport
 import com.m57.hermescontrol.data.transport.HermesAttentionTransport
 import com.m57.hermescontrol.data.transport.HermesSubmissionTransport
+import com.m57.hermescontrol.data.transport.dashboardAttentionItems
 import com.m57.hermescontrol.data.ws.CommandBlocklist
 import com.m57.hermescontrol.data.ws.CommandCatalog
 import com.m57.hermescontrol.data.ws.ConnectionStatus
@@ -36,7 +37,6 @@ import com.m57.hermescontrol.data.ws.WsEvent
 import com.m57.hermescontrol.data.ws.WsMethods
 import com.m57.hermescontrol.data.ws.toAny
 import com.m57.hermescontrol.data.ws.toJsonElement
-import com.m57.hermescontrol.domain.hermes.AttentionItem
 import com.m57.hermescontrol.domain.hermes.AttentionKind
 import com.m57.hermescontrol.domain.hermes.AttentionRepository
 import com.m57.hermescontrol.domain.hermes.ConnectionScope
@@ -481,7 +481,7 @@ data class BtwUiState(
  * unblocked but told no answer was given, so it re-asks or backs off rather
  * than charging ahead.
  */
-private const val CLARIFY_DISMISS_RESPONSE = "The user cancelled — no answer provided."
+private const val CLARIFY_DISMISS_RESPONSE = com.m57.hermescontrol.domain.hermes.CLARIFICATION_DECLINED_ANSWER
 
 /** Transient — not persisted. Holds a pending sudo.password request. */
 data class SudoPromptUi(
@@ -3924,15 +3924,7 @@ class ChatViewModel(
             return
         }
         if (ref != null) {
-            info.resolvedQuestions.forEach { question ->
-                attentionRepository.observe(
-                    AttentionItem(
-                        ref.copy(questionId = if (info.questions.isEmpty()) info.questionId else question.qid),
-                        AttentionKind.CLARIFICATION,
-                        question.question,
-                    ),
-                )
-            }
+            dashboardAttentionItems(scope, event).forEach(attentionRepository::observe)
         }
         var added = false
         _uiState.update { state ->
@@ -3998,7 +3990,10 @@ class ChatViewModel(
                 null
             }
         val description = event.description ?: event.command ?: "実行内容は未提供です"
-        val item = ref?.let { attentionRepository.observe(AttentionItem(it, AttentionKind.APPROVAL, description)) }
+        val item =
+            sourceScope
+                ?.let { dashboardAttentionItems(it, event).firstOrNull() }
+                ?.let(attentionRepository::observe)
         val info =
             ApprovalInfo(
                 command = event.command,

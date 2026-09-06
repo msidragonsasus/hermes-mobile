@@ -96,7 +96,7 @@ class ContributionRegistryTest {
             specialized.map { it.keyType },
         )
         assertEquals(38, legacy.size)
-        assertEquals(42, ScreenRegistry.contributions.destinations.size)
+        assertEquals(43, ScreenRegistry.contributions.destinations.size)
         assertSame(specialized.last(), ScreenRegistry.contributions.forRoute("hermes/group-chat"))
         assertSame(specialized.last(), ScreenRegistry.contributions.forKey(GroupChatKey::class))
     }
@@ -108,6 +108,7 @@ class ContributionRegistryTest {
             assertEquals(NavigationRole.ROOT, registry.forKey(it::class)?.role)
         }
         assertEquals(NavigationRole.ADVANCED, registry.forKey(AdvancedScreen::class)?.role)
+        assertEquals(NavigationRole.DRILL_DOWN, registry.forKey(AttentionDetailKey::class)?.role)
         assertEquals("hermes/chat", registry.forKey(ChatScreen::class)?.route)
     }
 

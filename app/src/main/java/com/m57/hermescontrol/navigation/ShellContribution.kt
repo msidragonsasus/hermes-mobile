@@ -21,5 +21,6 @@ class ShellContribution : AppContribution {
                 1003,
                 role = NavigationRole.ADVANCED,
             ),
+            DestinationMetadata("shell.attention", "shell/attention", AttentionDetailKey::class, 1004),
         )
 }

@@ -23,12 +23,15 @@ import com.m57.hermescontrol.HermesControlApp
 import com.m57.hermescontrol.HistoryScreen
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.domain.hermes.AttentionItem
+import com.m57.hermescontrol.domain.hermes.AttentionStatus
 import com.m57.hermescontrol.domain.hermes.ExecutionState
 import com.m57.hermescontrol.domain.hermes.LinkState
 import com.m57.hermescontrol.domain.hermes.ObservationKind
 import com.m57.hermescontrol.domain.hermes.ObservedRun
 import com.m57.hermescontrol.domain.hermes.RunSnapshot
 import com.m57.hermescontrol.theme.LocalSpacing
+import com.m57.hermescontrol.ui.attention.AttentionSummaryCard
 import java.text.DateFormat
 import java.util.Date
 
@@ -36,21 +39,44 @@ import java.util.Date
 fun ObservedActivityScreen(today: Boolean) {
     val app = LocalContext.current.applicationContext as HermesControlApp
     val snapshot by app.runRepository.snapshot.collectAsState()
-    ObservedActivityContent(snapshot, today)
+    val attention by app.attentionRepository.items.collectAsState()
+    ObservedActivityContent(snapshot, today, attention)
 }
 
 @Composable
 internal fun ObservedActivityContent(
     snapshot: RunSnapshot,
     today: Boolean,
+    attention: List<AttentionItem> = emptyList(),
 ) {
     val spacing = LocalSpacing.current
+    val resolvedRuns =
+        snapshot.runs.filter { run ->
+            val ref = run.request
+            val matching =
+                attention.filter {
+                    ref != null && it.ref.scope == ref.scope && it.ref.session.runtimeId == ref.session.runtimeId &&
+                        it.ref.requestId == ref.requestId
+                }
+            matching.isNotEmpty() &&
+                matching.all { it.status in setOf(AttentionStatus.CONFIRMED, AttentionStatus.EXPIRED) }
+        }
     val needsYou =
         snapshot.runs.filter {
-            it.lastConfirmedState == ExecutionState.NEEDS_INPUT ||
-                it.lastConfirmedState == ExecutionState.WAITING_APPROVAL
+            it !in resolvedRuns && (
+                it.lastConfirmedState == ExecutionState.NEEDS_INPUT ||
+                    it.lastConfirmedState == ExecutionState.WAITING_APPROVAL
+            )
         }
-    val otherRuns = snapshot.runs.filterNot { it in needsYou }
+    val otherRuns =
+        snapshot.runs.filterNot { it in needsYou }.map {
+            if (it in resolvedRuns) it.copy(uncertain = true) else it
+        }
+    val requests =
+        attention.filter {
+            it.ref.scope == snapshot.connection.scope && it.status != AttentionStatus.CONFIRMED &&
+                it.status != AttentionStatus.EXPIRED
+        }
     HermesScaffold(
         title = { Text(stringResource(if (today) R.string.shell_today else R.string.shell_activity)) },
         drawerGesturesEnabled = false,
@@ -86,8 +112,15 @@ internal fun ObservedActivityContent(
                 item { Text(stringResource(R.string.activity_read_unavailable)) }
             }
             item { Text(stringResource(R.string.activity_needs_you), style = MaterialTheme.typography.titleMedium) }
-            if (needsYou.isEmpty()) item { Text(stringResource(R.string.activity_no_observed_requests)) }
-            items(needsYou) { ObservedRunCard(it, snapshot) }
+            if (needsYou.isEmpty() &&
+                requests.isEmpty()
+            ) {
+                item { Text(stringResource(R.string.activity_no_observed_requests)) }
+            }
+            items(requests) { AttentionSummaryCard(it, ready = snapshot.connection.state == LinkState.CONNECTED) }
+            items(needsYou.filterNot { run -> requests.any { it.ref.session.runtimeId == run.session.runtimeId } }) {
+                ObservedRunCard(it, snapshot)
+            }
             item {
                 Text(
                     stringResource(R.string.activity_observed_sessions),
