@@ -275,6 +275,13 @@ class PhaseOneEvidenceTest {
             capture("08-main-shell-ja-chat")
             compose.onNodeWithTag("shell_menu").performClick()
             capture("09-main-shell-ja-menu")
+            compose.onNodeWithText("Advanced").performClick()
+            compose.onNodeWithText("Advanced").assertIsDisplayed()
+            capture("19-main-shell-ja-advanced")
+            androidx.test.espresso.Espresso
+                .pressBack()
+            compose.onNodeWithTag("shell_tab_chat").assertIsSelected()
+            compose.onNodeWithText("タブを戻っても残る下書き").assertIsDisplayed()
             compose.runOnIdle { token.value = null }
             compose.onNodeWithTag("shell_tab_today").assertDoesNotExist()
             capture("10-main-shell-ja-logged-out")
