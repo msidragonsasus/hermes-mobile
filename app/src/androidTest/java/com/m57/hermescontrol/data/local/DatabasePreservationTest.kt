@@ -9,6 +9,10 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import com.m57.hermescontrol.MainActivity
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.data.model.Attachment
+import com.m57.hermescontrol.domain.hermes.ConnectionScope
+import com.m57.hermescontrol.domain.hermes.DraftState
+import com.m57.hermescontrol.domain.hermes.OutgoingDraft
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -109,6 +113,49 @@ class DatabasePreservationTest {
                 } finally {
                     database.close()
                 }
+            }
+        }
+
+    @Test
+    fun migratedDatabasePersistsUncertainDraftAcrossReopen() =
+        runBlocking {
+            val file = fixture(6)
+            val scope = ConnectionScope("synthetic-server", "connection", "profile", "process", 3)
+            val draft =
+                OutgoingDraft(
+                    "draft",
+                    scope,
+                    "saved",
+                    "runtime",
+                    "SYNTHETIC_PRIVATE_draft本文",
+                    listOf(Attachment("content://synthetic/file", "添付.txt", "text/plain", 12)),
+                    123L,
+                    DraftState.UNKNOWN,
+                )
+            val migrated = HermesDatabase.build(context, file.path, SQLCipherDriver(key, null, null))
+            try {
+                OutgoingDraftRepository(migrated.outgoingDraftDao()).save(draft)
+                assertEquals(
+                    "SYNTHETIC_PRIVATE_本文",
+                    migrated
+                        .chatMessageDao()
+                        .getMessagesForSession("session")
+                        .single()
+                        .content,
+                )
+            } finally {
+                migrated.close()
+            }
+            val reopened = HermesDatabase.build(context, file.path, SQLCipherDriver(key, null, null))
+            try {
+                val repository = OutgoingDraftRepository(reopened.outgoingDraftDao())
+                assertEquals(listOf(draft), repository.observe(scope.copy(processId = "new", generation = 8)).first())
+                repository.delete(scope.copy(serverProfileId = "other"), draft.id)
+                assertEquals(listOf(draft), repository.observe(scope).first())
+                repository.delete(scope, draft.id)
+                assertEquals(emptyList<OutgoingDraft>(), repository.observe(scope).first())
+            } finally {
+                reopened.close()
             }
         }
 

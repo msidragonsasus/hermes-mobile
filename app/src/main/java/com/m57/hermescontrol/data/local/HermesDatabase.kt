@@ -10,12 +10,14 @@ import androidx.sqlite.execSQL
 import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
 
 @Database(
-    entities = [ChatMessageEntity::class],
-    version = 6,
+    entities = [ChatMessageEntity::class, OutgoingDraftEntity::class],
+    version = 7,
     exportSchema = true,
 )
 abstract class HermesDatabase : RoomDatabase() {
     abstract fun chatMessageDao(): ChatMessageDao
+
+    abstract fun outgoingDraftDao(): OutgoingDraftDao
 
     companion object {
         @Volatile
@@ -66,6 +68,21 @@ abstract class HermesDatabase : RoomDatabase() {
                 }
             }
 
+        val MIGRATION_6_7: Migration =
+            object : Migration(6, 7) {
+                override suspend fun migrate(connection: SQLiteConnection) {
+                    connection.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `outgoing_drafts` " +
+                            "(`id` TEXT NOT NULL, `target_key` TEXT NOT NULL, " +
+                            "`created_at` INTEGER NOT NULL, `payload` TEXT NOT NULL, PRIMARY KEY(`id`))",
+                    )
+                    connection.execSQL(
+                        "CREATE INDEX IF NOT EXISTS `index_outgoing_drafts_target_key_created_at` " +
+                            "ON `outgoing_drafts` (`target_key`, `created_at`)",
+                    )
+                }
+            }
+
         fun get(context: Context): HermesDatabase =
             instance ?: synchronized(this) {
                 instance?.let { return@synchronized it }
@@ -95,7 +112,7 @@ abstract class HermesDatabase : RoomDatabase() {
             if (DatabaseProtection.inspect(file)) {
                 driver.open(file.path).use { connection ->
                     connection.prepare("PRAGMA user_version").use { statement ->
-                        if (!statement.step() || statement.getLong(0) !in 2L..6L) {
+                        if (!statement.step() || statement.getLong(0) !in 2L..7L) {
                             throw StorageUnavailableException(StorageFailure.OPEN_OR_MIGRATION_FAILED)
                         }
                     }
@@ -112,6 +129,7 @@ abstract class HermesDatabase : RoomDatabase() {
                     MIGRATION_3_4,
                     MIGRATION_4_5,
                     MIGRATION_5_6,
+                    MIGRATION_6_7,
                 ).build()
         }
 

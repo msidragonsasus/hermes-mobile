@@ -1,6 +1,9 @@
 package com.m57.hermescontrol.domain.hermes
 
+import kotlinx.serialization.Serializable
+
 /** Identifiers only: never credentials, URLs with tickets, or message bodies. */
+@Serializable
 data class ConnectionScope(
     val serverIdentity: String,
     val connectionProfileId: String?,
