@@ -244,3 +244,15 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
   初回Debugのテスト間例外は、socket fixtureのACK待ちを完結させて解消した。
 - PR06bのChat応答実装まで完了。Today/Activityとの共有・通知詳細はPR09で接続する。
   今回の画面操作・実Hermes通信は未実施。PR07〜11と最終品質ゲートは未完了。
+
+## PR07: 既存画面のContribution互換wrapper
+
+- 27画面の既存定義をそのまま保持し、`ScreenRegistry.ALL_SCREENS`を互換入口として継続する。
+  順序・label・icon・drawer section・contentは同一インスタンスで維持する。
+- 組込画面の安定ID/route/NavKey型を登録する。認証2件・設定詳細6件・詳細画面3件も予約し、
+  Navigation.ktの専用entryは変更していない。合計38件を重複検査の対象にする。
+- contribution ID・destination ID・route・NavKey型の重複、空の識別子、画面型の不一致を構築時に拒否する。
+  同じorderは宣言順を保持し、未知routeを別画面へ読み替えない。単一app・手動登録を維持する。
+- Debug/Release両方でContributionRegistryTest 5件と既存NavigationControllerTestが成功。
+  ktlint対象5ファイルと差分チェック成功。証跡は `../phase1-validation/pr07-*`。
+  新shell・復元・画面操作の検証はPR08以降。画面到達性の最終確認はまだ実施していない。
