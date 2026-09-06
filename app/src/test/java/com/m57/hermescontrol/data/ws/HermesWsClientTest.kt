@@ -1465,7 +1465,11 @@ class HermesWsClientTest {
         )
         HermesWsClient.connect()
         assertTrue(connectedLatch.await(5, TimeUnit.SECONDS))
-        ActiveSessionHolder.set("runtime-session", "stored-session")
+        ActiveSessionHolder.setScoped(
+            "runtime-session",
+            "stored-session",
+            checkNotNull(HermesWsClient.configuredScope()),
+        )
         HermesWsClient.sendMessage("session-1", "hello")
         HermesWsClient.setAppForeground(false)
 

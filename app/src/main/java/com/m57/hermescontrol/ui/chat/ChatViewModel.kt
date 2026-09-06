@@ -1170,7 +1170,7 @@ class ChatViewModel(
                 // Mirror the active session id app-wide so session-scoped
                 // drawer screens (e.g. Processes, issue #532) can issue
                 // session-scoped RPCs. See ActiveSessionHolder.
-                ActiveSessionHolder.set(runtimeId, storageId)
+                ActiveSessionHolder.setScoped(runtimeId, storageId, sessionScope)
                 _streamingState.update { StreamingState() }
                 addSystemMessage("Session created", persist = true)
                 loadSessions()
@@ -1216,7 +1216,7 @@ class ChatViewModel(
                     )
                 runtimeSessionId = runtimeId
                 sessionScope = request?.scope
-                ActiveSessionHolder.set(runtimeId, storageId)
+                ActiveSessionHolder.setScoped(runtimeId, storageId, sessionScope)
                 sessionHasServerPresence = false
                 sessionGoneRecoveryInFlight = false
                 addSystemMessage("Session branched", persist = true)
@@ -1290,7 +1290,7 @@ class ChatViewModel(
                 }
                 syncCurrentModelCapabilities()
                 // Mirror the active runtime session id app-wide (issue #532).
-                ActiveSessionHolder.set(runtimeSessionId ?: sessionId, sessionId)
+                ActiveSessionHolder.setScoped(runtimeSessionId ?: sessionId, sessionId, sessionScope)
                 addSystemMessage("Session resumed")
                 fetchContextUsage()
                 val generation = request?.generation ?: sessionGeneration
@@ -1694,7 +1694,7 @@ class ChatViewModel(
                         if (dispatchGeneration ==
                             sessionGeneration
                         ) {
-                            ActiveSessionHolder.set(agentSessionId, storageSessionId)
+                            ActiveSessionHolder.setScoped(agentSessionId, storageSessionId, outgoing.scope)
                         }
                     }
 

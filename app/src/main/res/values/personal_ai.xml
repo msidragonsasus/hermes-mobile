@@ -25,4 +25,9 @@
     <string name="draft_remove_checked">I checked — remove record</string>
     <string name="subagent_correction_requested">Course correction requested: %1$s</string>
     <string name="subagent_stop_requested">Stop requested</string>
+    <string name="notif_reply_confirmed">Reply confirmed by Hermes</string>
+    <string name="notif_reply_draft">Reply saved as a draft under the original connection. Open Chat to review it. It will not send automatically.</string>
+    <string name="notif_reply_unknown">Reply may have reached Hermes. Check the original conversation before sending again.</string>
+    <string name="notif_reply_storage_unavailable">Could not save the reply. Your input is shown in this notification. Open the app to recover it.</string>
+    <string name="notif_reply_target_unavailable">Cannot verify this notification’s connection. Your input is shown here. Open the original conversation in the app.</string>
 </resources>

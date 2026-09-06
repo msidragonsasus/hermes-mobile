@@ -22,7 +22,7 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
 | PR03 | 完了 `5136a02` | 関連unit Debug/Release各46件、SQLCipher移行・保全・起動停止UIのemulator 3件成功 |
 | PR04 | 完了 `7bf9270` | 単一socketの固定scope/event/read境界。既存WebSocket 54件、新contract 6件。自己レビューで固定所属とno-queueを確認 |
 | PR05 | 完了 `ad29751` | scopeごとのread probe、Unknown/Blocked区別、API専用offline decoder。追加4件。live writeはdisabled |
-| PR06a | 実装中 `b6d161d` / `8491e8e` / `39116b9` / `ffef902` | queue禁止・暗号化draft・固定scope submit・Chat下書きUIを検証。通知返信と残るcommand経路のscope確認は残作業 |
+| PR06a | 実装中 `b6d161d` / `8491e8e` / `39116b9` / `ffef902` / `51c1379` | queue禁止・暗号化draft・固定scope submit・Chat下書きUI・通知返信を検証。残るcommand経路のscope確認と統合レビューは残作業 |
 | PR06b | 未着手 | 固定要求とACK、once/deny、失効と古い応答 |
 | PR07〜08b | 未着手 | 既存27画面を保持してregistry/復元/4-tabを統合 |
 | PR09a〜09b | 未着手 | 実イベントの観測範囲と正確なAttention通知 |
@@ -148,3 +148,20 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
   証跡はcheckout外`../phase1-validation/pr06a-chat-release-results`、`pr06a-chat-focused-debug.xml`、
   `pr06a-draft-ui-locale.log`、`pr06a-drafts-ja-large.png`。画像は合成データのcomponent試験。
   実端末、実Hermes、TalkBackの手動読み上げ、通知返信、全体結合ゲートは未確認。
+- 通知返信は元のscopeをIntentのextraとidentityへ固定し、別profile/serverでは元の接続先へ
+  DRAFTを保存するだけにした。毎回typed resumeで保存済みIDを解決し、UNKNOWN先行保存後に
+  promptを一度送る。確認ACK後だけcacheと確認表示を更新する。旧通知などscope不明時は送信しない。
+  保存不能/結果不明の通知には入力と状態を表示し、再送actionを付けない。通知はPRIVATEのまま。
+- ActiveSessionHolderの既存APIを保持し、正確なscopeを持つ照合と、背景返信のID対応32件の上限を追加。
+  背景resumeは開いているChatを変更しない。WS通常受信/seq受信/replayすべてでscopeを使って
+  保存済みIDを付け、不明なruntime IDを保存済みIDと推測しない。通知表示は同じ接続先なら
+  idle切断後も維持し、接続先変更時に抑止。返信時は改めて固定scopeの送信境界で検査する。
+- 通知/ID対応/WS完了イベントの29件はDebug/Release各failure/error/skip 0。
+  その前のChatを含むDebug一式も成功。表示条件の最終変更後は通知Service 6件を両variantで成功確認。
+  初回のreplay側scope nullableによるcompile失敗を修正した。nullable時に他の接続先へ所属付けせずnullを保つ。
+  専用AVDでIntentのprofile/generation/sessionによるidentity分離と、結果不明の通知本文/PRIVATE/no-actionの2件成功。
+  旧receiverテストの固定sleepをvirtual timeへ置換し、cache成功/失敗/timeout、入力境界を維持した。
+  新たに元profile保持、scope欠落、応答待ち前のUNKNOWN、手動の別返信、通知の入力保持を検査した。
+  証跡は`../phase1-validation/pr06a-notification-{Debug,Release}-results`、
+  `pr06a-notification-display-final.log`、`pr06a-notification-android.log`。
+  実通知から実Hermesへの返信、冷起動の最終route、TalkBack、command経由のpromptとPhase 1全体は残作業。

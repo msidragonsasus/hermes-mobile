@@ -17,6 +17,8 @@ import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.session.ActiveSessionHolder
 import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.data.ws.WsEvent
+import com.m57.hermescontrol.domain.hermes.ConnectionScope
+import com.m57.hermescontrol.domain.hermes.draftTargetKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,6 +27,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -72,6 +76,11 @@ class ChatNotificationService : Service() {
         }
 
         fun isAppInForeground(): Boolean = isAppInForeground.get()
+
+        internal fun matchesNotificationTarget(
+            original: ConnectionScope,
+            current: ConnectionScope?,
+        ): Boolean = current?.draftTargetKey() == original.draftTargetKey()
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -87,11 +96,17 @@ class ChatNotificationService : Service() {
     private fun startEventCollection() {
         eventCollector =
             serviceScope.launch {
-                HermesWsClient.events.collect { event ->
+                HermesWsClient.scopedEvents.collect { observation ->
+                    val event = observation.event ?: return@collect
+                    val originalScope = observation.scope
                     if (!isAppInForeground.get()) {
                         launch {
                             delay(500)
-                            if (!isAppInForeground.get()) {
+                            // Completing a reply intentionally disconnects the idle background socket.
+                            // Its new generation must not suppress the notification for this same target.
+                            if (!isAppInForeground.get() &&
+                                matchesNotificationTarget(originalScope, HermesWsClient.configuredScope())
+                            ) {
                                 when (event) {
                                     is WsEvent.MessageComplete -> {
                                         val preview =
@@ -102,7 +117,11 @@ class ChatNotificationService : Service() {
                                         showReplyNotification(
                                             preview,
                                             event.storedSessionId
-                                                ?: ActiveSessionHolder.resolveStoredSessionId(event.sessionId),
+                                                ?: ActiveSessionHolder.resolveStoredSessionId(
+                                                    originalScope,
+                                                    event.sessionId,
+                                                ),
+                                            originalScope,
                                         )
                                         // The wait is over — retire the foreground
                                         // service. The reply notification above
@@ -151,6 +170,7 @@ class ChatNotificationService : Service() {
     private fun showReplyNotification(
         text: String,
         sessionId: String?,
+        scope: ConnectionScope? = null,
     ) {
         val builder =
             NotificationCompat
@@ -164,7 +184,7 @@ class ChatNotificationService : Service() {
                 .setAutoCancel(true)
                 .setContentIntent(buildContentIntent(sessionId))
 
-        if (!sessionId.isNullOrBlank()) {
+        if (!sessionId.isNullOrBlank() && scope != null) {
             val replyLabel = getString(R.string.notif_reply_placeholder)
             val remoteInput =
                 RemoteInput
@@ -172,12 +192,7 @@ class ChatNotificationService : Service() {
                     .setLabel(replyLabel)
                     .build()
 
-            val replyIntent =
-                Intent(this, NotificationReplyReceiver::class.java).apply {
-                    action = "$packageName.ACTION_NOTIFICATION_REPLY"
-                    setPackage(packageName)
-                    putExtra(NotificationReplyReceiver.EXTRA_SESSION_ID, sessionId)
-                }
+            val replyIntent = NotificationReplyReceiver.replyIntent(this, scope, sessionId)
 
             val replyPendingIntent =
                 PendingIntent.getBroadcast(

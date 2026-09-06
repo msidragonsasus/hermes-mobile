@@ -1152,9 +1152,12 @@ object HermesWsClient {
                                     if (parsedEvent is WsEvent.MessageComplete) {
                                         parsedEvent.copy(
                                             storedSessionId =
-                                                ActiveSessionHolder.resolveStoredSessionId(
-                                                    parsedEvent.sessionId,
-                                                ),
+                                                scope?.let {
+                                                    ActiveSessionHolder.resolveStoredSessionId(
+                                                        it,
+                                                        parsedEvent.sessionId,
+                                                    )
+                                                },
                                         )
                                     } else {
                                         parsedEvent
@@ -1409,7 +1412,11 @@ object HermesWsClient {
                             val finalEvent =
                                 if (parsed is WsEvent.MessageComplete) {
                                     parsed.copy(
-                                        storedSessionId = ActiveSessionHolder.resolveStoredSessionId(parsed.sessionId),
+                                        storedSessionId =
+                                            ActiveSessionHolder.resolveStoredSessionId(
+                                                scope,
+                                                parsed.sessionId,
+                                            ),
                                     )
                                 } else {
                                     parsed
@@ -1428,7 +1435,7 @@ object HermesWsClient {
                     val parsed = EventParser.parse(rpc, text)
                     if (parsed is WsEvent.MessageComplete) {
                         parsed.copy(
-                            storedSessionId = ActiveSessionHolder.resolveStoredSessionId(parsed.sessionId),
+                            storedSessionId = ActiveSessionHolder.resolveStoredSessionId(scope, parsed.sessionId),
                         )
                     } else {
                         parsed

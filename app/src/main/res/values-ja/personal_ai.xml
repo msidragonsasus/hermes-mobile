@@ -24,4 +24,9 @@
     <string name="draft_remove_checked">確認したので記録を削除</string>
     <string name="subagent_correction_requested">修正を依頼：%1$s</string>
     <string name="subagent_stop_requested">停止を依頼</string>
+    <string name="notif_reply_confirmed">Hermesへの返信を確認しました</string>
+    <string name="notif_reply_draft">元の接続先の下書きに保存しました。Chatで確認してください。自動送信はされません。</string>
+    <string name="notif_reply_unknown">返信がHermesに届いた可能性があります。再送前に元の会話を確認してください。</string>
+    <string name="notif_reply_storage_unavailable">返信を保存できませんでした。入力内容はこの通知に表示しています。アプリを開いて復元してください。</string>
+    <string name="notif_reply_target_unavailable">この通知の接続先を確認できません。入力内容はこの通知に表示しています。アプリで元の会話を開いてください。</string>
 </resources>
