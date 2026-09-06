@@ -945,7 +945,9 @@ object HermesWsClient {
                 pendingReply = true
             }
             onSent?.invoke(id)
-            if (method == WsMethods.APPROVAL_RESPOND || method == WsMethods.APPROVAL_RECEIVED) {
+            if (method == WsMethods.APPROVAL_RESPOND || method == WsMethods.APPROVAL_RECEIVED ||
+                method == WsMethods.CLARIFY_RESPOND
+            ) {
                 // Approval writes require an original RequestRef through writeScoped.
                 rejectNotSent(id, replyPendingBeforeSend)
                 return@synchronized

@@ -226,3 +226,21 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
   `../phase1-validation/pr06b-approval-final.log`。実Hermes通信・今回の画面実機検証は未実施。
 - PR06bはまだ途中。clarificationの固定request/question単位送信、期限切れ、複数依頼表示、
   Today/Activityとの共有、UI検証が残る。PR07〜11・Phase 1最終品質ゲートも未完了。
+
+## PR06b: Chat確認質問の固定依頼への接続
+
+- 確認質問を会話内の複数カードで保持する。押したカードの元scope/runtime/request/question IDへ
+  回答し、現在の最後の質問へ読み替えない。旧unscoped送信はWS境界でも拒否する。
+- 入力のある質問だけ送信し、質問ごとのACK前は送信中、成功ACK後だけ受付済みとする。
+  未送信は次の明示タップで再試行できる。結果不明・期限切れは再送しない。
+  辞退も元依頼の未回答質問に限定した明示応答とし、ACK前のUSER履歴追加・カード消去を廃止した。
+- 同一request IDの別question IDを区別する。識別情報不足・重複batch qid・別scope・切断中・
+  会話切替後の古いカードを拒否する。期限切れはscope/runtime/requestが一致する質問だけ反映し、
+  遅いACKで戻さない。replayで状態・入力をリセットしない。
+- 選択肢・自由記述・一部回答を維持。操作48dp以上、改行入力、状態・依頼元・期限不明を表示する。
+- ChatViewModel全体144件とWS境界1件がDebug/Release各145件成功。
+  最終の同一request別qid・未送信再タップ・会話切替を含む質問9件も両variantで成功。
+  ktlint対象7ファイル・diff check成功。証跡は `../phase1-validation/pr06b-clarify-*`。
+  初回Debugのテスト間例外は、socket fixtureのACK待ちを完結させて解消した。
+- PR06bのChat応答実装まで完了。Today/Activityとの共有・通知詳細はPR09で接続する。
+  今回の画面操作・実Hermes通信は未実施。PR07〜11と最終品質ゲートは未完了。

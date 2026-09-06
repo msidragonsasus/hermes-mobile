@@ -447,7 +447,7 @@ class HermesWsClientTest {
     @Test
     fun testScopedAttentionRejectsBroadOrMissingIdentityBeforeWire() {
         val socket = mockk<WebSocket>(relaxed = true)
-        val (scope, _) = scopedWriteFixture(socket)
+        val (scope, listener) = scopedWriteFixture(socket)
         val params: Map<String, Any> =
             mapOf("session_id" to "runtime", "request_id" to "approval", "choice" to "once", "all" to false)
         for (choice in listOf("session", "always", "approve", "unexpected")) {
@@ -465,18 +465,25 @@ class HermesWsClientTest {
             HermesWsClient.send(WsMethods.APPROVAL_RESPOND, params + ("choice" to choice))
         }
         HermesWsClient.send(WsMethods.APPROVAL_RECEIVED, params)
+        HermesWsClient.send(WsMethods.CLARIFY_RESPOND, params + ("answer" to "Yes"))
         verify(exactly = 0) { socket.send(any<String>()) }
         val frames = mutableListOf<String>()
         every { socket.send(any<String>()) } answers {
             frames.add(firstArg())
             true
         }
-        assertTrue(HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, params).accepted)
+        val submission = HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, params)
+        assertTrue(submission.accepted)
         val wire = Json.parseToJsonElement(frames.single()).jsonObject["params"]!!.jsonObject
         assertEquals("approval", wire["request_id"]!!.jsonPrimitive.content)
         assertEquals("runtime", wire["session_id"]!!.jsonPrimitive.content)
         assertEquals("profile-a", wire["profile"]!!.jsonPrimitive.content)
         assertEquals("false", wire["all"]!!.jsonPrimitive.content)
+        listener.onMessage(
+            socket,
+            """{"jsonrpc":"2.0","id":"${submission.requestId}","result":{"resolved":1}}""",
+        )
+        assertTrue(submission.response.isCompleted)
     }
 
     @Test

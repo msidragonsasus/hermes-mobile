@@ -447,10 +447,10 @@ fun ClarifyBubble(
     val questions = clarifyRequest.resolvedQuestions
     val isBatch = questions.size > 1
 
-    var selectedChoicesByQid by remember(clarifyRequest) {
+    var selectedChoicesByQid by remember(clarifyRequest.ref, clarifyRequest.clarifyId) {
         mutableStateOf<Map<String, Set<String>>>(emptyMap())
     }
-    var customTextByQid by remember(clarifyRequest) {
+    var customTextByQid by remember(clarifyRequest.ref, clarifyRequest.clarifyId) {
         mutableStateOf<Map<String, String>>(emptyMap())
     }
 
@@ -472,7 +472,27 @@ fun ClarifyBubble(
             modifier = Modifier.padding(14.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            Text("確認への回答", style = MaterialTheme.typography.titleSmall)
+            Text("期限：不明", style = MaterialTheme.typography.labelSmall)
+            clarifyRequest.ref?.let { ref ->
+                Text(
+                    "依頼元：${ref.session.runtimeId}\n依頼ID：${ref.requestId}",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
             questions.forEachIndexed { index, q ->
+                val enabled = clarifyRequest.canRespond(q.qid)
+                val status = clarifyRequest.questionStates[q.qid]
+                Text(
+                    when (status) {
+                        com.m57.hermescontrol.domain.hermes.AttentionStatus.SUBMITTING -> "送信中・確認待ち"
+                        com.m57.hermescontrol.domain.hermes.AttentionStatus.CONFIRMED -> "回答を受け付けました"
+                        com.m57.hermescontrol.domain.hermes.AttentionStatus.EXPIRED -> "期限切れ"
+                        com.m57.hermescontrol.domain.hermes.AttentionStatus.UNKNOWN -> "結果不明・再送しません"
+                        else -> if (enabled) "回答待ち" else "保留・依頼元への接続を確認してください"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                )
                 if (index > 0) {
                     HorizontalDivider(
                         modifier = Modifier.padding(vertical = 12.dp),
@@ -500,7 +520,7 @@ fun ClarifyBubble(
                 if (q.multiSelect) {
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        text = "Select all that apply",
+                        text = "複数選択できます",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.fillMaxWidth(),
@@ -519,6 +539,8 @@ fun ClarifyBubble(
                             val isSelected = selectedSet.contains(choice)
                             FilterChip(
                                 selected = isSelected,
+                                enabled = enabled,
+                                modifier = Modifier.heightIn(min = 48.dp),
                                 onClick = {
                                     if (q.multiSelect) {
                                         val updated = if (isSelected) selectedSet - choice else selectedSet + choice
@@ -526,6 +548,7 @@ fun ClarifyBubble(
                                     } else {
                                         if (!isBatch && customTextByQid[q.qid].isNullOrBlank()) {
                                             // Fast 1-tap respond for lone single-select question when no custom text is entered
+                                            selectedChoicesByQid = selectedChoicesByQid + (q.qid to setOf(choice))
                                             onRespondSingle(choice)
                                         } else {
                                             val updated = if (isSelected) emptySet() else setOf(choice)
@@ -555,6 +578,7 @@ fun ClarifyBubble(
                 val typed = customTextByQid[q.qid].orEmpty()
                 OutlinedTextField(
                     value = typed,
+                    enabled = enabled,
                     onValueChange = { newText ->
                         customTextByQid = customTextByQid + (q.qid to newText)
                     },
@@ -563,31 +587,34 @@ fun ClarifyBubble(
                             if (q.choices.isEmpty()) {
                                 stringResource(R.string.message_your_response)
                             } else {
-                                "Other (optional)"
+                                "その他の回答（任意）"
                             },
                         )
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
+                    minLines = 2,
                 )
             }
 
             Spacer(Modifier.height(12.dp))
-            Row(
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
             ) {
                 val hasAnyInput =
                     questions.any { q ->
-                        (selectedChoicesByQid[q.qid]?.isNotEmpty() == true) ||
-                            (!customTextByQid[q.qid].isNullOrBlank())
+                        clarifyRequest.canRespond(q.qid) &&
+                            (
+                                (selectedChoicesByQid[q.qid]?.isNotEmpty() == true) ||
+                                    !customTextByQid[q.qid].isNullOrBlank()
+                            )
                     }
 
                 FilledTonalButton(
                     onClick = {
                         if (isBatch) {
                             val answers =
-                                questions.associate { q ->
+                                questions.filter { clarifyRequest.canRespond(it.qid) }.associate { q ->
                                     val selectedList = selectedChoicesByQid[q.qid]?.toList().orEmpty()
                                     val custom = customTextByQid[q.qid]?.trim().orEmpty()
                                     val finalAns =
@@ -606,7 +633,7 @@ fun ClarifyBubble(
                                         }
                                     q.qid to finalAns
                                 }
-                            onRespondBatch(answers)
+                            onRespondBatch(answers.filterValues { it.isNotBlank() })
                         } else {
                             val q = questions.first()
                             val selectedList = selectedChoicesByQid[q.qid]?.toList().orEmpty()
@@ -631,11 +658,16 @@ fun ClarifyBubble(
                         }
                     },
                     enabled = hasAnyInput,
+                    modifier = Modifier.heightIn(min = 48.dp),
                 ) {
-                    Text(if (isBatch) "Submit All" else "Send")
+                    Text(if (isBatch) "入力した回答を送信" else "回答を送信")
                 }
-                TextButton(onClick = onDismiss) {
-                    Text("Dismiss")
+                TextButton(
+                    onClick = onDismiss,
+                    enabled = questions.any { clarifyRequest.canRespond(it.qid) },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
+                    Text("回答を辞退")
                 }
             }
         }

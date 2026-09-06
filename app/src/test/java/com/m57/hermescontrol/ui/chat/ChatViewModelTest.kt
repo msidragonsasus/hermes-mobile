@@ -173,6 +173,8 @@ class ChatViewModelTest {
         fakeDraftStore = FakeOutgoingDraftStore()
         fakeSubmission = FakeSubmissionTransport()
         attentionTransport = mockk()
+        coEvery { attentionTransport.respondClarification(any(), any()) } returns
+            SubmissionResult.Confirmed("clarify", true)
         coEvery { attentionTransport.acknowledgeApproval(any()) } returns SubmissionResult.Confirmed("received", true)
         coEvery { attentionTransport.respondApproval(any(), any()) } returns
             SubmissionResult.Confirmed("response", true)
@@ -1575,322 +1577,263 @@ class ChatViewModelTest {
             )
         }
 
-    // ── Clarify tests ────────────────────────────────────────────────────────
+    // Clarifications must retain the rendered request identity until its exact ACK.
+    private suspend fun TestScope.observeClarify(
+        vm: ChatViewModel,
+        event: WsEvent.ClarifyRequest = WsEvent.ClarifyRequest("Choose", listOf("Yes"), "clarify-1", "session-123"),
+    ): ClarifyUi {
+        mockScopedEvents.emit(ScopedWsEvent(fakeSubmission.scope, 1, event))
+        advanceUntilIdle()
+        return vm.uiState.value.messages
+            .last { it.clarifyInfo != null }
+            .clarifyInfo!!
+    }
 
     @Test
-    fun testClarifyRequestAndRespond() =
+    fun testClarifyExactCardWaitsForAckAndDoubleTapSendsOnce() =
         runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(WsEvent.ClarifyRequest("Please choose:", listOf("Yes", "No"), "clarify-123"))
+            val (vm, _) = createViewModelWithSession()
+            val first = observeClarify(vm)
+            val second = observeClarify(vm, WsEvent.ClarifyRequest("Choose", listOf("Yes"), "second", "session-123"))
+            val reply = CompletableDeferred<SubmissionResult<Boolean>>()
+            coEvery { attentionTransport.respondClarification(any(), any()) } coAnswers { reply.await() }
+            vm.respondToClarify(first, "Yes")
+            vm.respondToClarify(first, "Yes")
+            runCurrent()
+            assertEquals(
+                AttentionStatus.SUBMITTING,
+                vm.uiState.value.messages
+                    .first { it.clarifyInfo?.ref == first.ref }
+                    .clarifyInfo!!
+                    .questionStates["q0"],
+            )
+            assertEquals(
+                AttentionStatus.PENDING,
+                vm.uiState.value.clarifyRequest!!
+                    .questionStates["q0"],
+            )
+            assertEquals(
+                second.ref,
+                vm.uiState.value.clarifyRequest!!
+                    .ref,
+            )
+            coVerify(exactly = 1) { attentionTransport.respondClarification(first.ref!!, "Yes") }
+            reply.complete(SubmissionResult.Confirmed("ack", true))
             advanceUntilIdle()
-
             assertEquals(
-                "Please choose:",
-                viewModel.uiState.value.clarifyRequest
-                    ?.text,
+                AttentionStatus.CONFIRMED,
+                vm.uiState.value.messages
+                    .first { it.clarifyInfo?.ref == first.ref }
+                    .clarifyInfo!!
+                    .questionStates["q0"],
             )
-            assertEquals(
-                listOf("Yes", "No"),
-                viewModel.uiState.value.clarifyRequest
-                    ?.options,
-            )
-            assertEquals(
-                "clarify-123",
-                viewModel.uiState.value.clarifyRequest
-                    ?.clarifyId,
-            )
-
-            viewModel.respondToClarify("Yes")
-            advanceUntilIdle()
-
-            assertNull(viewModel.uiState.value.clarifyRequest)
-            assertEquals(2, viewModel.uiState.value.messages.size)
-
-            verify {
-                HermesWsClient.send(
-                    method = WsMethods.CLARIFY_RESPOND,
-                    params =
-                        mapOf(
-                            "session_id" to sessionId,
-                            "response" to "Yes",
-                            "answer" to "Yes",
-                            "clarify_id" to "clarify-123",
-                            "request_id" to "clarify-123",
-                        ),
-                    onSent = any(),
-                )
-            }
+            assertFalse(sameLogicalMessage(vm.uiState.value.messages[1], vm.uiState.value.messages[2]))
         }
 
     @Test
-    fun testClarifyRequestWithQuestionIdAndRespond() =
+    fun testClarifyBatchSendsOnlyEnteredQuestionsAndKeepsPartialState() =
         runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(
-                WsEvent.ClarifyRequest(
-                    text = "Pick one:",
-                    options = listOf("Option 1"),
-                    clarifyId = "clarify-batch-1",
-                    sessionId = sessionId,
-                    questionId = "q0",
-                ),
-            )
-            advanceUntilIdle()
-
-            assertEquals(
-                "Pick one:",
-                viewModel.uiState.value.clarifyRequest
-                    ?.text,
-            )
-            assertEquals(
-                "q0",
-                viewModel.uiState.value.clarifyRequest
-                    ?.questionId,
-            )
-
-            viewModel.respondToClarify("Option 1")
-            advanceUntilIdle()
-
-            assertNull(viewModel.uiState.value.clarifyRequest)
-            verify {
-                HermesWsClient.send(
-                    method = WsMethods.CLARIFY_RESPOND,
-                    params =
-                        mapOf(
-                            "session_id" to sessionId,
-                            "response" to "Option 1",
-                            "answer" to "Option 1",
-                            "clarify_id" to "clarify-batch-1",
-                            "request_id" to "clarify-batch-1",
-                            "question_id" to "q0",
-                        ),
-                    onSent = any(),
-                )
-            }
-        }
-
-    @Test
-    fun testClarifyBatch_respondsToAllQuestions() =
-        runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(
-                WsEvent.ClarifyRequest(
-                    text = "1. Pick A\n\n2. Pick B",
-                    options = listOf("A1", "A2"),
-                    clarifyId = "clarify-batch-multi",
-                    sessionId = sessionId,
-                    questionId = "q0",
-                    questions =
-                        listOf(
-                            WsEvent.ClarifyQuestion(
-                                qid = "q0",
-                                question = "Pick A",
-                                choices = listOf("A1", "A2"),
-                                multiSelect = false,
+            val (vm, _) = createViewModelWithSession()
+            val info =
+                observeClarify(
+                    vm,
+                    WsEvent.ClarifyRequest(
+                        "Batch",
+                        null,
+                        "batch",
+                        "session-123",
+                        questions =
+                            listOf(
+                                WsEvent.ClarifyQuestion("a", "First"),
+                                WsEvent.ClarifyQuestion("b", "Second"),
                             ),
-                            WsEvent.ClarifyQuestion(
-                                qid = "q1",
-                                question = "Pick B",
-                                choices = listOf("B1", "B2"),
-                                multiSelect = true,
-                            ),
-                        ),
-                ),
-            )
+                    ),
+                )
+            vm.respondToClarifyBatch(info, mapOf("a" to " Answer ", "b" to " ", "foreign" to "ignored"))
             advanceUntilIdle()
-
-            val clarify = viewModel.uiState.value.clarifyRequest
-            assertNotNull(clarify)
-            assertEquals(2, clarify?.resolvedQuestions?.size)
-
-            viewModel.respondToClarifyBatch(
-                mapOf(
-                    "q0" to "A1",
-                    "q1" to "B1, B2",
-                ),
+            coVerify(
+                exactly = 1,
+            ) { attentionTransport.respondClarification(info.ref!!.copy(questionId = "a"), "Answer") }
+            coVerify(exactly = 1) { attentionTransport.respondClarification(any(), any()) }
+            assertEquals(
+                mapOf("a" to AttentionStatus.CONFIRMED, "b" to AttentionStatus.PENDING),
+                vm.uiState.value.clarifyRequest!!
+                    .questionStates,
             )
+            vm.dismissClarify(info)
             advanceUntilIdle()
-
-            assertNull(viewModel.uiState.value.clarifyRequest)
-            verify {
-                HermesWsClient.send(
-                    method = WsMethods.CLARIFY_RESPOND,
-                    params =
-                        mapOf(
-                            "session_id" to sessionId,
-                            "response" to "A1",
-                            "answer" to "A1",
-                            "question_id" to "q0",
-                            "clarify_id" to "clarify-batch-multi",
-                            "request_id" to "clarify-batch-multi",
-                        ),
-                    onSent = any(),
+            coVerify(exactly = 1) {
+                attentionTransport.respondClarification(
+                    info.ref!!.copy(questionId = "b"),
+                    "The user cancelled — no answer provided.",
                 )
             }
-            verify {
-                HermesWsClient.send(
-                    method = WsMethods.CLARIFY_RESPOND,
-                    params =
-                        mapOf(
-                            "session_id" to sessionId,
-                            "response" to "B1, B2",
-                            "answer" to "B1, B2",
-                            "question_id" to "q1",
-                            "clarify_id" to "clarify-batch-multi",
-                            "request_id" to "clarify-batch-multi",
-                        ),
-                    onSent = any(),
-                )
-            }
+            coVerify(exactly = 2) { attentionTransport.respondClarification(any(), any()) }
         }
 
     @Test
-    fun testClarifyRequestCustomResponse() =
+    fun testClarifyUnknownReplayDoesNotResend() =
         runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(WsEvent.ClarifyRequest("Please explain:", emptyList(), "clarify-456"))
+            val (vm, _) = createViewModelWithSession()
+            val info = observeClarify(vm)
+            coEvery { attentionTransport.respondClarification(any(), any()) } returns SubmissionResult.Unknown
+            vm.respondToClarify(info, "Yes")
             advanceUntilIdle()
-
+            val replay = observeClarify(vm)
+            assertEquals(AttentionStatus.UNKNOWN, replay.questionStates["q0"])
+            vm.respondToClarify(replay, "Yes")
+            vm.dismissClarify(info)
+            advanceUntilIdle()
             assertEquals(
-                "Please explain:",
-                viewModel.uiState.value.clarifyRequest
-                    ?.text,
+                1,
+                vm.uiState.value.messages
+                    .count { it.clarifyInfo != null },
             )
+            coVerify(exactly = 1) { attentionTransport.respondClarification(any(), any()) }
+        }
+
+    @Test
+    fun testClarifyMissingIdentityAndMalformedQuestionsCannotRespond() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            for (event in listOf(
+                WsEvent.ClarifyRequest("No request", null, null, "session-123"),
+                WsEvent.ClarifyRequest("No session", null, "request", null),
+                WsEvent.ClarifyRequest("Blank qid", null, "request", "session-123", questionId = ""),
+                WsEvent.ClarifyRequest(
+                    "Duplicates",
+                    null,
+                    "request",
+                    "session-123",
+                    questions = listOf(WsEvent.ClarifyQuestion("a", "First"), WsEvent.ClarifyQuestion("a", "Second")),
+                ),
+            )) {
+                val info = observeClarify(vm, event)
+                assertNull(info.ref)
+                assertFalse(info.responseEnabled)
+                vm.respondToClarify(info, "Yes")
+                vm.dismissClarify(info)
+            }
+            advanceUntilIdle()
+            coVerify(exactly = 0) { attentionTransport.respondClarification(any(), any()) }
+        }
+
+    @Test
+    fun testClarifyOfflineAndEveryScopeMismatchCannotRespond() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val info = observeClarify(vm)
+            val original = fakeSubmission.scope
+            fakeSubmission.ready = false
+            vm.respondToClarify(info, "Yes")
+            advanceUntilIdle()
+            fakeSubmission.ready = true
+            for (scope in listOf(
+                original.copy(generation = 2),
+                original.copy(serverIdentity = "other"),
+                original.copy(connectionProfileId = "other"),
+                original.copy(serverProfileId = "other"),
+                original.copy(processId = "other"),
+            )) {
+                fakeSubmission.scope = scope
+                vm.respondToClarify(info, "Yes")
+                advanceUntilIdle()
+            }
+            coVerify(exactly = 0) { attentionTransport.respondClarification(any(), any()) }
+        }
+
+    @Test
+    fun testClarifyExpireRequiresExactIdentityAndLateAckCannotUndoIt() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val info = observeClarify(vm)
+            val reply = CompletableDeferred<SubmissionResult<Boolean>>()
+            coEvery { attentionTransport.respondClarification(any(), any()) } coAnswers { reply.await() }
+            vm.respondToClarify(info, "Yes")
+            runCurrent()
+            for (event in listOf(
+                WsEvent.ClarifyExpire(null, "session-123"),
+                WsEvent.ClarifyExpire("clarify-1", null),
+                WsEvent.ClarifyExpire("other", "session-123"),
+            )) {
+                mockScopedEvents.emit(ScopedWsEvent(fakeSubmission.scope, 2, event))
+            }
+            runCurrent()
+            assertEquals(
+                AttentionStatus.SUBMITTING,
+                vm.uiState.value.clarifyRequest!!
+                    .questionStates["q0"],
+            )
+            mockScopedEvents.emit(
+                ScopedWsEvent(fakeSubmission.scope, 3, WsEvent.ClarifyExpire("clarify-1", "session-123")),
+            )
+            runCurrent()
+            reply.complete(SubmissionResult.Confirmed("late", true))
+            advanceUntilIdle()
+            assertEquals(
+                AttentionStatus.EXPIRED,
+                vm.uiState.value.clarifyRequest!!
+                    .questionStates["q0"],
+            )
+        }
+
+    @Test
+    fun testClarifySeparateExplicitQuestionIdsAndNotSentRetryRequireNewTap() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val first = observeClarify(vm, WsEvent.ClarifyRequest("First", null, "request", "session-123", "a"))
+            val second = observeClarify(vm, WsEvent.ClarifyRequest("Second", null, "request", "session-123", "b"))
+            assertEquals(
+                2,
+                vm.uiState.value.messages
+                    .count { it.clarifyInfo != null },
+            )
+            assertEquals("a", first.ref!!.questionId)
+            assertEquals("b", second.ref!!.questionId)
+            coEvery { attentionTransport.respondClarification(any(), any()) } returns SubmissionResult.NotSent
+            vm.respondToClarify(first, "Answer")
+            advanceUntilIdle()
+            assertEquals(
+                AttentionStatus.PENDING,
+                vm.uiState.value.messages
+                    .first { it.clarifyInfo?.ref == first.ref }
+                    .clarifyInfo!!
+                    .questionStates["a"],
+            )
+            coVerify(exactly = 1) { attentionTransport.respondClarification(first.ref, "Answer") }
+            vm.respondToClarify(first, "Answer")
+            advanceUntilIdle()
+            coVerify(exactly = 2) { attentionTransport.respondClarification(first.ref, "Answer") }
+            coVerify(exactly = 0) { attentionTransport.respondClarification(second.ref, any()) }
+        }
+
+    @Test
+    fun testClarifyOldCardAfterSessionSwitchCannotRespond() =
+        runTest {
+            stubEmptySessionRests("session-b")
+            val (vm, _) = createViewModelWithSession()
+            val info = observeClarify(vm)
+            vm.switchSession("session-b")
+            advanceUntilIdle()
+            vm.respondToClarify(info, "Answer")
+            vm.dismissClarify(info)
+            advanceUntilIdle()
+            coVerify(exactly = 0) { attentionTransport.respondClarification(any(), any()) }
+        }
+
+    @Test
+    fun testClarifyUnscopedAndOldSocketAreIgnored() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val event = WsEvent.ClarifyRequest("Choose", null, "request", "session-123")
+            mockEventsFlow.emit(event)
+            mockScopedEvents.emit(ScopedWsEvent(fakeSubmission.scope.copy(generation = 77), 1, event))
+            advanceUntilIdle()
+            assertNull(vm.uiState.value.clarifyRequest)
             assertTrue(
-                viewModel.uiState.value.clarifyRequest
-                    ?.options
-                    ?.isEmpty() == true,
+                vm.uiState.value.messages
+                    .none { it.clarifyInfo != null },
             )
-
-            viewModel.respondToClarify("This is my custom response text")
-            advanceUntilIdle()
-
-            assertNull(viewModel.uiState.value.clarifyRequest)
-            assertEquals(2, viewModel.uiState.value.messages.size)
-            assertEquals(
-                "This is my custom response text",
-                viewModel.uiState.value.messages[1]
-                    .content,
-            )
-            assertEquals(
-                MessageRole.USER,
-                viewModel.uiState.value.messages[1]
-                    .role,
-            )
-
-            verify {
-                HermesWsClient.send(
-                    WsMethods.CLARIFY_RESPOND,
-                    params =
-                        mapOf(
-                            "session_id" to sessionId,
-                            "response" to "This is my custom response text",
-                            "answer" to "This is my custom response text",
-                            "clarify_id" to "clarify-456",
-                            "request_id" to "clarify-456",
-                        ),
-                    onSent = any(),
-                )
-            }
-        }
-
-    @Test
-    fun testClarifyDismissInformsAgent() =
-        runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(
-                WsEvent.ClarifyRequest(
-                    "Please choose:",
-                    listOf("Yes", "No"),
-                    "clarify-789",
-                ),
-            )
-            advanceUntilIdle()
-            assertEquals(
-                "clarify-789",
-                viewModel.uiState.value.clarifyRequest
-                    ?.clarifyId,
-            )
-
-            viewModel.dismissClarify()
-            advanceUntilIdle()
-
-            // Dialog dismissed locally
-            assertNull(viewModel.uiState.value.clarifyRequest)
-            // Baseline has 1 "Connected" system message; dismiss adds exactly
-            // ONE system note and must NOT fake a user bubble.
-            val messages = viewModel.uiState.value.messages
-            assertEquals(2, messages.size)
-            assertEquals(MessageRole.SYSTEM, messages[0].role) // pre-existing "Connected"
-            assertEquals(MessageRole.SYSTEM, messages[1].role) // dismiss trace
-            assertTrue(messages[1].content.contains("dismissed", ignoreCase = true))
-
-            verify {
-                HermesWsClient.send(
-                    WsMethods.CLARIFY_RESPOND,
-                    params =
-                        mapOf(
-                            "session_id" to sessionId,
-                            "response" to "The user cancelled — no answer provided.",
-                            "answer" to "The user cancelled — no answer provided.",
-                            "clarify_id" to "clarify-789",
-                            "request_id" to "clarify-789",
-                        ),
-                    onSent = any(),
-                )
-            }
-        }
-
-    @Test
-    fun testClarifyDismissWithQuestionIdInformsAgent() =
-        runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(
-                WsEvent.ClarifyRequest(
-                    "Please choose:",
-                    listOf("Yes", "No"),
-                    "clarify-789",
-                    sessionId,
-                    questionId = "q0",
-                ),
-            )
-            advanceUntilIdle()
-            assertEquals(
-                "clarify-789",
-                viewModel.uiState.value.clarifyRequest
-                    ?.clarifyId,
-            )
-            assertEquals(
-                "q0",
-                viewModel.uiState.value.clarifyRequest
-                    ?.questionId,
-            )
-
-            viewModel.dismissClarify()
-            advanceUntilIdle()
-
-            assertNull(viewModel.uiState.value.clarifyRequest)
-            verify {
-                HermesWsClient.send(
-                    method = WsMethods.CLARIFY_RESPOND,
-                    params =
-                        mapOf(
-                            "session_id" to sessionId,
-                            "response" to "The user cancelled — no answer provided.",
-                            "answer" to "The user cancelled — no answer provided.",
-                            "clarify_id" to "clarify-789",
-                            "request_id" to "clarify-789",
-                            "question_id" to "q0",
-                        ),
-                    onSent = any(),
-                )
-            }
         }
 
     // ── Attachments ──────────────────────────────────────────────────────────
@@ -2652,8 +2595,12 @@ class ChatViewModelTest {
         runTest {
             stubEmptySessionRests("session-b")
             val (viewModel, sessionId) = createViewModelWithSession()
-            mockEventsFlow.emit(
-                WsEvent.ClarifyRequest("Choose", listOf("A"), "clarify-1", sessionId),
+            mockScopedEvents.emit(
+                ScopedWsEvent(
+                    fakeSubmission.scope,
+                    1,
+                    WsEvent.ClarifyRequest("Choose", listOf("A"), "clarify-1", sessionId),
+                ),
             )
             mockEventsFlow.emit(WsEvent.SudoRequest("sudo-1", sessionId))
             mockEventsFlow.emit(WsEvent.SecretRequest("secret-1", sessionId))

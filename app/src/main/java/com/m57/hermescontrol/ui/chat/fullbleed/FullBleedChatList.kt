@@ -275,7 +275,20 @@ fun FullBleedChatList(
                                         val sysMessage = entry.message
                                         item(key = "sys-${sysMessage.id}") {
                                             Column(modifier = Modifier.padding(bottom = 6.dp)) {
-                                                if (sysMessage.displayKind != null) {
+                                                val clarify = sysMessage.clarifyInfo
+                                                if (clarify != null) {
+                                                    ClarifyBubble(
+                                                        clarifyRequest = clarify,
+                                                        onRespondSingle = { viewModel.respondToClarify(clarify, it) },
+                                                        onRespondBatch = {
+                                                            viewModel.respondToClarifyBatch(
+                                                                clarify,
+                                                                it,
+                                                            )
+                                                        },
+                                                        onDismiss = { viewModel.dismissClarify(clarify) },
+                                                    )
+                                                } else if (sysMessage.displayKind != null) {
                                                     // Timeline marker (issue #904):
                                                     // model/personality switches and
                                                     // auto-continues render as a chip.
@@ -297,7 +310,9 @@ fun FullBleedChatList(
                 }
 
                 // Clarify bubble — rendered at the very bottom
-                if (clarifyRequest != null) {
+                if (clarifyRequest != null && clarifyRequest.ref == null &&
+                    messages.none { it.clarifyInfo == clarifyRequest }
+                ) {
                     item(key = "clarify_bubble") {
                         ClarifyBubble(
                             clarifyRequest = clarifyRequest,

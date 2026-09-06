@@ -734,9 +734,13 @@ fun ChatScreen(
                     onLastAnimatedMessageIdChange = { lastAnimatedMessageId = it },
                     viewModel = viewModel,
                     clarifyRequest = state.clarifyRequest,
-                    onRespondClarify = viewModel::respondToClarify,
-                    onRespondClarifyBatch = viewModel::respondToClarifyBatch,
-                    onDismissClarify = viewModel::dismissClarify,
+                    onRespondClarify = { answer ->
+                        state.clarifyRequest?.let { viewModel.respondToClarify(it, answer) }
+                    },
+                    onRespondClarifyBatch = { answers ->
+                        state.clarifyRequest?.let { viewModel.respondToClarifyBatch(it, answers) }
+                    },
+                    onDismissClarify = { state.clarifyRequest?.let(viewModel::dismissClarify) },
                     onSaveAttachment = onSaveAttachment,
                     savingAttachmentPath = pendingSavePath ?: state.savingAttachmentPath,
                     openingAttachmentPath = state.openingAttachmentPath,

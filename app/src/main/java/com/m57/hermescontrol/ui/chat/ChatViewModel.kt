@@ -162,6 +162,10 @@ internal fun sameLogicalMessage(
         val ref = a.approvalInfo?.ref
         return if (ref != null) ref == b.approvalInfo?.ref else a.id == b.id
     }
+    if (a.clarifyInfo != null || b.clarifyInfo != null) {
+        val ref = a.clarifyInfo?.ref
+        return if (ref != null) ref == b.clarifyInfo?.ref else a.id == b.id
+    }
     if (a.role == MessageRole.TOOL) {
         // Issue #842: prefer the gateway's tool call id when both sides carry
         // it — the REST transcript stores `tool_call_id` and the live WS
@@ -429,7 +433,13 @@ data class ClarifyUi(
     val questionId: String? = null,
     val multiSelect: Boolean = false,
     val questions: List<ClarifyQuestionUi> = emptyList(),
+    val ref: RequestRef? = null,
+    val questionStates: Map<String, com.m57.hermescontrol.domain.hermes.AttentionStatus> = emptyMap(),
+    val responseEnabled: Boolean = false,
 ) {
+    fun canRespond(qid: String): Boolean =
+        responseEnabled && questionStates[qid] == com.m57.hermescontrol.domain.hermes.AttentionStatus.PENDING
+
     /**
      * Normalized list of questions to display. Guarantees at least one question
      * entry even for legacy single-question clarify events.
@@ -723,6 +733,14 @@ class ChatViewModel(
                         if (isCurrentSession(event.sessionId)) handleApprovalRequest(event, observation.scope)
                     }
 
+                    is WsEvent.ClarifyRequest -> {
+                        if (isCurrentSession(event.sessionId)) handleClarifyRequest(event, observation.scope)
+                    }
+
+                    is WsEvent.ClarifyExpire -> {
+                        expireClarification(event, observation.scope)
+                    }
+
                     is WsEvent.SessionInfo -> {
                         val runtimeId = event.data?.get("session_id") as? String
                         val approval = event.data?.get("pending_approval") as? Map<*, *>
@@ -736,15 +754,15 @@ class ChatViewModel(
             }
         }
         viewModelScope.launch {
-            attentionRepository.items.collect { refreshApprovalStates() }
+            attentionRepository.items.collect { refreshAttentionStates() }
         }
         viewModelScope.launch {
-            wsClient.connectionScope.collect { refreshApprovalStates() }
+            wsClient.connectionScope.collect { refreshAttentionStates() }
         }
         // B7 (Jun 30 2026, kanban t_connection_loading): clear loading state on connection failure or status change
         viewModelScope.launch {
             wsClient.connectionStatus.collect { status ->
-                refreshApprovalStates()
+                refreshAttentionStates()
                 if (status == ConnectionStatus.DISCONNECTED ||
                     status == ConnectionStatus.RECONNECTING ||
                     status == ConnectionStatus.NO_NETWORK ||
@@ -890,6 +908,8 @@ class ChatViewModel(
     }
 
     private fun handleWsEvent(event: WsEvent) {
+        // Actionable questions must retain the socket observation's original identity.
+        if (event is WsEvent.ClarifyRequest || event is WsEvent.ClarifyExpire) return
         if (event is WsEvent.MessageStart || event is WsEvent.MessageComplete || event is WsEvent.MessageDone) {
             streamObservationVersion++
         }
@@ -3824,184 +3844,122 @@ class ChatViewModel(
 
     // ── UI actions ───────────────────────────────────────────────────────
 
-    /**
-     * Dismiss the active clarify prompt and reject it (tell the agent no answer
-     * was given).
-     *
-     * The backend's clarify tool blocks the agent thread waiting for a response
-     * (CLI timeout is 120s). A silent dismiss would leave the agent hanging
-     * until that timeout, so we send a cancel sentinel
-     * ([CLARIFY_DISMISS_RESPONSE]) over `clarify.respond` to unblock it.
-     *
-     * This is a *reject*, not an instruction to proceed — the agent is told no
-     * answer was provided and should re-ask or back off, NOT charge ahead.
-     *
-     * Unlike [respondToClarify] we do NOT append a user chat bubble: a dismiss
-     * is not something the user typed, so faking a USER message would be
-     * dishonest. We instead surface a short SYSTEM note so the dismissal is
-     * visible in the transcript.
-     */
-    fun dismissClarify() {
-        val sessionId = _uiState.value.currentSessionId ?: return
-        val clarify = _uiState.value.clarifyRequest
-        val clarifyId = clarify?.clarifyId
-        // Raw batch questions (non-empty only for true batch payloads).
-        // Legacy singles keep questions empty and rely on questionId (nullable).
-        val isBatch = !clarify?.questions.isNullOrEmpty()
-        val displayQuestions = clarify?.resolvedQuestions.orEmpty()
-        _uiState.update { it.copy(clarifyRequest = null) }
-
-        addSystemMessage("Clarify dismissed — no answer sent", persist = true)
-
-        viewModelScope.launch(ioDispatcher) {
-            if (isBatch) {
-                // Send dismissal for every question in the batch
-                for (q in displayQuestions) {
-                    val params =
-                        mutableMapOf<String, Any>(
-                            "session_id" to sessionId,
-                            "response" to CLARIFY_DISMISS_RESPONSE,
-                            "answer" to CLARIFY_DISMISS_RESPONSE,
-                            "question_id" to q.qid,
-                        )
-                    if (clarifyId != null) {
-                        params["clarify_id"] = clarifyId
-                        params["request_id"] = clarifyId
-                    }
-                    wsClient.send(
-                        method = WsMethods.CLARIFY_RESPOND,
-                        params = params,
-                        onSent = { id -> trackRequest(id, WsMethods.CLARIFY_RESPOND) },
-                    )
-                }
-            } else {
-                // Legacy: only send question_id when the original payload had one.
-                val questionId = clarify?.questionId
-                val params =
-                    mutableMapOf<String, Any>(
-                        "session_id" to sessionId,
-                        "response" to CLARIFY_DISMISS_RESPONSE,
-                        "answer" to CLARIFY_DISMISS_RESPONSE,
-                    )
-                if (clarifyId != null) {
-                    params["clarify_id"] = clarifyId
-                    params["request_id"] = clarifyId
-                }
-                if (questionId != null) {
-                    params["question_id"] = questionId
-                }
-                wsClient.send(
-                    method = WsMethods.CLARIFY_RESPOND,
-                    params = params,
-                    onSent = { id -> trackRequest(id, WsMethods.CLARIFY_RESPOND) },
-                )
-            }
-        }
+    /** Explicit refusal uses the same exact-request ACK path as an answer. */
+    fun dismissClarify(clarify: ClarifyUi) {
+        respondToClarifyBatch(clarify, clarify.resolvedQuestions.associate { it.qid to CLARIFY_DISMISS_RESPONSE })
     }
 
-    fun respondToClarify(option: String) {
-        val clarify = _uiState.value.clarifyRequest
-        // Only use synthesized qid when this is a true batch or legacy with explicit qid.
-        val qid =
-            if (clarify != null &&
-                (clarify.questionId != null || clarify.questions.isNotEmpty())
-            ) {
-                clarify.resolvedQuestions.firstOrNull()?.qid ?: clarify.questionId
-            } else {
-                null
-            }
-        if (qid != null && clarify?.resolvedQuestions?.size == 1) {
-            respondToClarifyBatch(mapOf(qid to option))
-        } else {
-            respondToClarifyBatch(emptyMap(), singleFallbackAnswer = option)
-        }
+    fun respondToClarify(
+        clarify: ClarifyUi,
+        option: String,
+    ) {
+        val question = clarify.resolvedQuestions.singleOrNull() ?: return
+        respondToClarifyBatch(clarify, mapOf(question.qid to option))
     }
 
     fun respondToClarifyBatch(
+        clarify: ClarifyUi,
         answers: Map<String, String>,
-        singleFallbackAnswer: String? = null,
     ) {
-        val sessionId = _uiState.value.currentSessionId ?: return
-        val clarify = _uiState.value.clarifyRequest
-        val clarifyId = clarify?.clarifyId
-        val isBatch = !clarify?.questions.isNullOrEmpty()
-        val questions = clarify?.resolvedQuestions.orEmpty()
-        _uiState.update { it.copy(clarifyRequest = null) }
-
-        val displayContent =
-            if (questions.size > 1) {
-                questions
-                    .mapIndexed { index, q ->
-                        val ans = answers[q.qid]?.trim().orEmpty()
-                        "${index + 1}. ${ans.ifEmpty { "(Skipped)" }}"
-                    }.joinToString("\n")
-            } else {
-                val loneAns = answers.values.firstOrNull()?.trim() ?: singleFallbackAnswer?.trim().orEmpty()
-                loneAns
+        val request = clarify.ref ?: return
+        for (question in clarify.resolvedQuestions) {
+            val answer = answers[question.qid]?.trim()?.takeIf { it.isNotEmpty() } ?: continue
+            val ref = request.copy(questionId = if (clarify.questions.isEmpty()) clarify.questionId else question.qid)
+            viewModelScope.launch(ioDispatcher) {
+                if (_uiState.value.messages.none { it.clarifyInfo?.ref == request }) return@launch
+                attentionRepository.respond(
+                    ref,
+                    submissionTransport.configuredScope(),
+                    submissionTransport.isReady(ref.scope),
+                    System.currentTimeMillis(),
+                ) { attentionTransport.respondClarification(ref, answer) }
             }
-
-        val userMessage =
-            ChatMessage(
-                role = MessageRole.USER,
-                content = displayContent,
-            )
-
-        _uiState.update { state ->
-            state.copy(
-                messages = state.messages + userMessage,
-                isAgentTyping = true,
-            )
         }
+    }
 
-        viewModelScope.launch(ioDispatcher) {
-            repo.persistMessage(userMessage, sessionId)
-        }
-
-        viewModelScope.launch(ioDispatcher) {
-            if (isBatch) {
-                for (q in questions) {
-                    val ans = answers[q.qid]?.trim().orEmpty()
-                    val params =
-                        mutableMapOf<String, Any>(
-                            "session_id" to sessionId,
-                            "response" to ans,
-                            "answer" to ans,
-                            "question_id" to q.qid,
-                        )
-                    if (clarifyId != null) {
-                        params["clarify_id"] = clarifyId
-                        params["request_id"] = clarifyId
-                    }
-                    wsClient.send(
-                        method = WsMethods.CLARIFY_RESPOND,
-                        params = params,
-                        onSent = { id -> trackRequest(id, WsMethods.CLARIFY_RESPOND) },
-                    )
-                }
+    private fun handleClarifyRequest(
+        event: WsEvent.ClarifyRequest,
+        scope: ConnectionScope,
+    ) {
+        val runtimeId = event.sessionId?.takeIf { it.isNotBlank() }
+        val requestId = event.clarifyId?.takeIf { it.isNotBlank() }
+        val validQuestions =
+            event.questionId?.isBlank() != true &&
+                event.questions.all { it.qid.isNotBlank() } &&
+                event.questions
+                    .map { it.qid }
+                    .distinct()
+                    .size == event.questions.size
+        val ref =
+            if (runtimeId != null && requestId != null && validQuestions) {
+                RequestRef(
+                    scope,
+                    SessionRef(runtimeId),
+                    requestId,
+                    questionId = event.questionId.takeIf { event.questions.isEmpty() },
+                )
             } else {
-                // Legacy single: only include question_id when explicitly present.
-                val qid = clarify?.questionId
-                val ans = answers.values.firstOrNull() ?: singleFallbackAnswer.orEmpty()
-                val params =
-                    mutableMapOf<String, Any>(
-                        "session_id" to sessionId,
-                        "response" to ans,
-                        "answer" to ans,
-                    )
-                if (clarifyId != null) {
-                    params["clarify_id"] = clarifyId
-                    params["request_id"] = clarifyId
-                }
-                if (qid != null) {
-                    params["question_id"] = qid
-                }
-                wsClient.send(
-                    method = WsMethods.CLARIFY_RESPOND,
-                    params = params,
-                    onSent = { id -> trackRequest(id, WsMethods.CLARIFY_RESPOND) },
+                null
+            }
+        val info =
+            ClarifyUi(
+                text = event.text.orEmpty(),
+                options = event.options.orEmpty(),
+                clarifyId = event.clarifyId,
+                questionId = event.questionId,
+                multiSelect = event.multiSelect,
+                questions = event.questions.map { ClarifyQuestionUi(it.qid, it.question, it.choices, it.multiSelect) },
+                ref = ref,
+            )
+        if (ref != null && _uiState.value.messages.any { it.clarifyInfo?.ref == ref }) {
+            refreshAttentionStates()
+            return
+        }
+        if (ref != null) {
+            info.resolvedQuestions.forEach { question ->
+                attentionRepository.observe(
+                    AttentionItem(
+                        ref.copy(questionId = if (info.questions.isEmpty()) info.questionId else question.qid),
+                        AttentionKind.CLARIFICATION,
+                        question.question,
+                    ),
                 )
             }
         }
+        var added = false
+        _uiState.update { state ->
+            if (ref != null && state.messages.any { it.clarifyInfo?.ref == ref }) return@update state
+            added = true
+            state.copy(
+                messages =
+                    state.messages +
+                        ChatMessage(
+                            role = MessageRole.SYSTEM,
+                            content = "確認への回答が必要です",
+                            clarifyInfo = info,
+                        ),
+                clarifyRequest = info,
+                isAgentTyping = false,
+            )
+        }
+        if (added) {
+            _streamingState.update { StreamingState() }
+            streamingController.resetStreaming()
+        }
+        refreshAttentionStates()
+    }
+
+    private fun expireClarification(
+        event: WsEvent.ClarifyExpire,
+        scope: ConnectionScope,
+    ) {
+        val runtimeId = event.sessionId?.takeIf { it.isNotBlank() } ?: return
+        val requestId = event.clarifyId?.takeIf { it.isNotBlank() } ?: return
+        attentionRepository.items.value
+            .filter {
+                it.kind == AttentionKind.CLARIFICATION && it.ref.scope == scope &&
+                    it.ref.session.runtimeId == runtimeId && it.ref.requestId == requestId
+            }.forEach { attentionRepository.expire(it.ref) }
     }
 
     fun clearError() {
@@ -4066,12 +4024,37 @@ class ChatViewModel(
         }
     }
 
-    private fun refreshApprovalStates() {
+    private fun refreshClarification(info: ClarifyUi): ClarifyUi {
+        val ref = info.ref
+        return info.copy(
+            responseEnabled =
+                ref != null && ref.scope == submissionTransport.configuredScope() &&
+                    submissionTransport.isReady(ref.scope),
+            questionStates =
+                info.resolvedQuestions.associate { question ->
+                    val questionRef =
+                        ref?.copy(
+                            questionId = if (info.questions.isEmpty()) info.questionId else question.qid,
+                        )
+                    question.qid to (
+                        attentionRepository.items.value
+                            .firstOrNull { it.ref == questionRef }
+                            ?.status
+                            ?: com.m57.hermescontrol.domain.hermes.AttentionStatus.UNKNOWN
+                    )
+                },
+        )
+    }
+
+    private fun refreshAttentionStates() {
         val items = attentionRepository.items.value.associateBy { it.ref }
         _uiState.update { state ->
             state.copy(
+                clarifyRequest = state.clarifyRequest?.let(::refreshClarification),
                 messages =
                     state.messages.map { message ->
+                        val clarify = message.clarifyInfo
+                        if (clarify != null) return@map message.copy(clarifyInfo = refreshClarification(clarify))
                         val info = message.approvalInfo ?: return@map message
                         val item = items[info.ref]
                         message.copy(
