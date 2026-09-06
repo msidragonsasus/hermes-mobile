@@ -835,13 +835,18 @@ object HermesWsClient {
             if (ws != null && connected.get()) {
                 // Never replay send(true): the server may have executed it even if its response is lost.
                 if (!ws.send(json)) {
-                    if (webSocket !== ws || !acceptQueuedMessages.get()) return@synchronized
+                    if (webSocket !== ws || !acceptQueuedMessages.get()) {
+                        rejectNotSent(id)
+                        return@synchronized
+                    }
                     if (isRetryableMessage(json)) {
                         Log.w(TAG, "WS rejected outgoing message — queuing for reconnect")
                         queueMessage(id, json)
                         recoverRejectedSocket(ws)
                     } else {
-                        Log.w(TAG, "WS rejected oversized outgoing message — not retrying")
+                        Log.w(TAG, "WS outgoing request was not sent — not retrying")
+                        rejectNotSent(id)
+                        if (withinOutboundLimit(json)) recoverRejectedSocket(ws)
                     }
                 }
             } else if (acceptQueuedMessages.get()) {
@@ -850,8 +855,11 @@ object HermesWsClient {
                     queueMessage(id, json)
                     reconnect = true
                 } else {
-                    Log.w(TAG, "WS disconnected with oversized outgoing message — not queueing")
+                    Log.w(TAG, "WS disconnected — request not queued")
+                    rejectNotSent(id)
                 }
+            } else {
+                rejectNotSent(id)
             }
         }
         if (reconnect) connect()
@@ -859,9 +867,30 @@ object HermesWsClient {
     }
 
     private fun isRetryableMessage(json: String): Boolean {
+        if (!withinOutboundLimit(json)) return false
+        val method =
+            try {
+                OkHttpProvider.json.decodeFromString<JsonRpcRequest>(json).method
+            } catch (_: Exception) {
+                return false
+            }
+        if (!OfflineSendPolicy.mayQueue(method)) return false
+        return true
+    }
+
+    private fun withinOutboundLimit(json: String): Boolean {
         if (json.length > MAX_OUTBOUND_MESSAGE_BYTES) return false
         if (json.length <= MAX_OUTBOUND_MESSAGE_BYTES / 4) return true
         return json.utf8Size() <= MAX_OUTBOUND_MESSAGE_BYTES.toLong()
+    }
+
+    private fun rejectNotSent(id: String) {
+        if (pendingPromptSubmits.remove(id) && pendingPromptSubmits.isEmpty()) pendingReply = false
+        val error = JsonRpcError(OfflineSendPolicy.NOT_SENT, "Request not sent; reconnect does not submit it")
+        resolvePending(id, null, error)
+        val event = WsEvent.RpcError(id, error)
+        parsedEvents.tryEmit(event)
+        emitScoped(_connectionScope.value, event)
     }
 
     private fun queueMessage(
@@ -1219,7 +1248,7 @@ object HermesWsClient {
                 while (true) {
                     val msg = messageQueue.peek() ?: break
                     if (!isRetryableMessage(msg)) {
-                        Log.w(TAG, "Dropping oversized queued message")
+                        Log.w(TAG, "Dropping non-replayable queued request")
                         messageQueue.poll()
                         markQueuedMessageSent(msg)
                         continue
