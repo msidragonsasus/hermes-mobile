@@ -8,7 +8,6 @@ import androidx.room3.migration.Migration
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.execSQL
 import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
-import java.io.File
 
 @Database(
     entities = [ChatMessageEntity::class],
@@ -69,51 +68,52 @@ abstract class HermesDatabase : RoomDatabase() {
 
         fun get(context: Context): HermesDatabase =
             instance ?: synchronized(this) {
-                // SQLCipher can't open plaintext SQLite databases — if an old
-                // unencrypted DB exists (v1), delete it so Room + SQLCipher can
-                // create an encrypted replacement from scratch.
+                instance?.let { return@synchronized it }
+                // PR03 / R06: refuse unsupported storage without deleting the original.
                 val dbFile = context.getDatabasePath("hermes_control.db")
-                if (dbFile.exists() && !isSqlCipherDatabase(dbFile)) {
-                    dbFile.delete()
-                }
+                val existingDatabase = DatabaseProtection.inspect(dbFile)
 
                 // Load SQLCipher native library before creating the driver
                 System.loadLibrary("sqlcipher")
                 val driver =
                     SQLCipherDriver(
-                        AuthManager.getDatabasePassword(),
+                        AuthManager.getDatabasePassword(existingDatabase),
                         null,
                         null,
                     )
 
-                instance ?: Room
-                    .databaseBuilder(
-                        context.applicationContext,
-                        HermesDatabase::class.java,
-                        "hermes_control.db",
-                    ).setDriver(driver)
-                    .addMigrations(
-                        MIGRATION_2_3,
-                        MIGRATION_3_4,
-                        MIGRATION_4_5,
-                        MIGRATION_5_6,
-                    ).fallbackToDestructiveMigration(false)
-                    .build()
-                    .also { instance = it }
+                build(context, "hermes_control.db", driver).also { instance = it }
             }
 
-        /** Returns true if the database file starts with the SQLCipher magic header. */
-        private fun isSqlCipherDatabase(file: File): Boolean =
-            try {
-                val header = ByteArray(16)
-                file.inputStream().use { it.read(header) }
-                // SQLCipher 4.x databases start with bytes that differ from
-                // the plaintext SQLite header "SQLite format 3\0"
-                val plaintextHeader = "SQLite format 3\u0000"
-                !header.contentEquals(plaintextHeader.toByteArray())
-            } catch (_: Exception) {
-                false // if we can't read it, treat as plaintext and delete
+        internal fun build(
+            context: Context,
+            name: String,
+            driver: SQLCipherDriver,
+        ): HermesDatabase {
+            // Reject unsupported versions before Room can change journal mode or migrate.
+            val file = context.getDatabasePath(name)
+            if (DatabaseProtection.inspect(file)) {
+                driver.open(file.path).use { connection ->
+                    connection.prepare("PRAGMA user_version").use { statement ->
+                        if (!statement.step() || statement.getLong(0) !in 2L..6L) {
+                            throw StorageUnavailableException(StorageFailure.OPEN_OR_MIGRATION_FAILED)
+                        }
+                    }
+                }
             }
+            return Room
+                .databaseBuilder(
+                    context.applicationContext,
+                    HermesDatabase::class.java,
+                    name,
+                ).setDriver(driver)
+                .addMigrations(
+                    MIGRATION_2_3,
+                    MIGRATION_3_4,
+                    MIGRATION_4_5,
+                    MIGRATION_5_6,
+                ).build()
+        }
 
         /** For testing — inject a custom instance. */
         fun setForTest(db: HermesDatabase?) {

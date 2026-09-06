@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="storage_startup_title">Local data</string>
+    <string name="storage_startup_loading">Checking saved data…</string>
+    <string name="storage_startup_blocked">Saved data or its encryption key could not be opened. The app has stopped to preserve your data. No database was deleted or recreated. Close the app, restore access to the original key or use a verified migration, then reopen it. Do not clear app data or uninstall.</string>
+</resources>

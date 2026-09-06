@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="storage_startup_title">保存データの確認</string>
+    <string name="storage_startup_loading">保存データを確認しています…</string>
+    <string name="storage_startup_blocked">保存データまたは暗号鍵を開けませんでした。データを保護するため、アプリの動作を停止しています。データベースの削除・再作成はしていません。アプリを終了し、元の鍵へのアクセスの復旧または検証済みの移行を行ってから再起動してください。アプリのデータ消去やアンインストールはしないでください。</string>
+</resources>
