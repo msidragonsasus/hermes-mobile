@@ -16,11 +16,14 @@ import com.m57.hermescontrol.data.remote.GatewayFileClient
 import com.m57.hermescontrol.data.remote.GatewayFileResult
 import com.m57.hermescontrol.data.session.ActiveSessionHolder
 import com.m57.hermescontrol.data.session.ProfileSwitchCoordinator
+import com.m57.hermescontrol.data.transport.HermesAttentionTransport
 import com.m57.hermescontrol.data.ws.ConnectionStatus
 import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.data.ws.JsonRpcError
+import com.m57.hermescontrol.data.ws.ScopedWsEvent
 import com.m57.hermescontrol.data.ws.WsEvent
 import com.m57.hermescontrol.data.ws.WsMethods
+import com.m57.hermescontrol.domain.hermes.AttentionStatus
 import com.m57.hermescontrol.domain.hermes.DraftState
 import com.m57.hermescontrol.domain.hermes.SubmissionResult
 import com.m57.hermescontrol.ui.chat.fakes.FakeChatPersistenceRepository
@@ -68,6 +71,8 @@ import org.junit.Test
 class ChatViewModelTest {
     private val testDispatcher = StandardTestDispatcher()
     private val mockEventsFlow = MutableSharedFlow<WsEvent>(extraBufferCapacity = 64)
+    private val mockScopedEvents = MutableSharedFlow<ScopedWsEvent>(extraBufferCapacity = 64)
+    private lateinit var attentionTransport: HermesAttentionTransport
     private val mockConnectionStatus = MutableStateFlow(ConnectionStatus.DISCONNECTED)
     private val mockSwitchFlow = MutableSharedFlow<String>(extraBufferCapacity = 8)
     private lateinit var app: Application
@@ -167,6 +172,14 @@ class ChatViewModelTest {
         fakeSlashUsageStore = FakeSlashUsageStore()
         fakeDraftStore = FakeOutgoingDraftStore()
         fakeSubmission = FakeSubmissionTransport()
+        attentionTransport = mockk()
+        coEvery { attentionTransport.respondClarification(any(), any()) } returns
+            SubmissionResult.Confirmed("clarify", true)
+        coEvery { attentionTransport.acknowledgeApproval(any()) } returns SubmissionResult.Confirmed("received", true)
+        coEvery { attentionTransport.respondApproval(any(), any()) } returns
+            SubmissionResult.Confirmed("response", true)
+        every { HermesWsClient.scopedEvents } returns mockScopedEvents
+        every { HermesWsClient.connectionScope } returns MutableStateFlow(fakeSubmission.scope)
         ActiveSessionHolder.set(null)
 
         mockConnectionStatus.value = ConnectionStatus.DISCONNECTED
@@ -248,6 +261,7 @@ class ChatViewModelTest {
             testDispatcher,
             fakeDraftStore,
             fakeSubmission,
+            attentionTransport,
         )
 
     /**
@@ -1250,6 +1264,45 @@ class ChatViewModelTest {
             verify(inverse = true) { HermesWsClient.send(WsMethods.SESSION_CREATE, any(), any()) }
         }
 
+    @Test
+    fun testGatewayReady_pendingNotificationResumesWithoutCreatingSession() =
+        runTest {
+            stubEmptySessionRests("session-from-notification")
+            every { HermesWsClient.send(WsMethods.SESSION_RESUME, any(), any()) } answers {
+                arg<((String) -> Unit)?>(2)?.invoke("notification-resume")
+                "notification-resume"
+            }
+            val controller = com.m57.hermescontrol.NavigationController
+            controller.backStack = null
+            controller.openChatSessionFromNotification("session-from-notification")
+            try {
+                val vm = createViewModel()
+                advanceUntilIdle()
+                mockConnectionStatus.value = ConnectionStatus.CONNECTED
+                mockEventsFlow.emit(WsEvent.GatewayReady(null))
+                runCurrent()
+                mockEventsFlow.emit(
+                    WsEvent.RpcResult(
+                        "notification-resume",
+                        mapOf("session_id" to "runtime-notification"),
+                    ),
+                )
+                advanceUntilIdle()
+                assertEquals("session-from-notification", vm.uiState.value.currentSessionId)
+                assertEquals("session-from-notification", controller.pendingSessionId)
+                verify(exactly = 0) { HermesWsClient.send(WsMethods.SESSION_CREATE, any(), any()) }
+                verify(exactly = 1) {
+                    HermesWsClient.send(
+                        WsMethods.SESSION_RESUME,
+                        mapOf("session_id" to "session-from-notification", "omit_messages" to true),
+                        any(),
+                    )
+                }
+            } finally {
+                controller.consumePendingChatNavigation()
+            }
+        }
+
     // ── RPC result tests ─────────────────────────────────────────────────────
 
     @Test
@@ -1563,322 +1616,263 @@ class ChatViewModelTest {
             )
         }
 
-    // ── Clarify tests ────────────────────────────────────────────────────────
+    // Clarifications must retain the rendered request identity until its exact ACK.
+    private suspend fun TestScope.observeClarify(
+        vm: ChatViewModel,
+        event: WsEvent.ClarifyRequest = WsEvent.ClarifyRequest("Choose", listOf("Yes"), "clarify-1", "session-123"),
+    ): ClarifyUi {
+        mockScopedEvents.emit(ScopedWsEvent(fakeSubmission.scope, 1, event))
+        advanceUntilIdle()
+        return vm.uiState.value.messages
+            .last { it.clarifyInfo != null }
+            .clarifyInfo!!
+    }
 
     @Test
-    fun testClarifyRequestAndRespond() =
+    fun testClarifyExactCardWaitsForAckAndDoubleTapSendsOnce() =
         runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(WsEvent.ClarifyRequest("Please choose:", listOf("Yes", "No"), "clarify-123"))
+            val (vm, _) = createViewModelWithSession()
+            val first = observeClarify(vm)
+            val second = observeClarify(vm, WsEvent.ClarifyRequest("Choose", listOf("Yes"), "second", "session-123"))
+            val reply = CompletableDeferred<SubmissionResult<Boolean>>()
+            coEvery { attentionTransport.respondClarification(any(), any()) } coAnswers { reply.await() }
+            vm.respondToClarify(first, "Yes")
+            vm.respondToClarify(first, "Yes")
+            runCurrent()
+            assertEquals(
+                AttentionStatus.SUBMITTING,
+                vm.uiState.value.messages
+                    .first { it.clarifyInfo?.ref == first.ref }
+                    .clarifyInfo!!
+                    .questionStates["q0"],
+            )
+            assertEquals(
+                AttentionStatus.PENDING,
+                vm.uiState.value.clarifyRequest!!
+                    .questionStates["q0"],
+            )
+            assertEquals(
+                second.ref,
+                vm.uiState.value.clarifyRequest!!
+                    .ref,
+            )
+            coVerify(exactly = 1) { attentionTransport.respondClarification(first.ref!!, "Yes") }
+            reply.complete(SubmissionResult.Confirmed("ack", true))
             advanceUntilIdle()
-
             assertEquals(
-                "Please choose:",
-                viewModel.uiState.value.clarifyRequest
-                    ?.text,
+                AttentionStatus.CONFIRMED,
+                vm.uiState.value.messages
+                    .first { it.clarifyInfo?.ref == first.ref }
+                    .clarifyInfo!!
+                    .questionStates["q0"],
             )
-            assertEquals(
-                listOf("Yes", "No"),
-                viewModel.uiState.value.clarifyRequest
-                    ?.options,
-            )
-            assertEquals(
-                "clarify-123",
-                viewModel.uiState.value.clarifyRequest
-                    ?.clarifyId,
-            )
-
-            viewModel.respondToClarify("Yes")
-            advanceUntilIdle()
-
-            assertNull(viewModel.uiState.value.clarifyRequest)
-            assertEquals(2, viewModel.uiState.value.messages.size)
-
-            verify {
-                HermesWsClient.send(
-                    method = WsMethods.CLARIFY_RESPOND,
-                    params =
-                        mapOf(
-                            "session_id" to sessionId,
-                            "response" to "Yes",
-                            "answer" to "Yes",
-                            "clarify_id" to "clarify-123",
-                            "request_id" to "clarify-123",
-                        ),
-                    onSent = any(),
-                )
-            }
+            assertFalse(sameLogicalMessage(vm.uiState.value.messages[1], vm.uiState.value.messages[2]))
         }
 
     @Test
-    fun testClarifyRequestWithQuestionIdAndRespond() =
+    fun testClarifyBatchSendsOnlyEnteredQuestionsAndKeepsPartialState() =
         runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(
-                WsEvent.ClarifyRequest(
-                    text = "Pick one:",
-                    options = listOf("Option 1"),
-                    clarifyId = "clarify-batch-1",
-                    sessionId = sessionId,
-                    questionId = "q0",
-                ),
-            )
-            advanceUntilIdle()
-
-            assertEquals(
-                "Pick one:",
-                viewModel.uiState.value.clarifyRequest
-                    ?.text,
-            )
-            assertEquals(
-                "q0",
-                viewModel.uiState.value.clarifyRequest
-                    ?.questionId,
-            )
-
-            viewModel.respondToClarify("Option 1")
-            advanceUntilIdle()
-
-            assertNull(viewModel.uiState.value.clarifyRequest)
-            verify {
-                HermesWsClient.send(
-                    method = WsMethods.CLARIFY_RESPOND,
-                    params =
-                        mapOf(
-                            "session_id" to sessionId,
-                            "response" to "Option 1",
-                            "answer" to "Option 1",
-                            "clarify_id" to "clarify-batch-1",
-                            "request_id" to "clarify-batch-1",
-                            "question_id" to "q0",
-                        ),
-                    onSent = any(),
-                )
-            }
-        }
-
-    @Test
-    fun testClarifyBatch_respondsToAllQuestions() =
-        runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(
-                WsEvent.ClarifyRequest(
-                    text = "1. Pick A\n\n2. Pick B",
-                    options = listOf("A1", "A2"),
-                    clarifyId = "clarify-batch-multi",
-                    sessionId = sessionId,
-                    questionId = "q0",
-                    questions =
-                        listOf(
-                            WsEvent.ClarifyQuestion(
-                                qid = "q0",
-                                question = "Pick A",
-                                choices = listOf("A1", "A2"),
-                                multiSelect = false,
+            val (vm, _) = createViewModelWithSession()
+            val info =
+                observeClarify(
+                    vm,
+                    WsEvent.ClarifyRequest(
+                        "Batch",
+                        null,
+                        "batch",
+                        "session-123",
+                        questions =
+                            listOf(
+                                WsEvent.ClarifyQuestion("a", "First"),
+                                WsEvent.ClarifyQuestion("b", "Second"),
                             ),
-                            WsEvent.ClarifyQuestion(
-                                qid = "q1",
-                                question = "Pick B",
-                                choices = listOf("B1", "B2"),
-                                multiSelect = true,
-                            ),
-                        ),
-                ),
-            )
+                    ),
+                )
+            vm.respondToClarifyBatch(info, mapOf("a" to " Answer ", "b" to " ", "foreign" to "ignored"))
             advanceUntilIdle()
-
-            val clarify = viewModel.uiState.value.clarifyRequest
-            assertNotNull(clarify)
-            assertEquals(2, clarify?.resolvedQuestions?.size)
-
-            viewModel.respondToClarifyBatch(
-                mapOf(
-                    "q0" to "A1",
-                    "q1" to "B1, B2",
-                ),
+            coVerify(
+                exactly = 1,
+            ) { attentionTransport.respondClarification(info.ref!!.copy(questionId = "a"), "Answer") }
+            coVerify(exactly = 1) { attentionTransport.respondClarification(any(), any()) }
+            assertEquals(
+                mapOf("a" to AttentionStatus.CONFIRMED, "b" to AttentionStatus.PENDING),
+                vm.uiState.value.clarifyRequest!!
+                    .questionStates,
             )
+            vm.dismissClarify(info)
             advanceUntilIdle()
-
-            assertNull(viewModel.uiState.value.clarifyRequest)
-            verify {
-                HermesWsClient.send(
-                    method = WsMethods.CLARIFY_RESPOND,
-                    params =
-                        mapOf(
-                            "session_id" to sessionId,
-                            "response" to "A1",
-                            "answer" to "A1",
-                            "question_id" to "q0",
-                            "clarify_id" to "clarify-batch-multi",
-                            "request_id" to "clarify-batch-multi",
-                        ),
-                    onSent = any(),
+            coVerify(exactly = 1) {
+                attentionTransport.respondClarification(
+                    info.ref!!.copy(questionId = "b"),
+                    "The user cancelled — no answer provided.",
                 )
             }
-            verify {
-                HermesWsClient.send(
-                    method = WsMethods.CLARIFY_RESPOND,
-                    params =
-                        mapOf(
-                            "session_id" to sessionId,
-                            "response" to "B1, B2",
-                            "answer" to "B1, B2",
-                            "question_id" to "q1",
-                            "clarify_id" to "clarify-batch-multi",
-                            "request_id" to "clarify-batch-multi",
-                        ),
-                    onSent = any(),
-                )
-            }
+            coVerify(exactly = 2) { attentionTransport.respondClarification(any(), any()) }
         }
 
     @Test
-    fun testClarifyRequestCustomResponse() =
+    fun testClarifyUnknownReplayDoesNotResend() =
         runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(WsEvent.ClarifyRequest("Please explain:", emptyList(), "clarify-456"))
+            val (vm, _) = createViewModelWithSession()
+            val info = observeClarify(vm)
+            coEvery { attentionTransport.respondClarification(any(), any()) } returns SubmissionResult.Unknown
+            vm.respondToClarify(info, "Yes")
             advanceUntilIdle()
-
+            val replay = observeClarify(vm)
+            assertEquals(AttentionStatus.UNKNOWN, replay.questionStates["q0"])
+            vm.respondToClarify(replay, "Yes")
+            vm.dismissClarify(info)
+            advanceUntilIdle()
             assertEquals(
-                "Please explain:",
-                viewModel.uiState.value.clarifyRequest
-                    ?.text,
+                1,
+                vm.uiState.value.messages
+                    .count { it.clarifyInfo != null },
             )
+            coVerify(exactly = 1) { attentionTransport.respondClarification(any(), any()) }
+        }
+
+    @Test
+    fun testClarifyMissingIdentityAndMalformedQuestionsCannotRespond() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            for (event in listOf(
+                WsEvent.ClarifyRequest("No request", null, null, "session-123"),
+                WsEvent.ClarifyRequest("No session", null, "request", null),
+                WsEvent.ClarifyRequest("Blank qid", null, "request", "session-123", questionId = ""),
+                WsEvent.ClarifyRequest(
+                    "Duplicates",
+                    null,
+                    "request",
+                    "session-123",
+                    questions = listOf(WsEvent.ClarifyQuestion("a", "First"), WsEvent.ClarifyQuestion("a", "Second")),
+                ),
+            )) {
+                val info = observeClarify(vm, event)
+                assertNull(info.ref)
+                assertFalse(info.responseEnabled)
+                vm.respondToClarify(info, "Yes")
+                vm.dismissClarify(info)
+            }
+            advanceUntilIdle()
+            coVerify(exactly = 0) { attentionTransport.respondClarification(any(), any()) }
+        }
+
+    @Test
+    fun testClarifyOfflineAndEveryScopeMismatchCannotRespond() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val info = observeClarify(vm)
+            val original = fakeSubmission.scope
+            fakeSubmission.ready = false
+            vm.respondToClarify(info, "Yes")
+            advanceUntilIdle()
+            fakeSubmission.ready = true
+            for (scope in listOf(
+                original.copy(generation = 2),
+                original.copy(serverIdentity = "other"),
+                original.copy(connectionProfileId = "other"),
+                original.copy(serverProfileId = "other"),
+                original.copy(processId = "other"),
+            )) {
+                fakeSubmission.scope = scope
+                vm.respondToClarify(info, "Yes")
+                advanceUntilIdle()
+            }
+            coVerify(exactly = 0) { attentionTransport.respondClarification(any(), any()) }
+        }
+
+    @Test
+    fun testClarifyExpireRequiresExactIdentityAndLateAckCannotUndoIt() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val info = observeClarify(vm)
+            val reply = CompletableDeferred<SubmissionResult<Boolean>>()
+            coEvery { attentionTransport.respondClarification(any(), any()) } coAnswers { reply.await() }
+            vm.respondToClarify(info, "Yes")
+            runCurrent()
+            for (event in listOf(
+                WsEvent.ClarifyExpire(null, "session-123"),
+                WsEvent.ClarifyExpire("clarify-1", null),
+                WsEvent.ClarifyExpire("other", "session-123"),
+            )) {
+                mockScopedEvents.emit(ScopedWsEvent(fakeSubmission.scope, 2, event))
+            }
+            runCurrent()
+            assertEquals(
+                AttentionStatus.SUBMITTING,
+                vm.uiState.value.clarifyRequest!!
+                    .questionStates["q0"],
+            )
+            mockScopedEvents.emit(
+                ScopedWsEvent(fakeSubmission.scope, 3, WsEvent.ClarifyExpire("clarify-1", "session-123")),
+            )
+            runCurrent()
+            reply.complete(SubmissionResult.Confirmed("late", true))
+            advanceUntilIdle()
+            assertEquals(
+                AttentionStatus.EXPIRED,
+                vm.uiState.value.clarifyRequest!!
+                    .questionStates["q0"],
+            )
+        }
+
+    @Test
+    fun testClarifySeparateExplicitQuestionIdsAndNotSentRetryRequireNewTap() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val first = observeClarify(vm, WsEvent.ClarifyRequest("First", null, "request", "session-123", "a"))
+            val second = observeClarify(vm, WsEvent.ClarifyRequest("Second", null, "request", "session-123", "b"))
+            assertEquals(
+                2,
+                vm.uiState.value.messages
+                    .count { it.clarifyInfo != null },
+            )
+            assertEquals("a", first.ref!!.questionId)
+            assertEquals("b", second.ref!!.questionId)
+            coEvery { attentionTransport.respondClarification(any(), any()) } returns SubmissionResult.NotSent
+            vm.respondToClarify(first, "Answer")
+            advanceUntilIdle()
+            assertEquals(
+                AttentionStatus.PENDING,
+                vm.uiState.value.messages
+                    .first { it.clarifyInfo?.ref == first.ref }
+                    .clarifyInfo!!
+                    .questionStates["a"],
+            )
+            coVerify(exactly = 1) { attentionTransport.respondClarification(first.ref, "Answer") }
+            vm.respondToClarify(first, "Answer")
+            advanceUntilIdle()
+            coVerify(exactly = 2) { attentionTransport.respondClarification(first.ref, "Answer") }
+            coVerify(exactly = 0) { attentionTransport.respondClarification(second.ref, any()) }
+        }
+
+    @Test
+    fun testClarifyOldCardAfterSessionSwitchCannotRespond() =
+        runTest {
+            stubEmptySessionRests("session-b")
+            val (vm, _) = createViewModelWithSession()
+            val info = observeClarify(vm)
+            vm.switchSession("session-b")
+            advanceUntilIdle()
+            vm.respondToClarify(info, "Answer")
+            vm.dismissClarify(info)
+            advanceUntilIdle()
+            coVerify(exactly = 0) { attentionTransport.respondClarification(any(), any()) }
+        }
+
+    @Test
+    fun testClarifyUnscopedAndOldSocketAreIgnored() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val event = WsEvent.ClarifyRequest("Choose", null, "request", "session-123")
+            mockEventsFlow.emit(event)
+            mockScopedEvents.emit(ScopedWsEvent(fakeSubmission.scope.copy(generation = 77), 1, event))
+            advanceUntilIdle()
+            assertNull(vm.uiState.value.clarifyRequest)
             assertTrue(
-                viewModel.uiState.value.clarifyRequest
-                    ?.options
-                    ?.isEmpty() == true,
+                vm.uiState.value.messages
+                    .none { it.clarifyInfo != null },
             )
-
-            viewModel.respondToClarify("This is my custom response text")
-            advanceUntilIdle()
-
-            assertNull(viewModel.uiState.value.clarifyRequest)
-            assertEquals(2, viewModel.uiState.value.messages.size)
-            assertEquals(
-                "This is my custom response text",
-                viewModel.uiState.value.messages[1]
-                    .content,
-            )
-            assertEquals(
-                MessageRole.USER,
-                viewModel.uiState.value.messages[1]
-                    .role,
-            )
-
-            verify {
-                HermesWsClient.send(
-                    WsMethods.CLARIFY_RESPOND,
-                    params =
-                        mapOf(
-                            "session_id" to sessionId,
-                            "response" to "This is my custom response text",
-                            "answer" to "This is my custom response text",
-                            "clarify_id" to "clarify-456",
-                            "request_id" to "clarify-456",
-                        ),
-                    onSent = any(),
-                )
-            }
-        }
-
-    @Test
-    fun testClarifyDismissInformsAgent() =
-        runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(
-                WsEvent.ClarifyRequest(
-                    "Please choose:",
-                    listOf("Yes", "No"),
-                    "clarify-789",
-                ),
-            )
-            advanceUntilIdle()
-            assertEquals(
-                "clarify-789",
-                viewModel.uiState.value.clarifyRequest
-                    ?.clarifyId,
-            )
-
-            viewModel.dismissClarify()
-            advanceUntilIdle()
-
-            // Dialog dismissed locally
-            assertNull(viewModel.uiState.value.clarifyRequest)
-            // Baseline has 1 "Connected" system message; dismiss adds exactly
-            // ONE system note and must NOT fake a user bubble.
-            val messages = viewModel.uiState.value.messages
-            assertEquals(2, messages.size)
-            assertEquals(MessageRole.SYSTEM, messages[0].role) // pre-existing "Connected"
-            assertEquals(MessageRole.SYSTEM, messages[1].role) // dismiss trace
-            assertTrue(messages[1].content.contains("dismissed", ignoreCase = true))
-
-            verify {
-                HermesWsClient.send(
-                    WsMethods.CLARIFY_RESPOND,
-                    params =
-                        mapOf(
-                            "session_id" to sessionId,
-                            "response" to "The user cancelled — no answer provided.",
-                            "answer" to "The user cancelled — no answer provided.",
-                            "clarify_id" to "clarify-789",
-                            "request_id" to "clarify-789",
-                        ),
-                    onSent = any(),
-                )
-            }
-        }
-
-    @Test
-    fun testClarifyDismissWithQuestionIdInformsAgent() =
-        runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(
-                WsEvent.ClarifyRequest(
-                    "Please choose:",
-                    listOf("Yes", "No"),
-                    "clarify-789",
-                    sessionId,
-                    questionId = "q0",
-                ),
-            )
-            advanceUntilIdle()
-            assertEquals(
-                "clarify-789",
-                viewModel.uiState.value.clarifyRequest
-                    ?.clarifyId,
-            )
-            assertEquals(
-                "q0",
-                viewModel.uiState.value.clarifyRequest
-                    ?.questionId,
-            )
-
-            viewModel.dismissClarify()
-            advanceUntilIdle()
-
-            assertNull(viewModel.uiState.value.clarifyRequest)
-            verify {
-                HermesWsClient.send(
-                    method = WsMethods.CLARIFY_RESPOND,
-                    params =
-                        mapOf(
-                            "session_id" to sessionId,
-                            "response" to "The user cancelled — no answer provided.",
-                            "answer" to "The user cancelled — no answer provided.",
-                            "clarify_id" to "clarify-789",
-                            "request_id" to "clarify-789",
-                            "question_id" to "q0",
-                        ),
-                    onSent = any(),
-                )
-            }
         }
 
     // ── Attachments ──────────────────────────────────────────────────────────
@@ -2640,8 +2634,12 @@ class ChatViewModelTest {
         runTest {
             stubEmptySessionRests("session-b")
             val (viewModel, sessionId) = createViewModelWithSession()
-            mockEventsFlow.emit(
-                WsEvent.ClarifyRequest("Choose", listOf("A"), "clarify-1", sessionId),
+            mockScopedEvents.emit(
+                ScopedWsEvent(
+                    fakeSubmission.scope,
+                    1,
+                    WsEvent.ClarifyRequest("Choose", listOf("A"), "clarify-1", sessionId),
+                ),
             )
             mockEventsFlow.emit(WsEvent.SudoRequest("sudo-1", sessionId))
             mockEventsFlow.emit(WsEvent.SecretRequest("secret-1", sessionId))
@@ -3531,308 +3529,218 @@ class ChatViewModelTest {
 
     // ── Approval flow ────────────────────────────────────────────────────────
 
-    @Test
-    fun testApprovalRequest_addsSystemMessage() =
-        runTest {
-            val viewModel = createViewModel()
-            advanceUntilIdle()
-
-            mockEventsFlow.emit(
+    private suspend fun TestScope.observeApproval(
+        viewModel: ChatViewModel,
+        requestId: String? = "request-1",
+        runtimeId: String? = "session-123",
+    ): ChatMessage {
+        mockScopedEvents.emit(
+            ScopedWsEvent(
+                fakeSubmission.scope,
+                1,
                 WsEvent.ApprovalRequest(
-                    command = "rm -rf /data",
-                    description = "The agent wants to execute: rm -rf /data",
-                    patternKeys = listOf("shell:rm"),
-                    sessionId = null,
-                ),
-            )
-            advanceUntilIdle()
-
-            val msg =
-                viewModel.uiState.value.messages
-                    .first { it.content.contains("Approval Required") }
-            assertNotNull(msg.approvalInfo)
-            assertEquals("rm -rf /data", msg.approvalInfo?.command)
-        }
-
-    @Test
-    fun testRespondToApproval_sendsRpc() =
-        runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm",
-                    description = "Dangerous command",
-                    patternKeys = null,
-                    sessionId = null,
-                ),
-            )
-            advanceUntilIdle()
-
-            viewModel.respondToApproval("approve")
-            advanceUntilIdle()
-
-            verify { HermesWsClient.send(WsMethods.APPROVAL_RESPOND, any(), any()) }
-        }
-
-    @Test
-    fun testRespondToApproval_clearsButtons() =
-        runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm",
-                    description = "Dangerous",
-                    patternKeys = null,
-                    sessionId = null,
-                ),
-            )
-            advanceUntilIdle()
-
-            val approvalMsg =
-                viewModel.uiState.value.messages
-                    .firstOrNull { it.approvalInfo != null }
-            assertNotNull(approvalMsg)
-
-            viewModel.respondToApproval("approve")
-            advanceUntilIdle()
-
-            val msgAfter =
-                viewModel.uiState.value.messages
-                    .firstOrNull { it.id == approvalMsg!!.id }
-            assertNotNull(msgAfter)
-            assertNull(msgAfter!!.approvalInfo)
-        }
-
-    @Test
-    fun testApprovalRequest_storesRequestIdAndChoices() =
-        runTest {
-            val viewModel = createViewModel()
-            advanceUntilIdle()
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm -rf /tmp/x",
-                    description = "dangerous command",
-                    patternKeys = listOf("shell:rm"),
-                    sessionId = null,
-                    requestId = "req-1",
+                    command = "test command",
+                    description = "対象の変更",
+                    patternKeys = listOf("shell:test"),
+                    sessionId = runtimeId,
+                    requestId = requestId,
                     choices = listOf("once", "session", "always", "deny"),
-                    allowPermanent = true,
-                    smartDenied = false,
                 ),
-            )
-            advanceUntilIdle()
+            ),
+        )
+        advanceUntilIdle()
+        return viewModel.uiState.value.messages
+            .last { it.approvalInfo != null }
+    }
 
-            val msg =
-                viewModel.uiState.value.messages
-                    .first { it.content.contains("Approval Required") }
-            assertEquals("req-1", msg.approvalInfo?.requestId)
+    @Test
+    fun testApprovalRequest_preservesMetadataAndAcknowledgesExactRuntime() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val row = observeApproval(vm)
+            assertEquals("test command", row.approvalInfo?.command)
+            assertEquals(listOf("shell:test"), row.approvalInfo?.patternKeys)
+            assertEquals("request-1", row.approvalInfo?.requestId)
             assertEquals(
-                listOf("once", "session", "always", "deny"),
-                msg.approvalInfo?.choices,
+                "session-123",
+                row.approvalInfo
+                    ?.ref
+                    ?.session
+                    ?.runtimeId,
             )
-            assertEquals(true, msg.approvalInfo?.allowPermanent)
+            coVerify(exactly = 1) { attentionTransport.acknowledgeApproval(row.approvalInfo!!.ref!!) }
+            coVerify(exactly = 0) { attentionTransport.respondApproval(any(), any()) }
         }
 
     @Test
-    fun testRespondToApproval_mapsApproveToOnceAndSendsRequestId() =
+    fun testApprovalRequest_sameContentDifferentIdentitySurvivesTranscriptMerge() =
         runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-            advanceUntilIdle()
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm",
-                    description = "Dangerous",
-                    patternKeys = null,
-                    sessionId = null,
-                    requestId = "req-42",
-                    choices = listOf("once", "deny"),
-                ),
-            )
-            advanceUntilIdle()
-
-            viewModel.respondToApproval("approve")
-            advanceUntilIdle()
-
-            verify {
-                HermesWsClient.send(
-                    WsMethods.APPROVAL_RESPOND,
-                    withArg { params ->
-                        assertEquals(sessionId, params["session_id"])
-                        assertEquals("once", params["choice"])
-                        assertEquals("req-42", params["request_id"])
-                    },
-                    any(),
-                )
-            }
+            val (vm, _) = createViewModelWithSession()
+            val first = observeApproval(vm, "first")
+            val second = observeApproval(vm, "second")
+            assertFalse(sameLogicalMessage(first, second))
+            assertTrue(sameLogicalMessage(first, first.copy(id = "rest-copy")))
+            assertFalse(sameLogicalMessage(first, first.copy(approvalInfo = null)))
         }
 
     @Test
-    fun testRespondToApproval_sessionChoice() =
+    fun testApprovalResponse_targetsTappedRowAndWaitsForAck() =
         runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-            advanceUntilIdle()
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm",
-                    description = "Dangerous",
-                    patternKeys = null,
-                    sessionId = null,
-                    requestId = "req-7",
-                    choices = listOf("once", "session", "always", "deny"),
-                ),
+            val (vm, _) = createViewModelWithSession()
+            val first = observeApproval(vm, "first")
+            val second = observeApproval(vm, "second")
+            val reply = CompletableDeferred<SubmissionResult<Boolean>>()
+            coEvery { attentionTransport.respondApproval(any(), any()) } coAnswers { reply.await() }
+            vm.respondToApproval(first.id, "once")
+            runCurrent()
+            vm.respondToApproval(first.id, "once")
+            runCurrent()
+            assertEquals(
+                AttentionStatus.SUBMITTING,
+                vm.uiState.value.messages
+                    .first { it.id == first.id }
+                    .approvalInfo
+                    ?.status,
             )
+            assertEquals(
+                AttentionStatus.PENDING,
+                vm.uiState.value.messages
+                    .first { it.id == second.id }
+                    .approvalInfo
+                    ?.status,
+            )
+            coVerify(exactly = 1) { attentionTransport.respondApproval(first.approvalInfo!!.ref!!, "once") }
+            reply.complete(SubmissionResult.Confirmed("ack", true))
             advanceUntilIdle()
-
-            viewModel.respondToApproval("session")
-            advanceUntilIdle()
-
-            verify {
-                HermesWsClient.send(
-                    WsMethods.APPROVAL_RESPOND,
-                    withArg { params ->
-                        assertEquals("session", params["choice"])
-                        assertEquals("req-7", params["request_id"])
-                    },
-                    any(),
-                )
-            }
+            assertEquals(
+                AttentionStatus.CONFIRMED,
+                vm.uiState.value.messages
+                    .first { it.id == first.id }
+                    .approvalInfo
+                    ?.status,
+            )
         }
 
     @Test
-    fun testRespondToApproval_omitsRequestIdWhenAbsent() =
+    fun testApprovalResponse_rejectsBroadAndUnknownChoices() =
         runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
+            val (vm, _) = createViewModelWithSession()
+            val row = observeApproval(vm)
+            for (choice in listOf("session", "always", "approve", "unknown")) vm.respondToApproval(row.id, choice)
             advanceUntilIdle()
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "ls",
-                    description = "Safe",
-                    patternKeys = null,
-                    sessionId = null,
-                ),
+            coVerify(exactly = 0) { attentionTransport.respondApproval(any(), any()) }
+            assertEquals(
+                AttentionStatus.PENDING,
+                vm.uiState.value.messages
+                    .last()
+                    .approvalInfo
+                    ?.status,
             )
+            vm.respondToApproval(row.id, "deny")
             advanceUntilIdle()
-
-            viewModel.respondToApproval("deny")
-            advanceUntilIdle()
-
-            verify {
-                HermesWsClient.send(
-                    WsMethods.APPROVAL_RESPOND,
-                    withArg { params ->
-                        assertEquals("deny", params["choice"])
-                        assertFalse(params.containsKey("request_id"))
-                    },
-                    any(),
-                )
-            }
+            coVerify(exactly = 1) { attentionTransport.respondApproval(row.approvalInfo!!.ref!!, "deny") }
         }
 
     @Test
-    fun testRespondToApproval_triggersPendingReplay() =
+    fun testApprovalResponse_missingIdentityCannotSendEvenDeny() =
         runTest {
-            val (viewModel, sessionId) = createViewModelWithSession()
-            advanceUntilIdle()
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm",
-                    description = "Dangerous",
-                    patternKeys = null,
-                    sessionId = null,
-                    requestId = "req-9",
-                    choices = listOf("once", "deny"),
-                ),
-            )
-            advanceUntilIdle()
-
-            viewModel.respondToApproval("once")
-            advanceUntilIdle()
-
-            verify {
-                HermesWsClient.send(
-                    WsMethods.APPROVAL_PENDING,
-                    withArg { params ->
-                        assertEquals(sessionId, params["session_id"])
-                    },
-                    any(),
-                )
+            val (vm, _) = createViewModelWithSession()
+            val noRequest = observeApproval(vm, requestId = null)
+            val noSession = observeApproval(vm, requestId = "other", runtimeId = null)
+            for (row in listOf(noRequest, noSession)) {
+                assertNull(row.approvalInfo?.ref)
+                assertFalse(row.approvalInfo!!.responseEnabled)
+                vm.respondToApproval(row.id, "deny")
             }
+            advanceUntilIdle()
+            coVerify(exactly = 0) { attentionTransport.respondApproval(any(), any()) }
+            coVerify(exactly = 0) { attentionTransport.acknowledgeApproval(any()) }
         }
 
     @Test
-    fun testApprovalFlow_prefersRuntimeSessionIdOverStorageId() =
+    fun testApprovalResponse_scopeChangeAndOfflineCannotSend() =
         runTest {
-            val viewModel = createViewModel()
+            val (vm, _) = createViewModelWithSession()
+            val row = observeApproval(vm)
+            val original = fakeSubmission.scope
+            fakeSubmission.ready = false
+            vm.respondToApproval(row.id, "once")
             advanceUntilIdle()
-
-            mockConnectionStatus.value = ConnectionStatus.CONNECTED
-            mockEventsFlow.emit(WsEvent.GatewayReady(null))
-            advanceUntilIdle()
-
-            mockEventsFlow.emit(
-                WsEvent.RpcResult(
-                    "req-id-3",
-                    mapOf(
-                        "session_id" to "runtime-sid-999",
-                        "stored_session_id" to "storage-uuid-111",
-                    ),
-                ),
-            )
-            advanceUntilIdle()
-
-            assertEquals("storage-uuid-111", viewModel.uiState.value.currentSessionId)
-
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm -rf /data",
-                    description = "Dangerous operation",
-                    patternKeys = null,
-                    sessionId = null,
-                    requestId = "req-runtime-test",
-                    choices = listOf("once", "deny"),
-                ),
-            )
-            advanceUntilIdle()
-
-            verify {
-                HermesWsClient.send(
-                    WsMethods.APPROVAL_RECEIVED,
-                    withArg { params ->
-                        assertEquals("runtime-sid-999", params["session_id"])
-                        assertEquals("req-runtime-test", params["request_id"])
-                    },
-                    any(),
-                )
+            fakeSubmission.ready = true
+            for (scope in listOf(
+                original.copy(generation = 2),
+                original.copy(serverIdentity = "other"),
+                original.copy(connectionProfileId = "other"),
+                original.copy(serverProfileId = "other"),
+                original.copy(processId = "other"),
+            )) {
+                fakeSubmission.scope = scope
+                vm.respondToApproval(row.id, "once")
+                advanceUntilIdle()
             }
+            coVerify(exactly = 0) { attentionTransport.respondApproval(any(), any()) }
+        }
 
-            viewModel.respondToApproval("once")
+    @Test
+    fun testApprovalResponse_unknownIsNotAutomaticallyRetriedByReplay() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val row = observeApproval(vm)
+            coEvery { attentionTransport.respondApproval(any(), any()) } returns SubmissionResult.Unknown
+            vm.respondToApproval(row.id, "once")
             advanceUntilIdle()
+            observeApproval(vm)
+            vm.respondToApproval(row.id, "once")
+            advanceUntilIdle()
+            assertEquals(
+                1,
+                vm.uiState.value.messages
+                    .count { it.approvalInfo?.requestId == "request-1" },
+            )
+            assertEquals(
+                AttentionStatus.UNKNOWN,
+                vm.uiState.value.messages
+                    .last()
+                    .approvalInfo
+                    ?.status,
+            )
+            coVerify(exactly = 1) { attentionTransport.respondApproval(any(), any()) }
+        }
 
-            verify {
-                HermesWsClient.send(
-                    WsMethods.APPROVAL_RESPOND,
-                    withArg { params ->
-                        assertEquals("runtime-sid-999", params["session_id"])
-                        assertEquals("once", params["choice"])
-                        assertEquals("req-runtime-test", params["request_id"])
-                    },
-                    any(),
-                )
-                HermesWsClient.send(
-                    WsMethods.APPROVAL_PENDING,
-                    withArg { params ->
-                        assertEquals("runtime-sid-999", params["session_id"])
-                    },
-                    any(),
-                )
-            }
+    @Test
+    fun testApprovalResponse_definitelyNotSentRequiresNewTap() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val row = observeApproval(vm)
+            coEvery { attentionTransport.respondApproval(any(), any()) } returns SubmissionResult.NotSent
+            vm.respondToApproval(row.id, "once")
+            advanceUntilIdle()
+            assertEquals(
+                AttentionStatus.PENDING,
+                vm.uiState.value.messages
+                    .last()
+                    .approvalInfo
+                    ?.status,
+            )
+            coVerify(exactly = 1) { attentionTransport.respondApproval(any(), any()) }
+            vm.respondToApproval(row.id, "deny")
+            advanceUntilIdle()
+            coVerify(exactly = 2) { attentionTransport.respondApproval(any(), any()) }
+        }
+
+    @Test
+    fun testApprovalRequest_ignoresUnscopedAndOldSocketEvents() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val event = WsEvent.ApprovalRequest("command", null, null, "session-123", "old")
+            mockEventsFlow.emit(event)
+            mockScopedEvents.emit(ScopedWsEvent(fakeSubmission.scope.copy(generation = 0), 1, event))
+            advanceUntilIdle()
+            assertTrue(
+                vm.uiState.value.messages
+                    .none { it.approvalInfo != null },
+            )
+            coVerify(exactly = 0) { attentionTransport.acknowledgeApproval(any()) }
         }
 
     // ── Sudo / secret prompt flow (issue #524) ───────────────────────────
@@ -4253,16 +4161,9 @@ class ChatViewModelTest {
         runTest {
             val (viewModel, _) = createViewModelWithSession()
 
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm",
-                    description = "Dangerous",
-                    patternKeys = null,
-                    sessionId = null,
-                ),
-            )
-            advanceUntilIdle()
-            viewModel.respondToApproval("approve")
+            val row = observeApproval(viewModel)
+            coEvery { attentionTransport.respondApproval(any(), any()) } returns SubmissionResult.Unknown
+            viewModel.respondToApproval(row.id, "once")
             advanceUntilIdle()
 
             // Simulate socket drop → reconnecting (triggers rejectAllPending).
@@ -4283,16 +4184,9 @@ class ChatViewModelTest {
         runTest {
             val (viewModel, _) = createViewModelWithSession()
 
-            mockEventsFlow.emit(
-                WsEvent.ApprovalRequest(
-                    command = "rm",
-                    description = "Dangerous",
-                    patternKeys = null,
-                    sessionId = null,
-                ),
-            )
-            advanceUntilIdle()
-            viewModel.respondToApproval("approve")
+            val row = observeApproval(viewModel)
+            coEvery { attentionTransport.respondApproval(any(), any()) } returns SubmissionResult.Unknown
+            viewModel.respondToApproval(row.id, "once")
             advanceUntilIdle()
 
             // User-initiated reconnect must not throw / hang.

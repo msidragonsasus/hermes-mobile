@@ -816,10 +816,30 @@ object HermesWsClient {
                         WsMethods.COMMAND_DISPATCH,
                         WsMethods.SLASH_EXEC,
                         WsMethods.PROMPT_BTW,
+                        WsMethods.APPROVAL_RESPOND,
+                        WsMethods.APPROVAL_RECEIVED,
+                        WsMethods.APPROVAL_PENDING,
+                        WsMethods.CLARIFY_RESPOND,
                     )
             val sessionId = params["session_id"] as? String
+            val exactResponse =
+                when (method) {
+                    WsMethods.APPROVAL_RESPOND -> {
+                        params["choice"] in setOf("once", "deny") && params["all"] == false &&
+                            !(params["request_id"] as? String).isNullOrBlank()
+                    }
+
+                    WsMethods.APPROVAL_RECEIVED, WsMethods.CLARIFY_RESPOND -> {
+                        !(params["request_id"] as? String).isNullOrBlank()
+                    }
+
+                    else -> {
+                        true
+                    }
+                }
             val ws = webSocket
-            if (!allowed || sessionId.isNullOrBlank() || !matchesCurrentScope(scope) || !connected.get() ||
+            if (!allowed || !exactResponse || sessionId.isNullOrBlank() || !matchesCurrentScope(scope) ||
+                !connected.get() ||
                 ws == null || (params.containsKey("profile") && params["profile"] != scope.serverProfileId)
             ) {
                 response.completeExceptionally(HermesRpcException("Request not sent", OfflineSendPolicy.NOT_SENT))
@@ -925,6 +945,13 @@ object HermesWsClient {
                 pendingReply = true
             }
             onSent?.invoke(id)
+            if (method == WsMethods.APPROVAL_RESPOND || method == WsMethods.APPROVAL_RECEIVED ||
+                method == WsMethods.CLARIFY_RESPOND
+            ) {
+                // Approval writes require an original RequestRef through writeScoped.
+                rejectNotSent(id, replyPendingBeforeSend)
+                return@synchronized
+            }
             val ws = webSocket
             if (ws != null && connected.get()) {
                 val scope = _connectionScope.value

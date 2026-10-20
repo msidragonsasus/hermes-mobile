@@ -20,6 +20,8 @@ import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.local.StorageStartup
 import com.m57.hermescontrol.data.local.StorageStartupState
 import com.m57.hermescontrol.data.ws.HermesWsClient
+import com.m57.hermescontrol.domain.hermes.RequestReferenceCodec
+import com.m57.hermescontrol.notification.AttentionNotificationRoute
 import com.m57.hermescontrol.notification.NotificationHelper
 import com.m57.hermescontrol.notification.NotificationReplyReceiver
 import com.m57.hermescontrol.theme.HermesControlTheme
@@ -30,6 +32,9 @@ import com.m57.hermescontrol.util.LocaleContextWrapper
 
 class MainActivity : ComponentActivity() {
     companion object {
+        private const val SAVED_PENDING_CHAT = "pending_chat_navigation"
+        private const val SAVED_PENDING_ATTENTION = "pending_attention_navigation"
+
         /**
          * Action that identifies notification-driven "open this chat" intents.
          * [ChatNotificationService] stamps it on the content intent; the
@@ -56,6 +61,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        NavigationController.backStack = null
+        NavigationController.restorePendingChatNavigation(savedInstanceState?.getString(SAVED_PENDING_CHAT))
+        NavigationController.restorePendingAttentionNavigation(savedInstanceState?.getString(SAVED_PENDING_ATTENTION))
         consumeNotificationIntent(intent)
 
         enableEdgeToEdge()
@@ -105,6 +113,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        NavigationController.savePendingChatNavigation()?.let { outState.putString(SAVED_PENDING_CHAT, it) }
+        NavigationController.savePendingAttentionNavigation()?.let { outState.putString(SAVED_PENDING_ATTENTION, it) }
+        super.onSaveInstanceState(outState)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -137,6 +151,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun consumeNotificationIntent(intent: Intent?) {
+        if (intent?.action == AttentionNotificationRoute.ACTION) {
+            val ref = RequestReferenceCodec.decode(intent.getStringExtra(AttentionNotificationRoute.EXTRA_REF))
+            intent.removeExtra(AttentionNotificationRoute.EXTRA_REF)
+            ref?.let(NavigationController::openAttentionFromNotification)
+            return
+        }
         // Issue #832: MainActivity is exported (launcher requirement) — only
         // honor intents stamped with our own notification action.
         if (intent?.action != ACTION_OPEN_CHAT_FROM_NOTIFICATION) return

@@ -17,20 +17,24 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
 | 単位 | 状態 / コミット | 検証・自己レビュー / 次の条件 |
 |---|---|---|
 | PR00 | 完了 `33f69be` | 文書整合確認済み。PR00_REPORT参照 |
-| PR02 | 実装済み `c938404` | 追加6回帰成功、自己/独立レビュー済み。既存unit 2件・color guardはPR01、Release試験タスクは未提供。PR02_REPORT参照 |
+| PR02 | 完了 `c938404` | 追加6回帰、自己/独立レビュー済み。後続PR01で既存2失敗・color guard・Release taskを修正。PR02_REPORTは当時の記録として保持 |
 | PR01 | 完了 `8f48796` / `144b885` / `4f618ee` | Debug/Release各1,281件 failure/error/skip 0。ktlint/color成功。自己レビューで検査範囲と同期を確認 |
 | PR03 | 完了 `5136a02` | 関連unit Debug/Release各46件、SQLCipher移行・保全・起動停止UIのemulator 3件成功 |
 | PR04 | 完了 `7bf9270` | 単一socketの固定scope/event/read境界。既存WebSocket 54件、新contract 6件。自己レビューで固定所属とno-queueを確認 |
 | PR05 | 完了 `ad29751` | scopeごとのread probe、Unknown/Blocked区別、API専用offline decoder。追加4件。live writeはdisabled |
-| PR06a | 実装済み `b6d161d` / `8491e8e` / `39116b9` / `ffef902` / `51c1379` / `c7fa9a1` / `b1d55a9` | queue禁止・暗号化draft・固定scope submit・Chat下書きUI・通知返信を検証。commandのscope・下書き復元の本文/queue保持も確認。全体統合ゲートはPR11で実施 |
-| PR06b | 未着手 | 固定要求とACK、once/deny、失効と古い応答 |
-| PR07〜08b | 未着手 | 既存27画面を保持してregistry/復元/4-tabを統合 |
-| PR09a〜09b | 未着手 | 実イベントの観測範囲と正確なAttention通知 |
-| PR10 | 未着手 | strict manifest parser/意味検証、静的表示のみ |
-| PR11 | 未着手 | 全品質ゲート、利用可能なemulator、互換表/画面表/APK記録 |
+| PR06a | 完了 `b6d161d` / `8491e8e` / `39116b9` / `ffef902` / `51c1379` / `c7fa9a1` / `b1d55a9` / `0e3ed66` | queue禁止・暗号化draft・固定scope submit・Chat下書きUI・通知返信を検証。commandのscope・下書き復元の本文/queue保持も自己レビュー。全体結果はPR11 |
+| PR06b | 完了 `639461b` / `440de7c` / `79fea29` | 固定要求・once/deny・質問ID・逆順ACK・失効・結果不明・再送禁止を自己レビュー。Chatと共有詳細/通知への接続もPR09bで完了 |
+| PR07 | 完了 `71cb27d` | 既存27画面と38既存entryの同一content・順序・安定routeを維持。重複ID/route/NavKeyを拒否 |
+| PR08a | 完了 `ab492f4` | 認証分離、保存可能な引数付き履歴、通知待機先を検証。実OS process killとは区別 |
+| PR08b | 完了 `463d244` / `e3273b3` / `f0214be` | 4タブ独立履歴・古いcontroller解放・同時callbackを自己レビュー。既存Chat/AdvancedとIME所有者を維持 |
+| PR09a | 完了 `1379401` | 既存socketの観測だけを表示。欠落・切断・scope切替・保持上限を自己レビュー。永続server Runを捏造しない |
+| PR09b | 完了 `3699e63` | 高影響判断を固定RequestRefの詳細へ集約。共有受信・冷起動欠落・question別通知ID・二重送信防止を自己レビュー |
+| PR10 | 完了 `d0c79a4` | strict manifest parser/意味検証、静的表示のみ。実行・署名検証・権限付与との境界を自己レビュー |
+| PR11 | ローカル検証完了 `5fc1cbc` / `94f37da` | 7ゲート成功、Debug/Release各1,404件、UI全53件成功。実APKのデータ保持更新・未認証process再生成・画面記録を確認。下記の未確認範囲を維持 |
 
-現時点でPhase 1完成・本番利用可能・安全性認定済み・merge-readyとは扱わない。
-実Hermesの契約・実機データ保持の確認は未実施。未確認機能はUnknown/disabledを維持する。
+承認されたPhase 1の実装と利用可能なローカル検証を完了した。
+本番利用可能・安全性認定済み・merge-readyとは扱わない。実Hermesの契約・個人実機のデータ保持は未確認。
+未確認機能はUnknown/disabledを維持する。以下の工程別記録は当時の結果であり、最終状態は末尾PR11を参照。
 
 ## PR01の検証と根拠
 
@@ -196,3 +200,200 @@ push・merge・PR公開・実環境適用・個人の実端末へのインスト
   `../phase1-validation/pr06a-draft-restore-{Debug,Release}-results`。
 - 直前のコマンド変更は`b1d55a9`。offline表示追加後のcommand classは両variant各21件成功。
   PR06aの実装単位はここまで。Phase 1全体・実接続・最終全品質ゲートの完了は示していない。
+
+## PR06b: 固定要求と応答基盤（途中）
+
+- `AttentionRepository` はscope・runtime/saved session・request ID・question IDをキーに保持する。
+  ACK前はSUBMITTING、exactな成功ACK後だけCONFIRMED。期限切れ・古いACK・重複タップを拒否し、
+  結果不明はUNKNOWNとして保持する。replayでは状態をリセットしない。未送信だけPENDINGに戻す。
+- `HermesAttentionTransport` を既存Dashboard adapterへ追加。承認はonce/denyと`all=false`、
+  `resolved=1`だけ成功と解釈。0/複数/不正型を完了へ変換しない。質問はrequest IDとbatch qidを
+  固定し、`status=ok`だけその質問のACKと解釈する。render受領ACKは応答と分離する。
+- `writeScoped` 自体にも要求ID必須・広範囲承認禁止を追加。既存socket/待機呼出/timeoutを使い、queueしない。
+- Debug/Release各13件成功（状態管理6、adapter6、実WSクライアントのsocket fixture1）。
+  ktlint対象7ファイルとdiff check成功。実Hermesとのlive通信や画面操作を行った結果ではない。
+- この基盤時点では画面未接続。承認画面への接続は下記で実施。質問・横断Needs Youは引き続き未完了。
+
+## PR06b: Chat承認の固定依頼への接続（途中）
+
+- 押したカードのmessage IDから元RequestRefを取得する。最後のカード選択とACK前消去を廃止。
+  once/denyのみ表示し、送信中・確認済み・結果不明・保留を表示する。期限未提供は不明、修正未対応は
+  理由付きdisabled。操作は48dp以上、依頼元と実行コマンドを省略せず表示する。
+- 承認のlive/session.infoはsocketで採取したscopeを使う。resumeは元RPCのscopeを使い、
+  pending照会は固定scope/runtimeへ送り、全件をexact identityで取り込む。replayは応答状態をリセットしない。
+  古いsocketのイベント、識別情報不足、別scope、offlineでは応答しない。
+- render受領ACKと承認応答を別々に扱い、旧unscoped sendからの承認書込も拒否する。
+  履歴の重複整理では同じ説明文でも別依頼を統合しない。
+- ChatViewModelTest全体はDebug/Release各142件成功。最終差分の承認9件とsocket境界1件は
+  両variant各10件成功。ktlint対象7ファイル・diff check成功。
+  証跡: `../phase1-validation/pr06b-approval-chat-full-{Debug,Release}.xml`、
+  `../phase1-validation/pr06b-approval-final.log`。実Hermes通信・今回の画面実機検証は未実施。
+- PR06bはまだ途中。clarificationの固定request/question単位送信、期限切れ、複数依頼表示、
+  Today/Activityとの共有、UI検証が残る。PR07〜11・Phase 1最終品質ゲートも未完了。
+
+## PR06b: Chat確認質問の固定依頼への接続
+
+- 確認質問を会話内の複数カードで保持する。押したカードの元scope/runtime/request/question IDへ
+  回答し、現在の最後の質問へ読み替えない。旧unscoped送信はWS境界でも拒否する。
+- 入力のある質問だけ送信し、質問ごとのACK前は送信中、成功ACK後だけ受付済みとする。
+  未送信は次の明示タップで再試行できる。結果不明・期限切れは再送しない。
+  辞退も元依頼の未回答質問に限定した明示応答とし、ACK前のUSER履歴追加・カード消去を廃止した。
+- 同一request IDの別question IDを区別する。識別情報不足・重複batch qid・別scope・切断中・
+  会話切替後の古いカードを拒否する。期限切れはscope/runtime/requestが一致する質問だけ反映し、
+  遅いACKで戻さない。replayで状態・入力をリセットしない。
+- 選択肢・自由記述・一部回答を維持。操作48dp以上、改行入力、状態・依頼元・期限不明を表示する。
+- ChatViewModel全体144件とWS境界1件がDebug/Release各145件成功。
+  最終の同一request別qid・未送信再タップ・会話切替を含む質問9件も両variantで成功。
+  ktlint対象7ファイル・diff check成功。証跡は `../phase1-validation/pr06b-clarify-*`。
+  初回Debugのテスト間例外は、socket fixtureのACK待ちを完結させて解消した。
+- PR06bのChat応答実装まで完了。Today/Activityとの共有・通知詳細はPR09で接続する。
+  今回の画面操作・実Hermes通信は未実施。PR07〜11と最終品質ゲートは未完了。
+
+## PR07: 既存画面のContribution互換wrapper
+
+- 27画面の既存定義をそのまま保持し、`ScreenRegistry.ALL_SCREENS`を互換入口として継続する。
+  順序・label・icon・drawer section・contentは同一インスタンスで維持する。
+- 組込画面の安定ID/route/NavKey型を登録する。認証2件・設定詳細6件・詳細画面3件も予約し、
+  Navigation.ktの専用entryは変更していない。合計38件を重複検査の対象にする。
+- contribution ID・destination ID・route・NavKey型の重複、空の識別子、画面型の不一致を構築時に拒否する。
+  同じorderは宣言順を保持し、未知routeを別画面へ読み替えない。単一app・手動登録を維持する。
+- Debug/Release両方でContributionRegistryTest 5件と既存NavigationControllerTestが成功。
+  ktlint対象5ファイルと差分チェック成功。証跡は `../phase1-validation/pr07-*`。
+  新shell・復元・画面操作の検証はPR08以降。画面到達性の最終確認はまだ実施していない。
+
+## PR08a: 画面role・保存可能な履歴・通知待機
+
+- 既存38画面をROOT/ADVANCED/DRILL_DOWN/AUTHに分類。controllerの同一画面連打防止と既存Backを維持する。
+- Navigation 3の`rememberNavBackStack`を使用し、認証状態ごとに保存状態を分離する。
+  ログアウトした復元では内部画面を表示しない。古いCompositionが新しいcontrollerを切り離さないようにする。
+  設計参照: [Android Navigation 3の状態保存](https://developer.android.com/guide/navigation/navigation-3/save-state)。
+- 通知のsession ID・スクロール要求・要求番号をActivity saved stateへ保存する。
+  処理済み・新しい通知より古いsnapshotを復活させず、未認証中はログインを越えて遷移しない。
+  接続復帰は通知先sessionのresumeを優先し、不要なsession.createを呼ばない。
+- Debug/Release各31件成功（NavigationController 23、Contribution 5、GatewayReady 3）。
+  専用エミュレーター `emulator-5580` の保存状態復元2件成功（詳細引数の復元、logout/login分離）。
+  これはStateRestorationTesterによる保存・再生成であり、OSによる実process killや実通知配送の確認ではない。
+  ktlint・diff check成功。証跡は `../phase1-validation/pr08a-*`。
+- タブ選択・タブごとの保持はPR08bで4タブと合わせて接続する。実Hermes接続・実端末更新は未実施。
+
+## PR08b-1: タブごとの履歴と選択状態
+
+- Today / Chat / Activity / AppsそれぞれにNavigation 3の保存可能な履歴を用意した。
+  タブ選択は詳細画面を保持し、通知などからの明示的なChat遷移はChatの先頭を開く。
+  同じ詳細への再遷移は既存位置まで戻り、重複画面を積まない。
+- 認証されたCompositionから外れると全タブを破棄し、再ログインはTodayから開始する。
+- Debug単体テスト3件成功。専用エミュレーターの保存状態テスト4件成功
+  （前段2件に加え、選択タブと非表示タブの詳細復元、logout後の全タブ破棄）。
+  StateRestorationTesterによる検証であり、OSの実process killではない。
+- この段階では状態モデルを追加したのみ。画面・下部バー・controllerへの接続は次の変更で行う。
+  証跡: `../phase1-validation/pr08b-shell-state.log` と `pr08b-shell-restore.log`。
+
+### PR08b-2 — Shell controller attachment
+
+- Added guarded shell attachment and synchronous selected-stack routing for tab switches, notification Chat navigation, root reset, and Back. Existing non-shell navigation remains available until the UI migration.
+- Verified Debug unit tests: 3 ShellControllerTest and 23 NavigationControllerTest passed (0 failures/errors). New coverage checks consecutive callbacks without recomposition, notification routing with retained Today history, and stale disposal after a replacement attaches.
+- Targeted ktlint formatting/check and git diff --check passed. UI attachment and bottom navigation are the next PR08b step; these tests do not claim rendered UI completion.
+
+### PR08b-3 — Four-tab UI and Advanced entry
+
+- Authenticated navigation now starts at Today with Today / Chat / Activity / Apps tabs, separate saved stacks and a per-tab SaveableStateHolder. Chat retains its existing content and Activity-scoped ViewModel; the shared top bar adds Settings / Connection / Profiles / Advanced. Advanced lists all 27 existing screen definitions and keeps their original content and drill-down wiring.
+- ShellContribution adds 3 roots plus Advanced; the existing 38 legacy entries and their routes remain covered by registry tests. Authentication attachment explicitly clears the old shell controller binding before disposal can run.
+- Root content is deliberately only navigation entry points at this migration step. Today/Activity observation content (PR09) and Apps manifest information (PR10) are not completed here.
+- Debug unit checks passed: NavigationControllerTest 23, ShellNavigationTest 3, ContributionRegistryTest 6, ShellControllerTest 4 (including auth attachment). Debug main and instrumentation compilation passed. Dedicated emulator-5580/API 36 ran ShellChromeTest 1 and AppBackStackTest 4: all 5 passed, none skipped. These prove touch navigation/menu and saved-state restoration, not a live-server session or real-device update.
+- The shell now hides its bottom bar while IME insets are present so Chat remains the IME owner. This final inset adjustment receives compilation/color checks separately; full Chat keyboard, large-font, screenshots and live-scope limitations remain for PR11 integration checks. No real server/device, push, merge or deployment was used.
+- Final inset-adjusted Debug compilation and checkColorLiterals passed; modified Kotlin files received targeted ktlint formatting/check, and git diff --check passed.
+
+### PR09a — Observed Today and Activity
+
+- Added an application-owned RunRepository over the existing read/event transport. It stores at most 100 session observations and 200 timeline events in process memory. It does not create durable Run IDs, connect another socket, or submit work. Session names are loaded only through the scope-checked read boundary.
+- Today and Activity now render actual observations, prioritize requests for input/approval, and distinguish loading, offline, reconnecting, authentication, read failure, empty, and unknown state. Both disclose the observation range and process-local retention. A saved session link is enabled only when its saved ID is known; runtime IDs are not passed off as saved IDs.
+- Disconnects/gaps preserve the last confirmed execution state with explicit uncertainty. Different destinations clear the previous private history; reconnect generations retain uncertain observations until new events arrive. Duplicate events are ignored while a gap and a real event sharing one ordinal both apply. Known saved IDs survive later tool events.
+- Debug compilation and checkColorLiterals passed. RunRepositoryTest: 5 passed, including cross-scope filtering, reconnect, same-ordinal gap/event, retention limits and unavailable reads. Shared AttentionRepository lifecycle tests also passed during integration. Targeted ktlint checks and git diff --check passed. Dedicated emulator-5580/API 36: ObservedActivityTest 2 passed, covering visible offline uncertainty, exact saved-session routing and disabled runtime-only navigation.
+- Evidence: `../phase1-validation/pr09a-integrated.log`, `pr09a-gap-events.log`, `pr09a-observation-ui.log` and the copied XML. This is a session observation surface, not a complete mission-control server API. Attention response/details and notification identity are still PR09b; full visual/accessibility/lifecycle integration remains PR11. No live server or real device was used.
+
+### PR09b — Shared Attention details and notification identity
+
+- Application-owned incoming Attention normalization now observes approval and every clarification question even while Chat is not open. Legacy Chat replay uses the same mapper and repository. Metadata enrichment preserves the original response lifecycle and never replaces an existing explanation. Unknown target, impact, permission, reversibility and expiry are displayed as unknown; command matching patterns are not represented as granted permissions.
+- Today/Activity and Chat open one detail destination identified by the immutable RequestRef. All approval decisions now pass through the detail view; only once/deny can reach the transport, and explicitly unadvertised choices are disabled. Clarification reuses the existing choice/input controls and preserves its question ID. Activity-scoped response jobs survive tab/configuration changes; confirmation removes a resolved request from Needs You without inventing Run completion.
+- Gaps put unresolved requests on hold. Reconnect replay cannot turn an unknown/already-attempted answer into a new pending response. Scope/expiry/duplicate/ACK gates remain in the shared repository and transport. No automatic response or submission was introduced.
+- Approval/clarification notifications carry only validated reference metadata. Immutable content intents and notification tags distinguish request/question/scope identities; duplicate notifications reuse the same identity. Notifications have no inline approval/answer action. Pending detail routes survive authentication and saved state, while missing or old-scope requests remain read-only. Cold-start recovery does not fabricate request content or rebind an old request to a new socket.
+- Final focused Debug unit run: 43 tests passed (Attention coordinator/repository, normalization, reference decoder, navigation, Run repository, and 18 existing Chat approval/clarification cases). The registry's 6 tests also passed after the new drill-down registration; all 38 legacy entries remain intact, 43 entries total. Dedicated API 36 emulator: initial 11 tests passed for detail UI, notification objects, and saved stacks; after the final replay/layout changes, 7 relevant detail/observation UI tests passed, including 2x font controls and confirmed-request removal. checkColorLiterals and targeted ktlint passed. One instrumentation compile attempt had an invalid test-only import; it was corrected before the passing runs.
+- Evidence: `../phase1-validation/pr09b-attention-tests.log`, `pr09b-attention-ui.log`, `pr09b-final-lifecycle.log` and copied final XML. Live-server approval ACK/pending recovery, actual OS process death, TalkBack speech output and real-device update are not claimed by these tests; PR11 records the integration evidence and limits.
+
+### PR10 — Offline Mini App manifest foundation
+
+- Added a dedicated strict camelCase parser/model and typed core/plugin permissions. UTF-8 decoding reports malformed bytes; a 64 KiB / depth-32 guard rejects excessive input and duplicate JSON members (including escaped names) before a JsonObject can overwrite them. Unknown fields, explicit nulls, primitive coercion, missing required fields and unknown entry/icon kinds fail closed.
+- Metadata validation covers schema/component versions, Unicode text bounds, IDs, permissions, contribution/keyword duplicates, routes, priorities, offline retention, hash metadata and semantic versions. URL policy is deliberately restrictive: explicit HTTPS origins, no userinfo/query/fragment, no encoded/traversing paths, and SDUI paths within the declaring plugin's mobile namespace. Validation does not verify signatures, grant permissions, or establish a working renderer/backend.
+- Native resolution uses explicit compiled NavKeys for existing Chat/Activity features, never a class-name loader. Minimum-host-version checks reject unknown/non-semver versions rather than guessing compatibility. The legacy build version `1.0-dev` is not silently normalized to a supported manifest host version.
+- Copied the 3 specification examples byte-for-byte into local assets. All 3 validate with the explicitly test-only Development fixture registration; the live built-in registry correctly rejects the unimplemented Development business feature. Apps validates and displays only the examples' metadata, clearly marked unavailable and ungranted. No enable/install/fetch/renderer/WebView/action execution is present. The declaration index starts disabled and removes all contributions on disable while retaining other registrations.
+- Debug compile/color checks passed. Final MiniAppContractTest: 17 tests passed, including the original example byte comparison, invalid members/types/IDs/permissions/paths/origins, native entry rejection, prerelease ordering and disabled contribution removal. Dedicated emulator-5580/API 36: 2 Apps tests passed, including 2x font scrolling and permission review without navigation/activation. Targeted ktlint formatting/check and git diff --check passed; the published JSON Schema was not modified.
+- Evidence: `../phase1-validation/pr10-contract-tests.log`, `pr10-final-contract.log`, `pr10-apps-ui.log` and copied XML. This completes the offline foundation only. Final whole-app gates, screenshots and integration limitations are recorded in PR11.
+
+## PR11 — 最終統合検証（2026-09-06）
+
+製品実装の最終変更は `d0c79a4`。後続はテストと文書だけで、公開・push・merge・実環境適用は行っていない。
+Windows / JDK 21 / UTF-8固定 / SDK 37 / 専用 `Codex_Personal_AI_Phase1`（API 36、`emulator-5580`）を使用した。
+同時に接続されていたadb対象はこのエミュレーターだけ。個人の実端末にはインストールしていない。
+
+### 品質ゲート
+
+| task | 最終結果 | 証跡（checkout外 `../phase1-validation/`） |
+|---|---|---|
+| `ktlintCheck` | 成功 | `pr11-style-lint-final.log`（最後のUIテスト変更後も再確認） |
+| `checkColorLiterals` | 成功 | `pr11-checkColorLiterals.log` |
+| `testDebugUnitTest` | 1,404件成功、failure/error/skip 0 | `pr11-testDebugUnitTest.log` / `pr11-debug-results/` |
+| `testReleaseUnitTest` | 1,404件成功、failure/error/skip 0 | `pr11-testReleaseUnitTest.log` / `pr11-release-results/` |
+| `lintDebug` | 成功、error 0、warning 117、hint 13 | `pr11-style-lint-final.log` / `pr11-lint-results.xml` |
+| `assembleDebug` | 成功 | `pr11-assembleDebug.log`（後続のinstrumentationでもDebug APKを生成） |
+| `compileReleaseKotlin` | 成功 | `pr11-compileReleaseKotlin.log` |
+| `connectedDebugAndroidTest` | 全53件成功、failure/error/skip 0 | `pr11-navigation-final.log` / `pr11-ui-complete.xml` |
+
+PR01対象だった既存Windowsのunit 2失敗とcolor guardの失敗は解消し、最終全体試験で再発していない。
+新しい画面fixtureは初回にActivityResult owner、次にApplication extras、relaxed mockのSavedState closeableで失敗した。
+テストContextがActivityを保持し、実ActivityのViewModelStoreを利用するよう修正し、期待値を弱めず全53件を再実行した。
+既存テストの削除・skip追加・除外filterによる最終全件の省略はしていない。開発中の絞込み実行と最終全件を区別する。
+lintの警告は残っており、すべてを既存警告と断定する差分監査はしていない。エラー・新規の未解決テスト失敗は0。
+Release APKの署名・配布とLinux CIは未実施。Release Kotlinコンパイルの成功で代替したとは扱わない。
+
+### 統合確認と自己レビュー
+
+- 実MainNavigationでToday→Chat→Activity→Apps→Chat、下書き保持、メニュー→Advanced→Android Back→Chat、logout/loginの内部画面破棄を確認した。Chatには合成ViewModel、認証にはメモリ上の合成flowを使い、実credentialを書き換えていない。
+- 実IME表示中に下部バーが消え、入力欄が操作可能なことを確認した。日本語streaming本文・入力、Appsの詳細保持、200％文字の承認詳細・ACK待ち無効操作を検証して実画面を取得・目視確認した。
+- Advanced一覧の27項目を実際にスクロールしてタップし、元のNavKeyへのdispatchを全件確認した。既存38entry＋Shell追加5entryの対応、subpageと引数付き詳細はregistry/復元試験とNavigationのentryを照合した。全管理画面のserver操作成功を意味しない。
+- 全UIにはDB保全4件、保存状態5件、通知4件、Attention4件、Apps2件、Chat・添付・下書き・reasoning・scroll等の既存試験を含む。SQLCipherの旧schema v2〜v6からv7へのデータ保持と不正鍵/未知versionの保全停止を合成fixtureで検証した。
+- 実APKを専用エミュレーターの既存インストールへ `adb install -r` で更新した。更新直前・直後のDB/WAL/SHM/暗号化preferences/server設定のSHA-256が一致した。元データは合成テスト用であり、個人実機や全旧配布版の更新保証ではない。
+- 未認証AuthLoginを背景化し、app UIDでプロセスを終了した。PID消失と新PID、同じ画面への復元を確認した（`pr11-process-recreation.json` / before・after XML）。`am kill`だけでは前景履歴のprocessが残ったため、その結果では成功と判定していない。認証済み会話・未解決要求を伴う実OS再生成は未確認。
+- TalkBack 16.0を一時有効化し、実APK認証画面の見出し→URL入力のフォーカス・IMEを確認した（`pr11-talkback-service.txt` と画面）。サービス設定は元の無効状態へ戻した。実音とAttention全項目の連続フォーカス順は未確認。
+- 自己レビューで、test-only登録/合成状態がproductionに入らないこと、観測と実行状態の区別、固定要求への応答、権限表示と付与の区別、既存screen content・署名・applicationIdの保持を再確認した。
+
+### APKと画面
+
+最終APKの保存コピーは `E:/OSHIIRE/software/Hermes/phase1-validation/artifacts/hermes-phase1-5fc1cbc-debug.apk`。
+生成元は `app/build/outputs/apk/debug/app-debug.apk`。APK内 `GIT_SHA=5fc1cbc`、`versionName=1.0-dev`、
+`versionCode=1`、`applicationId=com.m57.hermescontrol`。このcommit以降の変更はテスト/文書だけ。
+SHA-256: `43d6a80a5253c12e828f641a8b4fe084a3197d980bd8faf6109161377eea2184`。
+更新前後の比較は `pr11-emulator-update-final.json` に保存した。
+Debug署名のローカル成果物であり、個人実機用の署名互換性や本番配布の承認ではない。
+
+画面は `../phase1-validation/screenshots/` に保存した。内容と各ファイルは [SCREEN_MAP.md](SCREEN_MAP.md) を参照。
+01〜11・19はproduction UIに合成入力を与えた画面、15〜17は実APKの手動操作である。
+17は更新後の起動、11は実ナビゲーションのIME、19は実メニューからのAdvanced、04は文字200％の承認詳細を示す。
+TalkBackと未認証OS再生成は同じ製品コードの`d0c79a4` APKで実施し、最終APKは埋込みGIT_SHAのみ`5fc1cbc`に更新された。
+スクリーンショットの取得にはAndroidのadditional test outputも使い、hostへ回収した。
+
+### Unknown / disabled / 残る確認条件
+
+| 項目 | 状態 | 解除・追加確認に必要なもの |
+|---|---|---|
+| 実Hermesとの通し動作 | 未確認 | 稼働commit、認証方式、安全なtest profile/接続先と実接続の許可。継続session・exact request・ACK・失効・replay・結果不明をその版で確認 |
+| API Server write | disabled | discovery広告だけでは解除しない。継続session、approval、idempotencyのlive契約確認と別途の実装範囲の承認 |
+| 未観測/欠落/別scope/冷起動の要求 | Unknownまたは操作不可 | 同じ接続scopeからの正確な元要求と確定状態。入力やrequest IDを推測して補完しない |
+| 永続Run履歴 | Phase 1では提供しない | 広告された実server契約が必要。現状はプロセス内の限定観測であり架空Run IDを作らない |
+| Mini App・就活等の業務機能 | 準備中、未許可、実行disabled | renderer/業務feature/配布/権限設計と実装の別依頼。manifestの読取だけでは解除しない |
+| 壊れた/鍵不明のDB | データを保持してBlocked | 正しい元鍵・対応schema・復旧方法の確認。初期化やアンインストールで回避しない |
+| 実機・認証済みprocess death・実通知配送 | 未確認 | 対象環境と検証範囲の別承認。今回のローカルfixture試験で代替したとは扱わない |
+| TalkBack読み上げ実音・新規詳細の全順序 | 未確認 | 音声を聞ける環境での読み上げ・フォーカス順確認 |
+
+承認範囲の実装・ローカル検証を妨げる未解決Blockedはない。今回の成果物を確認するための追加入力は不要。
+実環境検証へ進む場合だけ、上表の接続情報・対象範囲の指定が必要。秘密値をこの報告書へ保存しない。
+Phase 2、遠隔Mini App実行、FCM、実端末更新、push/merge/PR公開には進まず、このPhase 1で終了する。

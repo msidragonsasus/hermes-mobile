@@ -28,10 +28,63 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.intOrNull
 
 class DashboardRpcTransport :
     HermesTransport,
-    HermesSubmissionTransport {
+    HermesSubmissionTransport,
+    HermesAttentionTransport,
+    HermesAttentionSource {
+    override val attentionSignals = normalizeDashboardAttention(HermesWsClient.scopedEvents)
+
+    override suspend fun respondApproval(
+        ref: RequestRef,
+        choice: String,
+    ): SubmissionResult<Boolean> {
+        if (choice !in setOf("once", "deny") || ref.requestId.isBlank() || ref.questionId != null) {
+            return SubmissionResult.NotSent
+        }
+        return execute(
+            ref.scope,
+            WsMethods.APPROVAL_RESPOND,
+            mapOf(
+                "session_id" to ref.session.runtimeId,
+                "request_id" to ref.requestId,
+                "choice" to choice,
+                "all" to false,
+            ),
+        ) { body ->
+            (body["resolved"] as? JsonPrimitive)?.takeUnless { it.isString }?.intOrNull?.let { it == 1 }
+        }
+    }
+
+    override suspend fun acknowledgeApproval(ref: RequestRef): SubmissionResult<Boolean> {
+        if (ref.requestId.isBlank()) return SubmissionResult.NotSent
+        return execute(
+            ref.scope,
+            WsMethods.APPROVAL_RECEIVED,
+            mapOf("session_id" to ref.session.runtimeId, "request_id" to ref.requestId),
+        ) { body -> true.takeIf { body.isTrue("acknowledged") } }
+    }
+
+    override suspend fun respondClarification(
+        ref: RequestRef,
+        answer: String,
+    ): SubmissionResult<Boolean> {
+        if (ref.requestId.isBlank() || ref.questionId?.isBlank() == true) return SubmissionResult.NotSent
+        return execute(
+            ref.scope,
+            WsMethods.CLARIFY_RESPOND,
+            buildMap {
+                put("session_id", ref.session.runtimeId)
+                put("request_id", ref.requestId)
+                put("clarify_id", ref.requestId)
+                ref.questionId?.let { put("question_id", it) }
+                put("answer", answer)
+            },
+        ) { body -> true.takeIf { body.string("status") == "ok" } }
+    }
+
     override fun configuredScope(): ConnectionScope? = HermesWsClient.configuredScope()
 
     override fun isReady(scope: ConnectionScope): Boolean =

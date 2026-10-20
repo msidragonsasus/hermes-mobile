@@ -5,10 +5,25 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.navigation3.runtime.NavBackStack
 import androidx.navigation3.runtime.NavKey
+import com.m57.hermescontrol.domain.hermes.RequestRef
+import com.m57.hermescontrol.domain.hermes.RequestReferenceCodec
+import com.m57.hermescontrol.navigation.AttentionDetailKey
+import com.m57.hermescontrol.navigation.NavigationRole
+import com.m57.hermescontrol.navigation.ShellNavigation
+import com.m57.hermescontrol.navigation.ShellTab
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 
+@Serializable
 data class PendingChatNavigation(
     val sessionId: String,
     val scrollToBottom: Boolean,
+    val requestId: Long,
+)
+
+@Serializable
+data class PendingAttentionNavigation(
+    val ref: RequestRef,
     val requestId: Long,
 )
 
@@ -25,20 +40,89 @@ data class PendingChatNavigation(
  */
 object NavigationController {
     var backStack: NavBackStack<NavKey>? = null
+    private var shellNavigation: ShellNavigation? = null
+
+    internal fun attachAuth(stack: NavBackStack<NavKey>) {
+        shellNavigation = null
+        backStack = stack
+    }
+
+    internal fun attachShell(shell: ShellNavigation) {
+        shellNavigation = shell
+        backStack = shell.backStack
+    }
+
+    internal fun detachShell(shell: ShellNavigation) {
+        if (shellNavigation !== shell) return
+        shellNavigation = null
+        backStack = null
+    }
+
+    fun selectTab(tab: ShellTab) {
+        val shell = shellNavigation ?: return
+        shell.select(tab)
+        // Update synchronously: a second callback can arrive before recomposition.
+        backStack = shell.backStack
+    }
+
     var pendingChatNavigation: PendingChatNavigation? by mutableStateOf(null)
         private set
     val pendingSessionId: String? get() = pendingChatNavigation?.sessionId
 
     private var nextChatNavigationRequestId = 0L
+    private var lastConsumedChatNavigationId = 0L
+    var pendingAttentionNavigation: PendingAttentionNavigation? by mutableStateOf(null)
+        private set
+    private var nextAttentionNavigationId = 0L
+    private var lastConsumedAttentionNavigationId = 0L
+
+    fun openAttentionFromNotification(ref: RequestRef) {
+        if (!RequestReferenceCodec.isValid(ref)) return
+        pendingChatNavigation = null
+        pendingAttentionNavigation = PendingAttentionNavigation(ref, ++nextAttentionNavigationId)
+    }
+
+    fun revealPendingAttention() {
+        val pending = pendingAttentionNavigation ?: return
+        val stack = backStack ?: return
+        if (stack.any { roleOf(it) == NavigationRole.AUTH }) return
+        navigateTo(AttentionDetailKey(pending.ref))
+        lastConsumedAttentionNavigationId = pending.requestId
+        pendingAttentionNavigation = null
+    }
+
+    fun savePendingAttentionNavigation(): String? = pendingAttentionNavigation?.let { Json.encodeToString(it) }
+
+    fun restorePendingAttentionNavigation(encoded: String?) {
+        if (encoded == null || encoded.length > RequestReferenceCodec.MAX_ENCODED_LENGTH + 128) return
+        val restored = runCatching { Json.decodeFromString<PendingAttentionNavigation>(encoded) }.getOrNull() ?: return
+        if (!RequestReferenceCodec.isValid(restored.ref) || restored.requestId <= 0 ||
+            restored.requestId == Long.MAX_VALUE ||
+            restored.requestId <= lastConsumedAttentionNavigationId ||
+            restored.requestId <= (pendingAttentionNavigation?.requestId ?: 0)
+        ) {
+            return
+        }
+        nextAttentionNavigationId = maxOf(nextAttentionNavigationId, restored.requestId)
+        pendingAttentionNavigation = restored
+    }
+
+    fun roleOf(key: NavKey): NavigationRole? = ScreenRegistry.contributions.forKey(key::class)?.role
 
     /**
      * Top-level primary screens (all drawer-accessible screens).
      * Navigating to any of these clears the stack to `[ChatScreen, key]` (or `[ChatScreen]` for Chat),
      * ensuring swiping back returns to ChatScreen.
      */
-    fun isPrimaryScreen(key: NavKey): Boolean = key == ChatScreen || ScreenRegistry.ALL_SCREENS.any { it.key == key }
+    fun isPrimaryScreen(key: NavKey): Boolean = roleOf(key) in setOf(NavigationRole.ROOT, NavigationRole.ADVANCED)
 
     fun navigateTo(key: NavKey) {
+        val shell = shellNavigation
+        if (shell != null && roleOf(key) != NavigationRole.AUTH) {
+            shell.navigate(key)
+            backStack = shell.backStack
+            return
+        }
         val stack = backStack ?: return
         if (stack.lastOrNull() == key) return
 
@@ -78,22 +162,47 @@ object NavigationController {
         scrollToBottom: Boolean,
     ) {
         if (sessionId.isBlank()) return
+        pendingAttentionNavigation = null
         pendingChatNavigation =
             PendingChatNavigation(
                 sessionId = sessionId,
                 scrollToBottom = scrollToBottom,
                 requestId = ++nextChatNavigationRequestId,
             )
-        navigateTo(ChatScreen)
+        // A notification received before login stays pending until an authenticated stack attaches.
+        if (backStack?.any { roleOf(it) == NavigationRole.AUTH } != true) navigateTo(ChatScreen)
+    }
+
+    fun savePendingChatNavigation(): String? = pendingChatNavigation?.let { Json.encodeToString(it) }
+
+    fun restorePendingChatNavigation(encoded: String?) {
+        val restored =
+            encoded?.let { runCatching { Json.decodeFromString<PendingChatNavigation>(it) }.getOrNull() }
+                ?: return
+        if (restored.sessionId.isBlank() || restored.requestId <= 0 || restored.requestId == Long.MAX_VALUE) return
+        if (restored.requestId <= lastConsumedChatNavigationId ||
+            restored.requestId <= (pendingChatNavigation?.requestId ?: 0)
+        ) {
+            return
+        }
+        nextChatNavigationRequestId = maxOf(nextChatNavigationRequestId, restored.requestId)
+        pendingChatNavigation = restored
     }
 
     fun consumePendingChatNavigation(): PendingChatNavigation? =
-        pendingChatNavigation.also { pendingChatNavigation = null }
+        pendingChatNavigation.also {
+            if (it != null) lastConsumedChatNavigationId = maxOf(lastConsumedChatNavigationId, it.requestId)
+            pendingChatNavigation = null
+        }
 
     fun consumePendingSessionId(): String? = consumePendingChatNavigation()?.sessionId
 
     /** Clear the stack and navigate to the given screen atomically. */
     fun resetTo(screen: NavKey) {
+        if (shellNavigation != null && ShellTab.entries.any { it.root == screen }) {
+            navigateTo(screen)
+            return
+        }
         val stack = backStack ?: return
         stack.clear()
         stack.add(screen)
@@ -105,6 +214,10 @@ object NavigationController {
      */
     fun goBack(fallback: NavKey = ChatScreen) {
         val stack = backStack ?: return
+        if (shellNavigation != null && stack.size == 1) {
+            selectTab(ShellTab.TODAY)
+            return
+        }
         if (stack.size > 1) {
             stack.removeLastOrNull()
         } else if (stack.size == 1) {

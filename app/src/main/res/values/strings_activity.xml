@@ -1,0 +1,32 @@
+<resources>
+    <string name="activity_event_started">Response started</string>
+    <string name="activity_event_tool_started">Tool started</string>
+    <string name="activity_event_tool_completed">Tool finished</string>
+    <string name="activity_event_expired">Question expired</string>
+    <string name="activity_observation_scope">Events received by this app only. This is not a complete server history; observations are cleared when the app process ends.</string>
+    <string name="activity_loading">Loading session names…</string>
+    <string name="activity_read_unavailable">Session history could not be retrieved. Only received events are shown.</string>
+    <string name="activity_needs_you">Needs You</string>
+    <string name="activity_no_observed_requests">No requests for your input have been observed.</string>
+    <string name="activity_observed_sessions">Observed activity</string>
+    <string name="activity_no_observations">No activity has been observed yet.</string>
+    <string name="activity_timeline">Received events</string>
+    <string name="activity_observed_at">Received: %1$s</string>
+    <string name="activity_event_gap">Some events may be missing</string>
+    <string name="activity_session">Session</string>
+    <string name="activity_last_confirmed">Last confirmed state. Current progress is unknown.</string>
+    <string name="activity_open_session">Open session</string>
+    <string name="activity_session_unavailable">The saved session ID is not yet known.</string>
+    <string name="activity_offline">Offline</string>
+    <string name="activity_connecting">Connecting</string>
+    <string name="activity_connected">Connected</string>
+    <string name="activity_reconnecting">Reconnecting</string>
+    <string name="activity_auth_required">Sign in again to reconnect</string>
+    <string name="activity_unknown">Unknown</string>
+    <string name="activity_running">Running</string>
+    <string name="activity_needs_input">Needs input</string>
+    <string name="activity_waiting_approval">Waiting for approval</string>
+    <string name="activity_completed">Completed</string>
+    <string name="activity_failed">Failed</string>
+    <string name="activity_canceled">Canceled</string>
+</resources>

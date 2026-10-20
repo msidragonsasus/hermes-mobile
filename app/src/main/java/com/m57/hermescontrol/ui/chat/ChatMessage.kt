@@ -1,6 +1,8 @@
 package com.m57.hermescontrol.ui.chat
 
 import com.m57.hermescontrol.data.model.Attachment
+import com.m57.hermescontrol.domain.hermes.AttentionStatus
+import com.m57.hermescontrol.domain.hermes.RequestRef
 import java.util.UUID
 
 /**
@@ -20,6 +22,9 @@ data class ApprovalInfo(
     val allowPermanent: Boolean? = null,
     /** True → Smart DENY override, once/deny only. */
     val smartDenied: Boolean? = null,
+    val ref: RequestRef? = null,
+    val status: AttentionStatus = AttentionStatus.PENDING,
+    val responseEnabled: Boolean = false,
 )
 
 /**
