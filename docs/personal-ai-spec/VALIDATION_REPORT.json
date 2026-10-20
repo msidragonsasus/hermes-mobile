@@ -1,0 +1,15 @@
+{
+  "jsonSyntax": [
+    "examples/career/manifest.json",
+    "examples/development/manifest.json",
+    "examples/university/manifest.json",
+    "package-index.json",
+    "schemas/miniapp-manifest.schema.json"
+  ],
+  "schemaValidation": [
+    "examples/career/manifest.json",
+    "examples/development/manifest.json",
+    "examples/university/manifest.json"
+  ],
+  "errors": []
+}

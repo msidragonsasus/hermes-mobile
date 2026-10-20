@@ -55,7 +55,7 @@
 - **Gateway Status:** Monitor WebSocket connection, MCP servers, messaging channels, and OAuth providers.
 - **Productivity:** View and manage tasks via integrated Kanban boards, track agent milestones, and browse session history.
 - **Analytics & Billing:** Usage analytics dashboard and billing/subscription management.
-- **Theming:** 6 built-in color presets (Default, Monochrome, Gruvbox, Catppuccin, AMOLED, Neon Noir) plus Material You dynamic colors on supported devices.
+- **Theming:** 6 built-in color presets (Default, Monochrome, Gruvbox, Catppuccin, AMOLED, Nord) plus Material You dynamic colors on supported devices.
 - **Modern UX:** Native Material 3 design with pull-to-refresh, scroll-aware TopBar, and customizable bottom navigation.
 
 ---
@@ -140,17 +140,27 @@ app/src/main/java/com/m57/hermescontrol/
 
 ---
 
+## Personal AI Shell planning
+
+This fork preserves Hermes Mobile while preparing a staged Personal AI Shell.
+See [the specification](docs/personal-ai-spec/README.md),
+[accepted audit and implementation plan](docs/personal-ai/IMPLEMENTATION_PLAN.md),
+and [PR 00 documentation status](docs/personal-ai/PR00_REPORT.md).
+Today / Chat / Activity / Apps is the target, not an implemented feature claim.
+Existing Compose / Material 3 themes and shared UI remain the foundation.
+
 ## Tech Stack
 
-- **Language:** Kotlin 2.4.10 with KSP 2.3.10 compiler plugin
-- **UI & Layout:** Jetpack Compose (BOM 2026.03.01) & Material 3 / Material You
+- **Language:** Kotlin 2.4.10 with KSP 2.3.11 compiler plugin
+- **UI & Layout:** Jetpack Compose (BOM 2026.08.00) & Material 3 / Material You
 - **Navigation:** Navigation3 (Compose-first Routing)
-- **Networking:** Retrofit 3.0.0, OkHttp 5.4.0, Kotlinx Serialization 1.11.0
-- **Database:** Room 2.7.1 with SQLCipher 4.17.0 encryption
+- **Structure / DI:** single `:app`, manual construction / ViewModel factories; Hilt is not installed or required for Phase 1
+- **Networking:** Retrofit 3.0.0, OkHttp 5.5.0, Kotlinx Serialization 1.11.0
+- **Database:** Room 3.0.2 (`androidx.room3`), schema v6, with SQLCipher 4.18.0 encryption
 - **Security:** `EncryptedSharedPreferences` (AES256-GCM), DataStore
-- **Theming:** 6 built-in presets (Default, Monochrome, Gruvbox, Catppuccin, AMOLED, Neon Noir) + Material You dynamic colors
-- **Image Loading:** Coil 2.7.0
-- **Testing:** JUnit 5, MockK, Turbine, Espresso, Compose UI testing
+- **Theming:** 6 built-in presets (Default, Monochrome, Gruvbox, Catppuccin, AMOLED, Nord) + Material You dynamic colors
+- **Image Loading:** Coil 3.6.1
+- **Testing:** JUnit 4 / Jupiter (JUnit Platform), MockK, Turbine, Espresso, Compose UI testing
 - **Formatting:** `ktlint` 1.8.0 style rules (checked automatically in CI)
 
 ---

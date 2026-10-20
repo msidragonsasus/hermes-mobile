@@ -21,8 +21,12 @@ import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.data.ws.JsonRpcError
 import com.m57.hermescontrol.data.ws.WsEvent
 import com.m57.hermescontrol.data.ws.WsMethods
+import com.m57.hermescontrol.domain.hermes.DraftState
+import com.m57.hermescontrol.domain.hermes.SubmissionResult
 import com.m57.hermescontrol.ui.chat.fakes.FakeChatPersistenceRepository
+import com.m57.hermescontrol.ui.chat.fakes.FakeOutgoingDraftStore
 import com.m57.hermescontrol.ui.chat.fakes.FakeSlashUsageStore
+import com.m57.hermescontrol.ui.chat.fakes.FakeSubmissionTransport
 import io.mockk.*
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -69,6 +73,8 @@ class ChatViewModelTest {
     private lateinit var app: Application
     private lateinit var fakeRepo: FakeChatPersistenceRepository
     private lateinit var fakeSlashUsageStore: FakeSlashUsageStore
+    private lateinit var fakeDraftStore: FakeOutgoingDraftStore
+    private lateinit var fakeSubmission: FakeSubmissionTransport
     private lateinit var attachmentCacheDir: java.io.File
 
     /** Counter used to generate unique WS request IDs. */
@@ -121,6 +127,7 @@ class ChatViewModelTest {
         every { Log.d(any(), any()) } returns 0
         every { Log.i(any(), any()) } returns 0
         every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any<String>()) } returns 0
         every { Log.e(any(), any(), any()) } returns 0
 
         mockkObject(AuthManager)
@@ -136,6 +143,13 @@ class ChatViewModelTest {
         // deferred freezes the VM's event collector at the SESSION_CREATE
         // session.usage await and lets its late completion race per-test
         // capture stubs (slash-focus flake, CI 31137581335 on 4645a2b).
+        every { HermesWsClient.writeScoped(any(), any(), any(), any()) } answers {
+            com.m57.hermescontrol.data.ws.ScopedRpcSubmission(
+                "synthetic-command",
+                true,
+                HermesWsClient.request(arg(1), arg(2), arg(3)),
+            )
+        }
         every { HermesWsClient.request(any(), any(), any()) } answers {
             HermesWsClient.send(arg(0), arg(1)) {}
             CompletableDeferred<Any?>(Unit)
@@ -151,6 +165,8 @@ class ChatViewModelTest {
         every { app.cacheDir } returns attachmentCacheDir
         fakeRepo = FakeChatPersistenceRepository()
         fakeSlashUsageStore = FakeSlashUsageStore()
+        fakeDraftStore = FakeOutgoingDraftStore()
+        fakeSubmission = FakeSubmissionTransport()
         ActiveSessionHolder.set(null)
 
         mockConnectionStatus.value = ConnectionStatus.DISCONNECTED
@@ -223,7 +239,16 @@ class ChatViewModelTest {
     private fun createViewModel(startCleanup: Boolean = false): ChatViewModel =
         // Both dispatchers injected — a real ioDispatcher would race the
         // test scheduler (repo writes hop it) and shuffle RPC ordering.
-        ChatViewModel(app, startCleanup, fakeRepo, fakeSlashUsageStore, testDispatcher, testDispatcher)
+        ChatViewModel(
+            app,
+            startCleanup,
+            fakeRepo,
+            fakeSlashUsageStore,
+            testDispatcher,
+            testDispatcher,
+            fakeDraftStore,
+            fakeSubmission,
+        )
 
     /**
      * Create ViewModel, simulate GatewayReady, feed SESSION_CREATE result,
@@ -258,6 +283,235 @@ class ChatViewModelTest {
     }
 
     // ── Slash command tests ──────────────────────────────────────────────────
+
+    private fun stubDraftAttachment(vm: ChatViewModel) {
+        mockkStatic(Uri::class)
+        val uri = mockk<Uri>()
+        val resolver = mockk<ContentResolver>()
+        every { Uri.parse("content://draft/attachment") } returns uri
+        every { app.contentResolver } returns resolver
+        every { resolver.openInputStream(uri) } answers { java.io.ByteArrayInputStream(byteArrayOf(1, 2, 3)) }
+        every { HermesWsClient.request(WsMethods.FILE_ATTACH, any(), any()) } returns
+            CompletableDeferred(mapOf("attached" to true, "ref_text" to "@file:synthetic"))
+        vm.addAttachment("content://draft/attachment", "fixture.txt", "text/plain", 3)
+    }
+
+    @Test
+    fun draft_lostAckDoesNotEraseObservedStreamingState() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            fakeSubmission.beforePrompt = {
+                mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+                runCurrent()
+            }
+            fakeSubmission.nextPromptResult = SubmissionResult.Unknown
+            vm.sendMessage("Observe the answer")
+            advanceUntilIdle()
+            assertTrue(vm.uiState.value.isAgentTyping)
+            assertEquals(
+                DraftState.UNKNOWN,
+                fakeDraftStore.drafts.value
+                    .single()
+                    .state,
+            )
+        }
+
+    @Test
+    fun draft_unknownAttachmentStopsBeforePromptAndRetainsFullIntent() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            stubDraftAttachment(vm)
+            fakeSubmission.nextAttachmentResult = SubmissionResult.Unknown
+            vm.sendMessage("Inspect attachment")
+            advanceUntilIdle()
+            val stored = fakeDraftStore.drafts.value.single()
+            assertEquals(DraftState.UNKNOWN, stored.state)
+            assertEquals(1, stored.attachments.size)
+            assertEquals("Inspect attachment", stored.text)
+            verify(exactly = 0) { HermesWsClient.sendMessage(any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun draft_rejectedPromptAfterConfirmedAttachmentStaysUnknown() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            stubDraftAttachment(vm)
+            fakeSubmission.nextPromptResult = SubmissionResult.NotSent
+            vm.sendMessage("Partial remote write")
+            advanceUntilIdle()
+            assertEquals(
+                DraftState.UNKNOWN,
+                fakeDraftStore.drafts.value
+                    .single()
+                    .state,
+            )
+            verify(exactly = 1) { HermesWsClient.request(WsMethods.FILE_ATTACH, any(), any()) }
+            verify(exactly = 0) { HermesWsClient.sendMessage(any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun draft_messageCacheFailureAfterAckKeepsUnknownWithoutResending() =
+        runTest {
+            fakeRepo = spyk(fakeRepo)
+            coEvery { fakeRepo.persistMessage(match { it.content == "Confirmed remotely" }, any()) } throws
+                IllegalStateException("Synthetic cache failure")
+            val (vm, _) = createViewModelWithSession()
+            vm.sendMessage("Confirmed remotely")
+            advanceUntilIdle()
+            assertEquals(
+                DraftState.UNKNOWN,
+                fakeDraftStore.drafts.value
+                    .single()
+                    .state,
+            )
+            assertTrue(vm.uiState.value.draftStorageError)
+            assertTrue(
+                vm.uiState.value.activeDraftIds
+                    .isEmpty(),
+            )
+            verify(exactly = 1) { HermesWsClient.sendMessage(any(), "Confirmed remotely", any(), any()) }
+        }
+
+    @Test
+    fun draft_restoredQueuePayloadStartingWithSlashIsSentOnceAsLiteralPrompt() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            fakeSubmission.ready = false
+            vm.sendMessage("/queue /help")
+            advanceUntilIdle()
+            val draft = fakeDraftStore.drafts.value.single()
+            assertEquals("/help", draft.text)
+            assertTrue(draft.queued)
+            fakeSubmission.ready = true
+            vm.restoreDraft(draft.id)
+            advanceUntilIdle()
+            vm.sendMessage("/help")
+            advanceUntilIdle()
+            verify(exactly = 1) { HermesWsClient.sendMessage(sessionId, "/help", any(), true) }
+            verify(exactly = 0) { HermesWsClient.writeScoped(any(), WsMethods.COMMAND_DISPATCH, any(), any()) }
+            verify(exactly = 0) { HermesWsClient.sendRedirect(any(), any(), any()) }
+            assertTrue(fakeDraftStore.drafts.value.isEmpty())
+        }
+
+    @Test
+    fun draft_offlineSurvivesRecreationAndReconnectWithoutSending() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            fakeSubmission.ready = false
+            vm.sendMessage("Keep this offline")
+            advanceUntilIdle()
+            val stored = fakeDraftStore.drafts.value.single()
+            assertEquals(DraftState.DRAFT, stored.state)
+            assertTrue(
+                vm.uiState.value.activeDraftIds
+                    .isEmpty(),
+            )
+            assertFalse(
+                vm.uiState.value.messages
+                    .any { it.content == stored.text },
+            )
+
+            fakeSubmission.scope = fakeSubmission.scope.copy(processId = "next-process", generation = 2)
+            val recreated = createViewModel()
+            advanceUntilIdle()
+            assertEquals(
+                stored,
+                recreated.uiState.value.outgoingDrafts
+                    .single(),
+            )
+            fakeSubmission.ready = true
+            mockEventsFlow.emit(WsEvent.GatewayReady(null))
+            advanceUntilIdle()
+            verify(exactly = 0) { HermesWsClient.sendMessage(any(), any(), any(), any()) }
+            recreated.restoreDraft(stored.id)
+            advanceUntilIdle()
+            assertEquals(stored.text, recreated.uiState.value.composerTextToRestore)
+            verify(exactly = 0) { HermesWsClient.sendMessage(any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun draft_unknownIsDurableBeforeWireAndCannotBeRestoredOrReplayed() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            fakeSubmission.beforePrompt = {
+                assertEquals(
+                    DraftState.UNKNOWN,
+                    fakeDraftStore.drafts.value
+                        .single()
+                        .state,
+                )
+            }
+            fakeSubmission.nextPromptResult = SubmissionResult.Unknown
+            vm.sendMessage("Possible remote action")
+            advanceUntilIdle()
+            val stored = fakeDraftStore.drafts.value.single()
+            assertEquals(DraftState.UNKNOWN, stored.state)
+            assertTrue(
+                vm.uiState.value.activeDraftIds
+                    .isEmpty(),
+            )
+            assertFalse(fakeRepo.dao.getMessagesForSession("session-123").any { it.content == stored.text })
+            vm.restoreDraft(stored.id)
+            advanceUntilIdle()
+            assertNull(vm.uiState.value.composerTextToRestore)
+            mockEventsFlow.emit(WsEvent.RpcError("late-untracked", JsonRpcError(500, "late failure")))
+            advanceUntilIdle()
+            assertNull(vm.uiState.value.errorMessage)
+            assertEquals(
+                DraftState.UNKNOWN,
+                fakeDraftStore.drafts.value
+                    .single()
+                    .state,
+            )
+            val recreated = createViewModel()
+            advanceUntilIdle()
+            assertEquals(
+                stored,
+                recreated.uiState.value.outgoingDrafts
+                    .single(),
+            )
+            verify(exactly = 1) { HermesWsClient.sendMessage(any(), stored.text, any(), any()) }
+        }
+
+    @Test
+    fun draft_scopeChangeAtWireKeepsUnsentDraftUnderOriginalTarget() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val originalScope = fakeSubmission.scope
+            fakeSubmission.beforePrompt = {
+                fakeSubmission.scope = originalScope.copy(serverProfileId = "other-profile")
+            }
+            vm.sendMessage("Original target only")
+            advanceUntilIdle()
+            val stored = fakeDraftStore.drafts.value.single()
+            assertEquals(originalScope, stored.scope)
+            assertEquals(DraftState.DRAFT, stored.state)
+            verify(exactly = 0) { HermesWsClient.sendMessage(any(), any(), any(), any()) }
+            vm.restoreDraft(stored.id)
+            vm.discardDraft(stored.id)
+            advanceUntilIdle()
+            assertNull(vm.uiState.value.composerTextToRestore)
+            assertEquals(stored, fakeDraftStore.drafts.value.single())
+        }
+
+    @Test
+    fun draft_confirmedPromptRemovesRecordAndCachesMessage() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            fakeSubmission.beforePrompt = {
+                assertEquals(
+                    DraftState.UNKNOWN,
+                    fakeDraftStore.drafts.value
+                        .single()
+                        .state,
+                )
+                assertFalse(fakeRepo.dao.getMessagesForSession("session-123").any { it.content == "Confirmed prompt" })
+            }
+            vm.sendMessage("Confirmed prompt")
+            advanceUntilIdle()
+            assertTrue(fakeDraftStore.drafts.value.isEmpty())
+            assertTrue(fakeRepo.dao.getMessagesForSession("session-123").any { it.content == "Confirmed prompt" })
+        }
 
     @Test
     fun testSlashCommand_help_addsHelpMessage() =
@@ -619,27 +873,18 @@ class ChatViewModelTest {
     fun testSlashCommand_unknown_showsErrorMessage() =
         runTest {
             val (viewModel, sessionId) = createViewModelWithSession()
-            var dispatchReqId = "dispatch-unk"
-
-            every { HermesWsClient.send(WsMethods.COMMAND_DISPATCH, any(), any()) } answers {
-                arg<((String) -> Unit)?>(2)?.invoke(dispatchReqId)
-                dispatchReqId
-            }
+            // Awaited RPC errors are handled by dispatchViaRpc, not an unowned WS event.
+            every { HermesWsClient.request(WsMethods.COMMAND_DISPATCH, any(), any()) } returns
+                CompletableDeferred<Any?>().apply {
+                    completeExceptionally(HermesWsClient.HermesRpcException("Unknown command: nonexistent", -32601))
+                }
 
             viewModel.sendMessage("/nonexistent")
             advanceUntilIdle()
 
-            mockEventsFlow.emit(
-                WsEvent.RpcError(
-                    dispatchReqId,
-                    JsonRpcError(code = -32601, message = "Unknown command: nonexistent"),
-                ),
-            )
-            advanceUntilIdle()
-
             assertTrue(
-                viewModel.uiState.value.errorMessage
-                    ?.contains("Unknown command") == true,
+                viewModel.uiState.value.messages
+                    .any { it.content.contains("Unknown command: nonexistent") },
             )
         }
 
@@ -1828,12 +2073,10 @@ class ChatViewModelTest {
         }
 
     @Test
-    fun sendMessage_persistenceFailureRestoresComposerAndDoesNotDispatch() =
+    fun sendMessage_draftPersistenceFailureRestoresComposerAndDoesNotDispatch() =
         runTest {
-            fakeRepo = spyk(fakeRepo)
-            coEvery {
-                fakeRepo.persistMessage(match { it.content == "keep this prompt" }, any())
-            } throws IllegalStateException("disk full")
+            // The durable pre-send record is now the draft, not the confirmed-message cache.
+            fakeDraftStore.failSave = true
             val (viewModel, _) = createViewModelWithSession()
 
             viewModel.sendMessage("keep this prompt")
@@ -1842,7 +2085,7 @@ class ChatViewModelTest {
             val state = viewModel.uiState.value
             assertFalse(state.messages.any { it.content == "keep this prompt" })
             assertEquals("keep this prompt", state.composerTextToRestore)
-            assertTrue(state.errorMessage?.contains("save") == true)
+            assertTrue(state.draftStorageError)
             assertFalse(state.isAgentTyping)
             verify(exactly = 0) { HermesWsClient.sendMessage(any(), any(), any(), any()) }
         }
@@ -1985,7 +2228,8 @@ class ChatViewModelTest {
             viewModel.sendMessage("Send in the old session")
             advanceUntilIdle()
 
-            verify {
+            // A selection change during attachment preparation now stops before any prompt write.
+            verify(exactly = 0) {
                 HermesWsClient.sendMessage(
                     oldSessionId,
                     match { it.contains("Send in the old session") },
@@ -3913,17 +4157,17 @@ class ChatViewModelTest {
             viewModel.sendMessage("Here is an image")
             advanceUntilIdle()
 
-            // Error path is logged so we can diagnose the failed read.
-            verify { Log.e(any(), match { it.contains("Permission denied") }, any()) }
-
-            // Graceful handling: the message is still sent even though the
-            // attachment bytes couldn't be read (no crash, no lost message).
-            val sent =
-                viewModel.uiState.value.messages
-                    .firstOrNull { it.id == sessionId } != null ||
-                    viewModel.uiState.value.messages
-                        .any { it.content == "Here is an image" }
-            assertTrue("Message should still be sent despite attachment read failure", sent)
+            // Preserve the complete intent; never silently send without the requested attachment.
+            verify { Log.e(any(), "Attachment snapshot unavailable") }
+            verify(exactly = 0) { HermesWsClient.sendMessage(any(), any(), any(), any()) }
+            assertEquals("Here is an image", viewModel.uiState.value.composerTextToRestore)
+            assertEquals(1, viewModel.uiState.value.pendingAttachments.size)
+            assertEquals(
+                DraftState.DRAFT,
+                fakeDraftStore.drafts.value
+                    .single()
+                    .state,
+            )
         }
 
     /**
@@ -4937,7 +5181,7 @@ class ChatViewModelTest {
     // ── Subagent steering & cancellation (issue #1030) ───────────────────
 
     @Test
-    fun testSteerSubagent_sendsRedirectAndUpdatesStatus() =
+    fun testSteerSubagent_sendsRedirectWithoutInventingStatus() =
         runTest {
             val (viewModel, sessionId) = createViewModelWithSession()
             val indicator =
@@ -4956,19 +5200,21 @@ class ChatViewModelTest {
             )
             advanceUntilIdle()
 
+            every { app.getString(com.m57.hermescontrol.R.string.subagent_correction_requested, any()) } returns
+                "Course correction requested: Use index scan instead"
             viewModel.steerSubagent(indicator, "Use index scan instead")
             advanceUntilIdle()
 
             val updated =
                 viewModel.uiState.value.subagentIndicators
                     .first { it.subagentId == "sub-123" }
-            assertEquals("steered", updated.status)
+            assertEquals("running", updated.status)
             assertTrue(updated.logs.any { it.text.contains("Use index scan instead") })
             io.mockk.verify { HermesWsClient.sendRedirect(sessionId, "/steer sub-123 Use index scan instead", any()) }
         }
 
     @Test
-    fun testStopSubagent_sendsRedirectAndMarksCancelled() =
+    fun testStopSubagent_sendsRedirectWithoutClaimingCancellation() =
         runTest {
             val (viewModel, sessionId) = createViewModelWithSession()
             val indicator =
@@ -4987,14 +5233,15 @@ class ChatViewModelTest {
             )
             advanceUntilIdle()
 
+            every { app.getString(com.m57.hermescontrol.R.string.subagent_stop_requested) } returns "Stop requested"
             viewModel.stopSubagent(indicator)
             advanceUntilIdle()
 
             val updated =
                 viewModel.uiState.value.subagentIndicators
                     .first { it.subagentId == "sub-123" }
-            assertEquals("cancelled", updated.status)
-            assertTrue(updated.logs.any { it.text.contains("Stopped subagent") })
+            assertEquals("running", updated.status)
+            assertTrue(updated.logs.any { it.text == "Stop requested" })
             io.mockk.verify { HermesWsClient.sendRedirect(sessionId, "/stop sub-123", any()) }
         }
 }

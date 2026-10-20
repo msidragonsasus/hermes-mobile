@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="storage_startup_title">Local data</string>
+    <string name="storage_startup_loading">Checking saved data…</string>
+    <string name="storage_startup_blocked">Saved data or its encryption key could not be opened. The app has stopped to preserve your data. No database was deleted or recreated. Close the app, restore access to the original key or use a verified migration, then reopen it. Do not clear app data or uninstall.</string>
+    <plurals name="outgoing_drafts_count">
+        <item quantity="one">Drafts and uncertain sends (%1$d)</item>
+        <item quantity="other">Drafts and uncertain sends (%1$d)</item>
+    </plurals>
+    <string name="draft_saved_hint">Reconnecting does not send drafts. Open a draft to review it.</string>
+    <string name="draft_unknown_hint">This may have reached Hermes. Check the original conversation. This record cannot be resent.</string>
+    <string name="draft_sending">Preparing or awaiting confirmation</string>
+    <string name="draft_not_sent">Unsent draft</string>
+    <string name="draft_result_unknown">Send result unknown</string>
+    <string name="draft_storage_unavailable">Draft storage is unavailable. Unsaved input is kept on this screen.</string>
+    <string name="draft_target_unavailable">The destination is unavailable. Your input has been restored.</string>
+    <string name="draft_attachment_unavailable">An attachment could not be read. Select it again before sending.</string>
+    <string name="draft_attachment_hint">Attachments may need to be selected again.</string>
+    <string name="draft_preview">Preview</string>
+    <string name="draft_conversation">Original conversation: %1$s</string>
+    <string name="draft_new_conversation">New conversation</string>
+    <string name="draft_open">Open draft</string>
+    <string name="draft_open_conversation">Open original conversation</string>
+    <string name="draft_discard">Discard draft</string>
+    <string name="draft_remove_checked">I checked — remove record</string>
+    <string name="subagent_correction_requested">Course correction requested: %1$s</string>
+    <string name="subagent_stop_requested">Stop requested</string>
+    <string name="notif_reply_confirmed">Reply confirmed by Hermes</string>
+    <string name="notif_reply_draft">Reply saved as a draft under the original connection. Open Chat to review it. It will not send automatically.</string>
+    <string name="notif_reply_unknown">Reply may have reached Hermes. Check the original conversation before sending again.</string>
+    <string name="notif_reply_storage_unavailable">Could not save the reply. Your input is shown in this notification. Open the app to recover it.</string>
+    <string name="notif_reply_target_unavailable">Cannot verify this notification’s connection. Your input is shown here. Open the original conversation in the app.</string>
+</resources>

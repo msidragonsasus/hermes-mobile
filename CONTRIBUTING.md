@@ -20,7 +20,7 @@ If an open PR already covers it, review or improve that one instead of opening a
 
 ## PR Workflow
 
-All code changes must go through a pull request (PR) targeting the `dev` staging branch. Directly pushing to `main` or `dev` is not allowed **except for trivial changes the maintainer explicitly okays** — when in doubt, open a PR.
+Integrated changes go through a pull request (PR) targeting the user fork's `dev` branch. Do not push directly to `main` or `dev`. For agent work, publication requires the user's authorization; local preparation can stop before commit/push/PR creation. PR 00 is documentation-only. See [AGENTS.md](AGENTS.md) and [the implementation plan](docs/personal-ai/IMPLEMENTATION_PLAN.md).
 
 1. **Pick or open an issue** to discuss the changes you want to make.
 2. **Create a branch** off `dev` using the following naming convention:
@@ -63,7 +63,7 @@ always creating a blank new one.
 If you use AI coding tools (including agents) to contribute:
 
 - **Never** add the AI tool as author, co-author, or `Co-Authored-By` in commit metadata.
-- Direct AI agents to [`AGENTS.md`](AGENTS.md) and [`DESIGN.md`](DESIGN.md) in the repo root — `AGENTS.md` contains operational conventions, build quirks, and testing rules, while `DESIGN.md` defines the normative design tokens, layout rules, and component styling contracts.
+- Direct AI agents to [`AGENTS.md`](AGENTS.md) and [`DESIGN.md`](DESIGN.md) in the repo root — `AGENTS.md` contains operational conventions, build quirks, and testing rules, while `DESIGN.md` defines the shared design tokens, layout rules, and component styling contracts. UI changes also require the relevant flows in [UX_SPEC.md](docs/personal-ai-spec/UX_SPEC.md).
 
 ---
 
@@ -121,7 +121,7 @@ We enforce Kotlin coding conventions and Jetpack Compose best practices.
 
 ## PR Checklist
 
-Before submitting your PR, please verify:
+Before submitting an authorized PR, verify the applicable items below. For a documentation-only diff, check links, specification/schema consistency, and diff scope; reference dated audit results instead of rerunning unchanged Android checks without cause. A skipped CI job is not a new test pass.
 
 - [ ] I searched open/closed PRs + issues for duplicates (see *Before You Start*).
 - [ ] Branch is rebased onto current `dev` (`git rebase origin/dev`).
@@ -131,6 +131,6 @@ Before submitting your PR, please verify:
 - [ ] No unused imports, unused parameters, or dead code.
 - [ ] Every `Image` and `Icon` element has a descriptive `contentDescription` for accessibility.
 - [ ] New screens use `HermesScaffold` and implement Loading/Error/Empty states.
-- [ ] UI changes follow [`DESIGN.md`](DESIGN.md) (no emoji status glyphs, no FABs, verified >=3:1 contrast).
-- [ ] New components match the UI/UX style of similar existing screens (28+ screens for reference).
+- [ ] UI changes follow [`DESIGN.md`](DESIGN.md) and relevant [UX flows](docs/personal-ai-spec/UX_SPEC.md) (no emoji status glyphs or new FABs, preserve the existing Chat scroll control, verify text/status contrast and accessibility).
+- [ ] New components reuse host tokens/shared UI; preserve all 27 registry screens and the separate auth/settings/detail entries.
 - [ ] Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/) and are atomic (subject + ≤2 lines body).

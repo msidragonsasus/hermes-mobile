@@ -10,13 +10,16 @@ import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.data.ws.WsEvent
 import com.m57.hermescontrol.data.ws.WsMethods
 import com.m57.hermescontrol.ui.chat.fakes.FakeChatPersistenceRepository
+import com.m57.hermescontrol.ui.chat.fakes.FakeOutgoingDraftStore
 import com.m57.hermescontrol.ui.chat.fakes.FakeSlashUsageStore
+import com.m57.hermescontrol.ui.chat.fakes.FakeSubmissionTransport
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
 import io.mockk.mockkStatic
 import io.mockk.slot
 import io.mockk.unmockkAll
+import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -125,6 +128,13 @@ class SlashCommandDispatchRpcTest {
         // can end up holding session.usage instead of command.dispatch (CI run
         // 31137581335 on 4645a2b: slash-focus flake).
         // Specific per-test request() stubs registered later take precedence.
+        every { HermesWsClient.writeScoped(any(), any(), any(), any()) } answers {
+            com.m57.hermescontrol.data.ws.ScopedRpcSubmission(
+                "synthetic-command",
+                true,
+                HermesWsClient.request(arg(1), arg(2), arg(3)),
+            )
+        }
         every { HermesWsClient.request(any(), any(), any()) } answers {
             HermesWsClient.send(arg(0), arg(1)) {}
             CompletableDeferred<Any?>(Unit)
@@ -137,8 +147,19 @@ class SlashCommandDispatchRpcTest {
         unmockkAll()
     }
 
-    private suspend fun TestScope.createViewModelWithSession(): Pair<ChatViewModel, String> {
-        val vm = ChatViewModel(app, false, fakeRepo, FakeSlashUsageStore(), ioDispatcher = testDispatcher)
+    private suspend fun TestScope.createViewModelWithSession(
+        submission: FakeSubmissionTransport = FakeSubmissionTransport(),
+    ): Pair<ChatViewModel, String> {
+        val vm =
+            ChatViewModel(
+                app,
+                false,
+                fakeRepo,
+                FakeSlashUsageStore(),
+                ioDispatcher = testDispatcher,
+                draftStore = FakeOutgoingDraftStore(),
+                submissionTransport = submission,
+            )
         advanceUntilIdle()
         mockConnectionStatus.value = ConnectionStatus.CONNECTED
         mockEventsFlow.emit(WsEvent.GatewayReady(null))
@@ -148,6 +169,149 @@ class SlashCommandDispatchRpcTest {
         advanceUntilIdle()
         return Pair(vm, "session-xyz")
     }
+
+    @Test
+    fun `offline side question stays visible without a loading spinner or a queued write`() =
+        runTest {
+            val submission = FakeSubmissionTransport()
+            val (vm, _) = createViewModelWithSession(submission)
+            submission.ready = false
+            vm.submitSideQuestion("offline question")
+            advanceUntilIdle()
+            assertEquals(
+                "offline question",
+                vm.uiState.value.btwState
+                    ?.question,
+            )
+            assertEquals(
+                false,
+                vm.uiState.value.btwState
+                    ?.isLoading,
+            )
+            assertTrue(
+                vm.uiState.value.btwState
+                    ?.error
+                    ?.contains("not sent") == true,
+            )
+            submission.ready = true
+            advanceUntilIdle()
+            verify(exactly = 0) { HermesWsClient.writeScoped(any(), WsMethods.PROMPT_BTW, any(), any()) }
+        }
+
+    @Test
+    fun `late undo prefill cannot replace the new session composer`() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val response = CompletableDeferred<Any?>()
+            every { HermesWsClient.request(WsMethods.COMMAND_DISPATCH, any(), any()) } returns response
+            vm.sendMessage("/undo")
+            advanceUntilIdle()
+            vm.switchSession("another-session")
+            advanceUntilIdle()
+            response.complete(mapOf("type" to "prefill", "message" to "old prompt", "notice" to "old notice"))
+            advanceUntilIdle()
+            assertEquals(null, vm.uiState.value.pendingPrefillText)
+            assertTrue(
+                vm.uiState.value.messages
+                    .none { it.content.contains("old notice") },
+            )
+        }
+
+    @Test
+    fun `late side question acknowledgement cannot change the new side question`() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val response = CompletableDeferred<Any?>()
+            every { HermesWsClient.request(WsMethods.PROMPT_BTW, any(), any()) } returns response
+            vm.submitSideQuestion("old question")
+            advanceUntilIdle()
+            every { HermesWsClient.send(WsMethods.SESSION_RESUME, any(), any()) } answers {
+                arg<((String) -> Unit)?>(2)?.invoke("resume-new-session")
+                "resume-new-session"
+            }
+            vm.switchSession("another-session")
+            advanceUntilIdle()
+            mockEventsFlow.emit(WsEvent.RpcResult("resume-new-session", mapOf("session_id" to "new-runtime")))
+            advanceUntilIdle()
+            every { HermesWsClient.request(WsMethods.PROMPT_BTW, any(), any()) } returns
+                CompletableDeferred<Any?>(mapOf("task_id" to "new-task"))
+            vm.submitSideQuestion("new question")
+            advanceUntilIdle()
+            response.complete(mapOf("task_id" to "old-task"))
+            advanceUntilIdle()
+            assertEquals(
+                "new-task",
+                vm.uiState.value.btwState
+                    ?.taskId,
+            )
+            assertEquals(
+                "new question",
+                vm.uiState.value.btwState
+                    ?.question,
+            )
+        }
+
+    @Test
+    fun `wire JSON command output is displayed`() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            every { HermesWsClient.request(WsMethods.COMMAND_DISPATCH, any(), any()) } returns
+                CompletableDeferred<Any?>(
+                    kotlinx.serialization.json.Json.parseToJsonElement(
+                        """{"type":"exec","output":"synthetic output"}""",
+                    ),
+                )
+            vm.sendMessage("/help")
+            advanceUntilIdle()
+            assertEquals(
+                "synthetic output",
+                vm.uiState.value.messages
+                    .last()
+                    .content,
+            )
+        }
+
+    @Test
+    fun `late command send result cannot submit into another session`() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val response = CompletableDeferred<Any?>()
+            every { HermesWsClient.request(WsMethods.COMMAND_DISPATCH, any(), any()) } returns response
+            vm.sendMessage("/help")
+            advanceUntilIdle()
+            vm.switchSession("another-session")
+            advanceUntilIdle()
+            response.complete(
+                kotlinx.serialization.json.Json.parseToJsonElement(
+                    """{"type":"send","message":"stale translated prompt"}""",
+                ),
+            )
+            advanceUntilIdle()
+            assertEquals("another-session", vm.uiState.value.currentSessionId)
+            verify(exactly = 0) { HermesWsClient.sendMessage(any(), "stale translated prompt", any(), any()) }
+            assertTrue(
+                vm.uiState.value.messages
+                    .none { it.content == "stale translated prompt" },
+            )
+        }
+
+    @Test
+    fun `late registry miss cannot trigger slash fallback in another session`() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val response = CompletableDeferred<Any?>()
+            every { HermesWsClient.request(WsMethods.COMMAND_DISPATCH, any(), any()) } returns response
+            vm.sendMessage("/help")
+            advanceUntilIdle()
+            vm.switchSession("another-session")
+            advanceUntilIdle()
+            response.completeExceptionally(
+                HermesWsClient.HermesRpcException("not a quick/plugin/bundle/skill command: help"),
+            )
+            advanceUntilIdle()
+            verify(exactly = 0) { HermesWsClient.writeScoped(any(), WsMethods.SLASH_EXEC, any(), any()) }
+            assertEquals("another-session", vm.uiState.value.currentSessionId)
+        }
 
     @Test
     fun `non-hardcoded slash command forwards name arg session_id to COMMAND_DISPATCH`() =

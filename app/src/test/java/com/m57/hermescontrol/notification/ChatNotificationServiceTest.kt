@@ -1,6 +1,9 @@
 package com.m57.hermescontrol.notification
 
+import com.m57.hermescontrol.domain.hermes.ConnectionScope
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -17,6 +20,15 @@ import org.junit.Test
  * or through the public `setAppForeground` API.
  */
 class ChatNotificationServiceTest {
+    @Test
+    fun `idle disconnect keeps notification while target switches suppress it`() {
+        val origin = ConnectionScope("server", "connection", "profile", "process", 1)
+        assertTrue(ChatNotificationService.matchesNotificationTarget(origin, origin.copy(generation = 2)))
+        assertFalse(ChatNotificationService.matchesNotificationTarget(origin, origin.copy(serverIdentity = "other")))
+        assertFalse(ChatNotificationService.matchesNotificationTarget(origin, origin.copy(serverProfileId = "other")))
+        assertFalse(ChatNotificationService.matchesNotificationTarget(origin, null))
+    }
+
     @Test
     fun `setAppForeground true sets the flag`() {
         val field =

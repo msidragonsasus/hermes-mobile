@@ -309,7 +309,7 @@ class GroupChatViewModel(
                     is WsEvent.MessageComplete -> {
                         val sid = event.sessionId?.trim('\"', ' ')
                         if (sid != null) {
-                            Log.d("GroupChatViewModel", "MessageComplete for session $sid: '${event.text.take(50)}'")
+                            Log.d("GroupChatViewModel", "MessageComplete chars=${event.text.length}")
                             inFlightTurns[sid]?.complete(event.text)
                         }
                     }
@@ -400,7 +400,7 @@ class GroupChatViewModel(
 
                 Log.d(
                     "GroupChatViewModel",
-                    "Resolved ${groupMembers.size} members for group '$groupName': ${groupMembers.map { it.name }}",
+                    "Resolved members count=${groupMembers.size}",
                 )
 
                 var initialMessages = _uiState.value.messages
@@ -538,7 +538,7 @@ class GroupChatViewModel(
                         ),
                     ).await()
             } catch (e: Exception) {
-                Log.w("GroupChatViewModel", "updateGroupLimits failed: ${e.message}")
+                Log.w("GroupChatViewModel", "updateGroupLimits failed: ${e.javaClass.simpleName}")
             }
         }
     }
@@ -573,7 +573,7 @@ class GroupChatViewModel(
                 return sessionInfo
             }
         } catch (e: Exception) {
-            Log.w("GroupChatViewModel", "session.create failed for ${bot.name}: ${e.message}")
+            Log.w("GroupChatViewModel", "session.create failed: ${e.javaClass.simpleName}")
         }
         return null
     }
@@ -595,7 +595,7 @@ class GroupChatViewModel(
                 val remainingSec = ((currentLease.expiresAt ?: 0L) - now) / 1000
                 Log.i(
                     "GroupChatViewModel",
-                    "Active lease held by ${currentLease.driverId} (expires in ${remainingSec}s). Passive mode.",
+                    "Active lease expires in ${remainingSec}s. Passive mode.",
                 )
                 return false
             }
@@ -635,7 +635,7 @@ class GroupChatViewModel(
 
             return true
         } catch (e: Exception) {
-            Log.w("GroupChatViewModel", "acquireOrVerifyLease failed: ${e.message}")
+            Log.w("GroupChatViewModel", "acquireOrVerifyLease failed: ${e.javaClass.simpleName}")
             return true
         }
     }
@@ -674,7 +674,7 @@ class GroupChatViewModel(
         try {
             var sessionInfo = ensureMemberSession(bot)
             if (sessionInfo == null) {
-                Log.w("GroupChatViewModel", "Could not obtain session for ${bot.name}")
+                Log.w("GroupChatViewModel", "Could not obtain session")
                 return null
             }
             var runtimeId = sessionInfo.runtimeSessionId
@@ -703,7 +703,7 @@ class GroupChatViewModel(
             } catch (submitErr: Exception) {
                 Log.w(
                     "GroupChatViewModel",
-                    "prompt.submit failed for ${bot.name} on $runtimeId: ${submitErr.message}, recreating session",
+                    "prompt.submit failed: ${submitErr.javaClass.simpleName}, recreating session",
                 )
                 activeStreamMsgId.remove(runtimeId)
                 storedId?.let { activeStreamMsgId.remove(it) }
@@ -735,7 +735,7 @@ class GroupChatViewModel(
                             mapOf("session_id" to runtimeId, "text" to prompt),
                         ).await()
                 } catch (retryErr: Exception) {
-                    Log.e("GroupChatViewModel", "Retry prompt.submit failed for ${bot.name}: ${retryErr.message}")
+                    Log.e("GroupChatViewModel", "Retry prompt.submit failed: ${retryErr.javaClass.simpleName}")
                     return null
                 }
             }
@@ -798,7 +798,7 @@ class GroupChatViewModel(
                             }
                         }
                     } catch (e: Exception) {
-                        Log.w("GroupChatViewModel", "REST fallback failed for $tid: ${e.message}")
+                        Log.w("GroupChatViewModel", "REST fallback failed: ${e.javaClass.simpleName}")
                     }
                 }
             }
@@ -864,7 +864,7 @@ class GroupChatViewModel(
                 return null
             }
         } catch (e: Exception) {
-            Log.w("GroupChatViewModel", "Turn failed for ${bot.name}: ${e.message}")
+            Log.w("GroupChatViewModel", "Turn failed: ${e.javaClass.simpleName}")
             _uiState.update { state ->
                 state.copy(messages = state.messages.filter { it.id != streamMsgId })
             }
@@ -899,7 +899,7 @@ class GroupChatViewModel(
                     mapOf("session_id" to sid),
                 )
             } catch (e: Exception) {
-                Log.w("GroupChatViewModel", "Failed to send interrupt for session $sid: ${e.message}")
+                Log.w("GroupChatViewModel", "Failed to send interrupt: ${e.javaClass.simpleName}")
             }
         }
 
@@ -936,7 +936,7 @@ class GroupChatViewModel(
 
     fun sendMessage(rawText: String) {
         val text = rawText.trim()
-        Log.d("GroupChatViewModel", "sendMessage called with: '$text'")
+        Log.d("GroupChatViewModel", "sendMessage chars=${text.length}")
         if (text.isBlank()) return
 
         if (isStopCommand(text)) {
@@ -1187,7 +1187,7 @@ class GroupChatViewModel(
                         ),
                     ).await()
             } catch (e: Exception) {
-                Log.w("GroupChatViewModel", "persistSyncSnapshot failed: ${e.message}")
+                Log.w("GroupChatViewModel", "persistSyncSnapshot failed: ${e.javaClass.simpleName}")
             }
         }
     }

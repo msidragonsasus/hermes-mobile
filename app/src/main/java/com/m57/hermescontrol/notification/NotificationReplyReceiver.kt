@@ -2,149 +2,156 @@ package com.m57.hermescontrol.notification
 
 import android.app.Notification
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationCompat
 import androidx.core.app.RemoteInput
+import com.m57.hermescontrol.MainActivity
 import com.m57.hermescontrol.R
-import com.m57.hermescontrol.data.local.AuthManager
-import com.m57.hermescontrol.data.session.ActiveSessionHolder
-import com.m57.hermescontrol.data.ws.HermesWsClient
-import com.m57.hermescontrol.data.ws.WsMethods
+import com.m57.hermescontrol.data.local.HermesDatabase
+import com.m57.hermescontrol.data.local.OutgoingDraftRepository
+import com.m57.hermescontrol.data.transport.DashboardRpcTransport
+import com.m57.hermescontrol.domain.hermes.ConnectionScope
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 open class NotificationReplyReceiver : BroadcastReceiver() {
     companion object {
         const val KEY_TEXT_REPLY = "key_text_reply"
         const val EXTRA_SESSION_ID = "extra_session_id"
-        private const val REPLY_TIMEOUT_MS = 5_000L
+        const val EXTRA_CONNECTION_SCOPE = "extra_connection_scope"
+
+        internal fun replyIntent(
+            context: Context,
+            scope: ConnectionScope,
+            savedSessionId: String,
+        ): Intent =
+            Intent(context, NotificationReplyReceiver::class.java).apply {
+                action = "${context.packageName}.ACTION_NOTIFICATION_REPLY"
+                setPackage(context.packageName)
+                putExtra(EXTRA_SESSION_ID, savedSessionId)
+                putExtra(EXTRA_CONNECTION_SCOPE, Json.encodeToString(scope))
+                // Extras do not participate in PendingIntent identity; encode the fixed destination in data too.
+                data =
+                    android.net.Uri
+                        .Builder()
+                        .scheme("hermes-reply")
+                        .authority(context.packageName)
+                        .appendPath(Json.encodeToString(scope))
+                        .appendPath(savedSessionId)
+                        .build()
+            }
+
+        internal fun decodeScope(value: String?): ConnectionScope? =
+            if (value == null || value.length > 2048) {
+                null
+            } else {
+                runCatching {
+                    Json.decodeFromString<ConnectionScope>(value)
+                }.getOrNull()
+            }
     }
 
-    // Reusable scope for async reply processing — avoids creating a new
-    // unmanaged CoroutineScope per broadcast fire. (PERF-15)
-    private val replyScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val replyScope by lazy { CoroutineScope(SupervisorJob() + replyDispatcher()) }
 
-    /**
-     * Test-friendly wrapper for [BroadcastReceiver.goAsync] which is `final`
-     * (Java) and cannot be mocked or overridden directly. Tests override this
-     * via anonymous subclass to inject a fake [PendingResult].
-     */
-    internal open fun goAsyncCompat(): BroadcastReceiver.PendingResult = goAsync()
+    internal open fun replyDispatcher(): CoroutineDispatcher = Dispatchers.IO
 
-    /**
-     * Test-friendly wrapper for notification creation. Override in tests to
-     * avoid [NotificationCompat.Builder.build()] calling Android framework
-     * methods that throw "not mocked" in unit tests.
-     */
-    internal open fun buildReplyNotification(context: Context): Notification =
-        NotificationCompat
+    internal open fun goAsyncCompat(): PendingResult = goAsync()
+
+    internal open fun replySender(context: Context): NotificationReplySender {
+        val db = HermesDatabase.get(context)
+        return NotificationReplySender(
+            OutgoingDraftRepository(db.outgoingDraftDao()),
+            DashboardRpcTransport(),
+            db.chatMessageDao(),
+        )
+    }
+
+    internal open fun buildReplyNotification(
+        context: Context,
+        outcome: ReplyOutcome,
+        replyText: String,
+    ): Notification {
+        val textId =
+            when (outcome) {
+                ReplyOutcome.CONFIRMED -> R.string.notif_reply_confirmed
+                ReplyOutcome.DRAFT -> R.string.notif_reply_draft
+                ReplyOutcome.UNKNOWN -> R.string.notif_reply_unknown
+                ReplyOutcome.STORAGE_UNAVAILABLE -> R.string.notif_reply_storage_unavailable
+                ReplyOutcome.TARGET_UNAVAILABLE -> R.string.notif_reply_target_unavailable
+            }
+        // Open Chat's draft list without pretending the currently selected profile owns the old session.
+        val open =
+            Intent(context, MainActivity::class.java).apply {
+                action = MainActivity.ACTION_OPEN_CHAT_FROM_NOTIFICATION
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+        val pendingOpen =
+            PendingIntent.getActivity(
+                context,
+                0,
+                open,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+        return NotificationCompat
             .Builder(context, ChatNotificationService.CHAT_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Hermes")
-            .setContentText("Replied")
+            .setContentTitle(context.getString(R.string.notif_title))
+            .setContentText(context.getString(textId))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(context.getString(textId) + "\n\n" + replyText))
+            .setRemoteInputHistory(arrayOf(replyText))
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setContentIntent(pendingOpen)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .build()
+    }
 
     override fun onReceive(
         context: Context,
         intent: Intent,
     ) {
-        val remoteInput = RemoteInput.getResultsFromIntent(intent)
-        val replyText = remoteInput?.getCharSequence(KEY_TEXT_REPLY)?.toString()
-        val sessionId = intent.getStringExtra(EXTRA_SESSION_ID)
-
-        if (!replyText.isNullOrBlank() && !sessionId.isNullOrBlank()) {
-            val pendingResult = goAsyncCompat()
-            replyScope.launch {
-                try {
-                    withTimeout(5000L) {
-                        withContext(Dispatchers.IO) {
-                            val db =
-                                com.m57.hermescontrol.data.local.HermesDatabase
-                                    .get(context)
-                            val dao = db.chatMessageDao()
-                            if (!dao.sessionExists(sessionId)) {
-                                android.util.Log.w(
-                                    "NotificationReply",
-                                    "Ignoring reply for unknown session: $sessionId",
-                                )
-                                return@withContext
-                            }
-
-                            val runtimeSessionId =
-                                ActiveSessionHolder.resolveRuntimeSessionId(sessionId)
-                                    ?: resumeSession(sessionId)
-                            HermesWsClient
-                                .request(
-                                    WsMethods.PROMPT_SUBMIT,
-                                    mapOf("session_id" to runtimeSessionId, "text" to replyText),
-                                    timeoutMs = REPLY_TIMEOUT_MS,
-                                ).await()
-
-                            val entity =
-                                com.m57.hermescontrol.data.local.ChatMessageEntity(
-                                    id =
-                                        java.util.UUID
-                                            .randomUUID()
-                                            .toString(),
-                                    sessionId = sessionId,
-                                    role = "USER",
-                                    content = replyText,
-                                    timestamp = System.currentTimeMillis(),
-                                )
-                            dao.upsert(entity)
-
-                            val repliedNotification = buildReplyNotification(context)
-                            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                            manager.notify(ChatNotificationService.PENDING_NOTIFICATION_ID, repliedNotification)
-
-                            // The follow-up turn is now pending — keep the
-                            // foreground service alive if it retired after the
-                            // previous reply completed, so the next
-                            // MessageComplete still notifies while backgrounded
-                            // (issue #794). No-op when the app is foreground.
-                            if (!NotificationHelper.isAppInForeground()) {
-                                NotificationHelper.start(context)
-                            }
+        val replyText = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(KEY_TEXT_REPLY)?.toString()
+        val savedSessionId = intent.getStringExtra(EXTRA_SESSION_ID)
+        if (replyText.isNullOrBlank() || savedSessionId.isNullOrBlank()) return
+        val originalScope = decodeScope(intent.getStringExtra(EXTRA_CONNECTION_SCOPE))
+        val pendingResult = goAsyncCompat()
+        replyScope.launch {
+            try {
+                val outcome =
+                    if (originalScope == null) {
+                        ReplyOutcome.TARGET_UNAVAILABLE
+                    } else {
+                        try {
+                            replySender(context).send(originalScope, savedSessionId, replyText)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            ReplyOutcome.STORAGE_UNAVAILABLE
                         }
                     }
-                } catch (e: Exception) {
-                    android.util.Log.e("NotificationReply", "Failed to process reply", e)
-                } finally {
-                    pendingResult.finish()
+                val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                manager.notify(
+                    ChatNotificationService.PENDING_NOTIFICATION_ID,
+                    buildReplyNotification(context, outcome, replyText),
+                )
+                if (outcome == ReplyOutcome.CONFIRMED && !NotificationHelper.isAppInForeground()) {
+                    NotificationHelper.start(context)
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                android.util.Log.w("NotificationReply", "Reply status notification unavailable")
+            } finally {
+                pendingResult.finish()
             }
         }
-    }
-
-    private suspend fun resumeSession(storedSessionId: String): String {
-        val profile = AuthManager.activeProfileId.value
-        val params =
-            mutableMapOf<String, Any>(
-                "session_id" to storedSessionId,
-                "omit_messages" to true,
-            )
-        if (!profile.isNullOrBlank()) {
-            params["profile"] = profile
-        }
-        val result =
-            HermesWsClient
-                .request(
-                    WsMethods.SESSION_RESUME,
-                    params,
-                    timeoutMs = REPLY_TIMEOUT_MS,
-                ).await() as? Map<*, *>
-        val runtimeSessionId =
-            (result?.get("session_id") as? String)?.takeIf { it.isNotBlank() }
-                ?: error("Resume returned no runtime session id")
-        ActiveSessionHolder.set(runtimeSessionId, storedSessionId)
-        return runtimeSessionId
     }
 }

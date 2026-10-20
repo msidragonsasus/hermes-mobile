@@ -9,14 +9,23 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.Lifecycle
 import com.m57.hermescontrol.data.local.AuthManager
+import com.m57.hermescontrol.data.local.StorageStartup
+import com.m57.hermescontrol.data.local.StorageStartupState
 import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.notification.NotificationHelper
 import com.m57.hermescontrol.notification.NotificationReplyReceiver
 import com.m57.hermescontrol.theme.HermesControlTheme
+import com.m57.hermescontrol.ui.common.ErrorState
+import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.LoadingState
 import com.m57.hermescontrol.util.LocaleContextWrapper
 
 class MainActivity : ComponentActivity() {
@@ -51,6 +60,14 @@ class MainActivity : ComponentActivity() {
 
         enableEdgeToEdge()
         setContent {
+            val storageState by StorageStartup.state.collectAsState()
+            LaunchedEffect(storageState) {
+                if (storageState == StorageStartupState.Ready &&
+                    lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+                ) {
+                    resumeServices()
+                }
+            }
             val themePreference by AuthManager.themePreferenceFlow.collectAsState()
             val useDynamicColors by AuthManager.useDynamicColorsFlow.collectAsState()
             val themePreset by AuthManager.themePresetFlow.collectAsState()
@@ -65,7 +82,24 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
-                    MainNavigation()
+                    when (storageState) {
+                        StorageStartupState.Ready -> {
+                            MainNavigation()
+                        }
+
+                        else -> {
+                            HermesScaffold(
+                                title = { Text(stringResource(R.string.storage_startup_title)) },
+                                drawerGesturesEnabled = false,
+                            ) {
+                                if (storageState == StorageStartupState.Loading) {
+                                    LoadingState(subtitle = stringResource(R.string.storage_startup_loading))
+                                } else {
+                                    ErrorState(message = stringResource(R.string.storage_startup_blocked))
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -79,6 +113,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (StorageStartup.state.value == StorageStartupState.Ready) resumeServices()
+    }
+
+    private fun resumeServices() {
         NotificationHelper.setAppForeground(this, true)
         ExternalActivityLifecycleGuard.onHostResumed()
         NotificationHelper.stop(this)
@@ -88,6 +126,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        if (StorageStartup.state.value != StorageStartupState.Ready) {
+            super.onPause()
+            return
+        }
         ExternalActivityLifecycleGuard.onHostPaused()
         NotificationHelper.setAppForeground(this, false)
         NotificationHelper.start(this)

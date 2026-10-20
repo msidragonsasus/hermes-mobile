@@ -98,9 +98,15 @@ class GatewayFileClientTest {
     }
 
     @Test
-    fun `normalizePath expands tilde`() {
-        val home = System.getenv("HOME") ?: "/home/test"
-        assertEquals("$home/foo.png", GatewayFileClient.normalizePath("~/foo.png"))
+    fun `normalizePath preserves gateway home independent of client HOME`() {
+        assertEquals("~/foo.png", GatewayFileClient.normalizePath("~/foo.png"))
+        assertEquals("~", GatewayFileClient.normalizePath("~"))
+        assertNull(GatewayFileClient.normalizePath("~another-user/foo.png"))
+        assertEquals("C:/remote/foo.png", GatewayFileClient.normalizePath("C:/remote/foo.png"))
+        assertEquals(
+            "$base/api/files/download?path=%7E%2Ffoo.png",
+            GatewayFileClient.buildDownloadUrl(base, "", "~/foo.png"),
+        )
     }
 
     @Test

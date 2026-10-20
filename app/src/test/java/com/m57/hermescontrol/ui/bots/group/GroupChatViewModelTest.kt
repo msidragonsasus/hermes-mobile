@@ -14,6 +14,7 @@ import com.m57.hermescontrol.data.remote.ApiClient
 import com.m57.hermescontrol.data.remote.HermesApiService
 import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.data.ws.WsEvent
+import com.m57.hermescontrol.util.captureDiagnosticLogs
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -118,6 +119,31 @@ class GroupChatViewModelTest {
         unmockkStatic(Log::class)
         Dispatchers.resetMain()
     }
+
+    @Test
+    fun testDiagnosticsKeepConversationButExcludeBodyAndRpcErrors() =
+        runTest(testDispatcher) {
+            val logs = captureDiagnosticLogs()
+            val viewModel = GroupChatViewModel("Dev Team", ioDispatcher = testDispatcher)
+            testScheduler.runCurrent()
+            val body = "SYNTHETIC_PRIVATE_secret_sudo_token_ticket_cookie_本文"
+            viewModel.sendMessage("@scout $body")
+            testScheduler.runCurrent()
+            eventsFlow.emit(WsEvent.MessageComplete(text = body, sessionId = "session-scout-1"))
+            testScheduler.runCurrent()
+            assertTrue(
+                viewModel.uiState.value.messages
+                    .any { it.text == body },
+            )
+            assertTrue(logs.any { it.startsWith("MessageComplete chars=") })
+
+            every { HermesWsClient.request(any(), any(), any()) } returns
+                CompletableDeferred<Any?>().apply { completeExceptionally(IllegalStateException(body)) }
+            viewModel.sendMessage("@scout $body")
+            testScheduler.runCurrent()
+            assertTrue(logs.any { it.contains("failed:") })
+            assertFalse(logs.joinToString("\n").contains("SYNTHETIC_PRIVATE"))
+        }
 
     @Test
     fun testLoadGroup_resolvesMembers() =

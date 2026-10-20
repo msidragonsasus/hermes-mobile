@@ -644,6 +644,15 @@ fun ChatScreen(
                 )
             }
 
+            com.m57.hermescontrol.ui.chat.components.OutgoingDraftPanel(
+                drafts = state.outgoingDrafts,
+                activeIds = state.activeDraftIds,
+                storageError = state.draftStorageError,
+                onRestore = viewModel::restoreDraft,
+                onOpenConversation = viewModel::openDraftConversation,
+                onDiscard = viewModel::discardDraft,
+            )
+
             AnimatedVisibility(
                 visible = searchState.isActive,
                 enter = expandVertically() + fadeIn(),

@@ -12,7 +12,9 @@ import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.data.ws.WsEvent
 import com.m57.hermescontrol.data.ws.WsMethods
 import com.m57.hermescontrol.ui.chat.fakes.FakeChatPersistenceRepository
+import com.m57.hermescontrol.ui.chat.fakes.FakeOutgoingDraftStore
 import com.m57.hermescontrol.ui.chat.fakes.FakeSlashUsageStore
+import com.m57.hermescontrol.ui.chat.fakes.FakeSubmissionTransport
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -121,6 +123,13 @@ class ChatUpdateCommandTest {
             id
         }
         // Catch-all: mirror send() but complete immediately (no 120s timer).
+        every { HermesWsClient.writeScoped(any(), any(), any(), any()) } answers {
+            com.m57.hermescontrol.data.ws.ScopedRpcSubmission(
+                "synthetic-command",
+                true,
+                HermesWsClient.request(arg(1), arg(2), arg(3)),
+            )
+        }
         every { HermesWsClient.request(any(), any(), any()) } answers {
             HermesWsClient.send(arg(0), arg(1)) {}
             CompletableDeferred<Any?>(Unit)
@@ -139,7 +148,16 @@ class ChatUpdateCommandTest {
         // threads — with a relaxed-mock app that NPEs on cacheDir and leaks
         // an uncaught exception into the NEXT runTest class (CI flakes:
         // UncaughtExceptionsBeforeTest).
-        val vm = ChatViewModel(app, false, fakeRepo, FakeSlashUsageStore(), ioDispatcher = testDispatcher)
+        val vm =
+            ChatViewModel(
+                app,
+                false,
+                fakeRepo,
+                FakeSlashUsageStore(),
+                ioDispatcher = testDispatcher,
+                draftStore = FakeOutgoingDraftStore(),
+                submissionTransport = FakeSubmissionTransport(),
+            )
         advanceUntilIdle()
         mockConnectionStatus.value = ConnectionStatus.CONNECTED
         mockEventsFlow.emit(WsEvent.GatewayReady(null))
@@ -176,7 +194,16 @@ class ChatUpdateCommandTest {
     @Test
     fun `applyUpdate triggers the REST action and starts the progress popup`() =
         runTest {
-            val vm = ChatViewModel(app, false, fakeRepo, FakeSlashUsageStore(), ioDispatcher = testDispatcher)
+            val vm =
+                ChatViewModel(
+                    app,
+                    false,
+                    fakeRepo,
+                    FakeSlashUsageStore(),
+                    ioDispatcher = testDispatcher,
+                    draftStore = FakeOutgoingDraftStore(),
+                    submissionTransport = FakeSubmissionTransport(),
+                )
             coEvery { mockApi.updateHermes() } returns
                 Response.success(ActionResponse(ok = true, name = "hermes-update"))
             // One running poll, then the action exits — runTest's teardown
@@ -215,7 +242,16 @@ class ChatUpdateCommandTest {
     @Test
     fun `applyUpdate settles on success when the action exits cleanly`() =
         runTest {
-            val vm = ChatViewModel(app, false, fakeRepo, FakeSlashUsageStore(), ioDispatcher = testDispatcher)
+            val vm =
+                ChatViewModel(
+                    app,
+                    false,
+                    fakeRepo,
+                    FakeSlashUsageStore(),
+                    ioDispatcher = testDispatcher,
+                    draftStore = FakeOutgoingDraftStore(),
+                    submissionTransport = FakeSubmissionTransport(),
+                )
             coEvery { mockApi.updateHermes() } returns
                 Response.success(ActionResponse(ok = true, name = "hermes-update"))
             coEvery { mockApi.getActionStatus("hermes-update") } returns
@@ -243,7 +279,16 @@ class ChatUpdateCommandTest {
     @Test
     fun `applyUpdate surfaces a rejected trigger in the popup`() =
         runTest {
-            val vm = ChatViewModel(app, false, fakeRepo, FakeSlashUsageStore(), ioDispatcher = testDispatcher)
+            val vm =
+                ChatViewModel(
+                    app,
+                    false,
+                    fakeRepo,
+                    FakeSlashUsageStore(),
+                    ioDispatcher = testDispatcher,
+                    draftStore = FakeOutgoingDraftStore(),
+                    submissionTransport = FakeSubmissionTransport(),
+                )
             coEvery { mockApi.updateHermes() } returns
                 Response.error(404, "no update endpoint".toResponseBody())
 
