@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="model_visibility_title">表示するモデルを編集</string>
+    <string name="model_visibility_description">選択一覧に表示するモデルを選びます。使用中のモデルは変わりません。</string>
+    <string name="model_visibility_count">%1$d / %2$d 件を表示</string>
+    <string name="model_visibility_show_all">すべて表示に戻す</string>
+    <string name="model_visibility_empty">すべてのモデルが非表示です。「表示するモデルを編集」から戻せます。</string>
+    <string name="model_visibility_load_error">表示設定を読み込めませんでした。この画面を開き直してください。</string>
+    <string name="model_visibility_save_error">表示設定を保存できませんでした。前の設定を保持しています。もう一度お試しください。</string>
+</resources>

@@ -1,0 +1,25 @@
+<resources>
+    <string name="attention_open_details">Review request</string>
+    <string name="attention_detail_title">Request details</string>
+    <string name="attention_not_provided">Unknown — not provided by the server</string>
+    <string name="attention_missing">This request cannot be verified. It may be from an earlier connection or app session. No response will be sent. Check a current request in Today or Chat.</string>
+    <string name="attention_pending">Your response is needed</string>
+    <string name="attention_on_hold">Response on hold until the original connection and request are verified</string>
+    <string name="attention_submitting">Sending response · awaiting confirmation</string>
+    <string name="attention_confirmed">Response confirmed</string>
+    <string name="attention_expired">This request has expired</string>
+    <string name="attention_unknown_result">Result unknown. Check the current situation; do not resend.</string>
+    <string name="attention_action">Action or question</string>
+    <string name="attention_target">Target</string>
+    <string name="attention_impact">External impact and risk</string>
+    <string name="attention_reversibility">Reversibility</string>
+    <string name="attention_permission">Requested permission</string>
+    <string name="attention_expiry">Expiry</string>
+    <string name="attention_source">Original server, profiles and session</string>
+    <string name="attention_request">Request ID</string>
+    <string name="attention_question">Question ID</string>
+    <string name="attention_modify_unsupported">This connection does not support editing the original request. Editing never implies permission.</string>
+    <string name="attention_deny">Reject</string>
+    <string name="attention_once">Allow once</string>
+    <string name="attention_modify">Modify</string>
+</resources>

@@ -1,0 +1,9 @@
+{
+  "protocol_version": 1,
+  "release_id": "bundled-1",
+  "company_id": "synthetic-company",
+  "profile": "synthetic-profile",
+  "operation_id": "synthetic-operation-0001",
+  "state": "queued",
+  "run_id": "synthetic-run"
+}

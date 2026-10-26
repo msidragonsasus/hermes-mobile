@@ -1,0 +1,1448 @@
+package com.m57.hermescontrol.ui.sessions
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.CallSplit
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.m57.hermescontrol.ChatScreen
+import com.m57.hermescontrol.NavigationController
+import com.m57.hermescontrol.R
+import com.m57.hermescontrol.data.model.SessionInfo
+import com.m57.hermescontrol.data.model.SessionSearchResult
+import com.m57.hermescontrol.data.model.SessionTreeItem
+import com.m57.hermescontrol.data.model.flattenSessionTree
+import com.m57.hermescontrol.theme.LocalHermesStatusColors
+import com.m57.hermescontrol.theme.LocalSpacing
+import com.m57.hermescontrol.ui.common.EmptyState
+import com.m57.hermescontrol.ui.common.ErrorState
+import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.NavIcon
+import com.m57.hermescontrol.ui.common.SearchBar
+import com.m57.hermescontrol.ui.common.SkeletonListState
+import com.m57.hermescontrol.ui.common.StatCard
+import com.m57.hermescontrol.ui.common.StatusBadge
+import com.m57.hermescontrol.ui.common.StatusBadgeType
+import com.m57.hermescontrol.ui.common.ToastEffect
+import com.m57.hermescontrol.ui.common.listItemSpacing
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import kotlin.math.abs
+
+/**
+ * Auto-load the next history page when the user scrolls to within this many
+ * items of the end — a pre-load buffer so paging feels continuous.
+ */
+private const val AUTO_LOAD_THRESHOLD = 6
+
+/**
+ * Maps a session source string to a Material icon for visual identification.
+ */
+private fun sourceIcon(source: String?): ImageVector? =
+    when (source?.lowercase()) {
+        "telegram", "tg" -> Icons.AutoMirrored.Filled.Send
+        "web", "dashboard" -> Icons.Filled.Language
+        "api", "rest" -> Icons.Filled.Code
+        "cli", "terminal" -> Icons.Filled.Terminal
+        else -> null
+    }
+
+/**
+ * Maps a source string to a label for tooltip / accessibility.
+ */
+private fun sourceLabel(source: String?): String =
+    when (source?.lowercase()) {
+        "telegram", "tg" -> "Telegram"
+        "web", "dashboard" -> "Web"
+        "api", "rest" -> "API"
+        "cli", "terminal" -> "CLI"
+        else -> source ?: "Unknown"
+    }
+
+/**
+ * Builds an annotated string with search term highlighting.
+ */
+private fun highlightText(
+    text: String,
+    query: String,
+    highlightBackground: Color,
+    highlightForeground: Color,
+): AnnotatedString =
+    buildAnnotatedString {
+        if (query.isBlank()) {
+            append(text)
+            return@buildAnnotatedString
+        }
+        val lowerText = text.lowercase()
+        val lowerQuery = query.lowercase()
+        var currentIndex = 0
+        while (currentIndex < text.length) {
+            val matchIndex = lowerText.indexOf(lowerQuery, currentIndex)
+            if (matchIndex == -1) {
+                append(text.substring(currentIndex))
+                break
+            }
+            if (matchIndex > currentIndex) {
+                append(text.substring(currentIndex, matchIndex))
+            }
+            withStyle(
+                SpanStyle(
+                    background = highlightBackground,
+                    color = highlightForeground,
+                    fontWeight = FontWeight.Bold,
+                ),
+            ) {
+                append(text.substring(matchIndex, matchIndex + query.length))
+            }
+            currentIndex = matchIndex + query.length
+        }
+    }
+
+/**
+ * Converts a backend search hit into a display model WITHOUT faking a title.
+ * The backend returns no session name, only a matched `snippet` + metadata, so the
+ * card must render the snippet as a match excerpt (never as the title). `title` is
+ * deliberately left null so [SearchResultCard] shows the honest "Match" layout.
+ */
+private fun SessionSearchResult.toSessionInfo(): SessionInfo =
+    SessionInfo(
+        id = session_id,
+        title = null,
+        preview = snippet,
+        source = source,
+        model = model,
+        started_at = session_started,
+        // message_count/status aren't in the search payload; leave null so the
+        // search card hides those normal-list affordances.
+    )
+
+/**
+ * Formats a backend epoch-seconds timestamp into a friendly, local relative/absolute
+ * string. Used for search results where the session name is unknown.
+ */
+private fun formatPlayedAt(epochSeconds: Double?): String? {
+    if (epochSeconds == null || epochSeconds <= 0.0) return null
+    val instant =
+        try {
+            Instant.ofEpochSecond(epochSeconds.toLong())
+        } catch (_: Exception) {
+            return null
+        }
+    val now = Instant.now()
+    val diffSec = abs(now.epochSecond - instant.epochSecond)
+    val absFormatter =
+        DateTimeFormatter
+            .ofLocalizedDateTime(FormatStyle.MEDIUM)
+            .withZone(ZoneId.systemDefault())
+    return when {
+        diffSec < 60 -> "just now"
+        diffSec < 3600 -> "${diffSec / 60}m ago"
+        diffSec < 86400 -> "${diffSec / 3600}h ago"
+        diffSec < 7 * 86400 -> "${diffSec / 86400}d ago"
+        else -> absFormatter.format(instant)
+    }
+}
+
+private val searchSnippetJson = Json { isLenient = true }
+
+/**
+ * Makes a backend FTS snippet safe to present as prose. Some indexed messages are stored as
+ * JSON, so prefer their human-readable text fields rather than rendering the entire payload.
+ */
+internal fun cleanSearchSnippet(snippet: String): String {
+    val withoutHighlightMarkers = snippet.replace(">>>", "").replace("<<<", "").trim()
+    val parsedSnippet =
+        runCatching { searchSnippetJson.parseToJsonElement(withoutHighlightMarkers) }.getOrNull()
+    val displayText = parsedSnippet?.searchText() ?: withoutHighlightMarkers
+    return displayText
+        .replace(Regex("\\s+"), " ")
+        .trim()
+}
+
+private fun JsonElement.searchText(): String? =
+    when (this) {
+        is JsonPrimitive -> {
+            contentOrNull?.takeIf(String::isNotBlank)
+        }
+
+        is JsonArray -> {
+            mapNotNull { it.searchText() }
+                .joinToString(" ")
+                .takeIf(String::isNotBlank)
+        }
+
+        is JsonObject -> {
+            val textFieldNames =
+                listOf("content", "text", "message", "body", "prompt", "summary", "title")
+            val wrapperFieldNames = listOf("data", "result", "payload", "parts")
+            textFieldNames
+                .firstNotNullOfOrNull { fieldName -> this[fieldName]?.searchText() }
+                ?: wrapperFieldNames.firstNotNullOfOrNull { fieldName -> this[fieldName]?.searchText() }
+        }
+    }
+
+private fun displayedSessions(state: SessionsUiState): List<SessionTreeItem> =
+    if (state.isSearchMode) {
+        state.searchResults.map { searchResult ->
+            val session = searchResult.toSessionInfo()
+            SessionTreeItem(
+                session = session,
+                depth = 0,
+                branchStem = null,
+                displayTitle =
+                    session.title?.takeIf(String::isNotBlank)
+                        ?: session.display_name?.takeIf(String::isNotBlank)
+                        ?: session.preview?.takeIf(String::isNotBlank)?.take(80)
+                        ?: "Untitled",
+            )
+        }
+    } else {
+        flattenSessionTree(state.displaySessions)
+    }
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun SessionsScreen(
+    modifier: Modifier = Modifier,
+    onOpenDrawer: (() -> Unit)? = null,
+    viewModel: SessionsViewModel = viewModel { SessionsViewModel() },
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val spacing = LocalSpacing.current
+    val statusColors = LocalHermesStatusColors.current
+    val primaryContainer = MaterialTheme.colorScheme.primaryContainer
+    val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
+
+    var pruneDays by remember { mutableStateOf("7") }
+
+    val sessionsToDisplay =
+        remember(
+            state.isSearchMode,
+            state.searchQuery,
+            state.sessions,
+            state.showHidden,
+            state.searchResults,
+        ) {
+            displayedSessions(state)
+        }
+
+    val hasSelection = state.selectedIds.isNotEmpty()
+    val visibleSessionIds =
+        remember(sessionsToDisplay) {
+            sessionsToDisplay.mapTo(linkedSetOf()) { it.session.id }
+        }
+    val allVisibleSessionsSelected =
+        visibleSessionIds.isNotEmpty() && visibleSessionIds.all { it in state.selectedIds }
+    val listPadding =
+        PaddingValues(
+            start = 12.dp,
+            top = 8.dp,
+            end = 12.dp,
+            bottom = if (hasSelection) 72.dp else 8.dp,
+        )
+
+    LaunchedEffect(Unit) {
+        viewModel.loadSessions()
+        viewModel.loadStats()
+    }
+
+    // Toast effect
+    ToastEffect(
+        toastMessage = state.toastMessage,
+        onClearToast = { viewModel.clearToast() },
+    )
+
+    // Empty-session cleanup dialog (issue #787)
+    if (state.showEmptyCleanupDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.hideEmptyCleanupDialog() },
+            title = { Text(stringResource(R.string.sessions_empty_cleanup_title)) },
+            text = { Text(stringResource(R.string.sessions_empty_cleanup_message, state.emptyCount)) },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmEmptyCleanup() }, shapes = ButtonDefaults.shapes()) {
+                    if (state.isCleaningEmpty) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text(stringResource(R.string.sessions_empty_cleanup_confirm))
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.hideEmptyCleanupDialog() }, shapes = ButtonDefaults.shapes()) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
+    // Prune dialog
+    if (state.showPruneDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.hidePruneDialog() },
+            title = { Text(stringResource(R.string.sessions_prune_title)) },
+            text = {
+                Column {
+                    Text(stringResource(R.string.sessions_prune_desc))
+                    Spacer(modifier = Modifier.height(spacing.md))
+                    OutlinedTextField(
+                        value = pruneDays,
+                        onValueChange = { pruneDays = it.filter { c -> c.isDigit() } },
+                        label = { Text(stringResource(R.string.sessions_prune_days_label)) },
+                        placeholder = { Text("7") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions =
+                            KeyboardActions(
+                                onDone = {
+                                    val days = pruneDays.toIntOrNull()
+                                    if (days != null && days > 0) viewModel.pruneSessions(days)
+                                },
+                            ),
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val days = pruneDays.toIntOrNull()
+                        if (days != null && days > 0) viewModel.pruneSessions(days)
+                    },
+                    colors =
+                        ButtonDefaults.buttonColors(
+                            containerColor = statusColors.error,
+                        ),
+                    shapes = ButtonDefaults.shapes(),
+                ) {
+                    Text(stringResource(R.string.sessions_prune_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.hidePruneDialog() }, shapes = ButtonDefaults.shapes()) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
+    // Single-session delete confirmation dialog
+    if (state.sessionToDeleteConfirm != null) {
+        val sessionToDelete = state.sessionToDeleteConfirm
+        val sessionTitle =
+            state.sessions
+                .find { it.id == sessionToDelete }
+                ?.title
+                ?.takeIf { it.isNotBlank() }
+                ?: state.searchResults
+                    .find { it.session_id == sessionToDelete }
+                    ?.snippet
+                    ?.let(::cleanSearchSnippet)
+                    ?.take(80)
+                ?: stringResource(R.string.history_untitled)
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelDeleteSession() },
+            title = { Text(stringResource(R.string.sessions_delete_title)) },
+            text = {
+                Text(stringResource(R.string.sessions_delete_message, sessionTitle))
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.confirmDeleteSession() },
+                    colors =
+                        ButtonDefaults.buttonColors(
+                            containerColor = statusColors.error,
+                        ),
+                    shapes = ButtonDefaults.shapes(),
+                ) {
+                    Text(stringResource(R.string.action_delete))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelDeleteSession() }, shapes = ButtonDefaults.shapes()) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
+    // Bulk delete confirmation dialog
+    if (state.showBulkDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelBulkDelete() },
+            title = { Text(stringResource(R.string.sessions_bulk_delete_title)) },
+            text = {
+                Text(
+                    stringResource(
+                        R.string.sessions_bulk_delete_message,
+                        state.selectedIds.size,
+                    ),
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.confirmBulkDelete() },
+                    colors =
+                        ButtonDefaults.buttonColors(
+                            containerColor = statusColors.error,
+                        ),
+                    shapes = ButtonDefaults.shapes(),
+                ) {
+                    Text(stringResource(R.string.action_delete))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelBulkDelete() }, shapes = ButtonDefaults.shapes()) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
+    // Single-session rename dialog (issue #785) — opened from the card's
+    // hold menu; PATCH /api/sessions/{id} with {title}.
+    state.renamingSessionId?.let { sessionId ->
+        AlertDialog(
+            onDismissRequest = { viewModel.closeRenameDialog() },
+            title = { Text(stringResource(R.string.sessions_rename_title)) },
+            text = {
+                OutlinedTextField(
+                    value = state.renameDraft,
+                    onValueChange = { viewModel.updateRenameDraft(it) },
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.sessions_rename_hint)) },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { viewModel.renameSession(sessionId, state.renameDraft) },
+                    enabled = state.renameDraft.isNotBlank(),
+                    shapes = ButtonDefaults.shapes(),
+                ) {
+                    Text(stringResource(R.string.sessions_action_rename))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.closeRenameDialog() }, shapes = ButtonDefaults.shapes()) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
+    HermesScaffold(
+        title = { Text(stringResource(R.string.screen_history)) },
+        navigationIcon = NavIcon.Back { NavigationController.goBack() },
+        drawerGesturesEnabled = false,
+        isRefreshing = state.isLoading,
+        onRefresh = { viewModel.loadSessions() },
+        actions = {
+            if (state.hasHiddenSessions) {
+                IconButton(
+                    onClick = { viewModel.toggleShowHidden() },
+                    modifier = Modifier.testTag("sessions_action_toggle_hidden"),
+                ) {
+                    Icon(
+                        imageVector =
+                            if (state.showHidden) {
+                                Icons.Filled.VisibilityOff
+                            } else {
+                                Icons.Filled.Visibility
+                            },
+                        contentDescription =
+                            if (state.showHidden) {
+                                stringResource(R.string.sessions_hide_hidden)
+                            } else {
+                                stringResource(R.string.sessions_show_hidden)
+                            },
+                    )
+                }
+            }
+        },
+        modifier = modifier,
+    ) {
+        // Single scrolling column: search bar pinned on top, list fills below.
+        // (The scaffold already applies top-bar padding via its inner Box, so we
+        //  must NOT re-apply paddingValues here.)
+        Column(modifier = Modifier.fillMaxSize()) {
+            // ── Search + bulk toggle (always visible) ─────────────
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = spacing.md, vertical = spacing.sm),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SearchBar(
+                    query = state.searchQuery,
+                    onQueryChange = { viewModel.setSearchQuery(it) },
+                    placeholder = stringResource(R.string.sessions_search_placeholder),
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(modifier = Modifier.width(spacing.sm))
+                // Empty-session cleanup (issue #787) — grey/disabled when 0.
+                BadgedBox(
+                    badge = {
+                        if (state.emptyCount > 0) {
+                            Badge { Text("${state.emptyCount}") }
+                        }
+                    },
+                ) {
+                    FilledTonalButton(
+                        onClick = { viewModel.requestEmptyCleanup() },
+                        enabled = state.emptyCount > 0,
+                        contentPadding = PaddingValues(horizontal = spacing.md, vertical = 8.dp),
+                        shapes = ButtonDefaults.shapes(),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.DeleteSweep,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(modifier = Modifier.width(spacing.xs))
+                        Text(stringResource(R.string.sessions_empty_cleanup_desc))
+                    }
+                }
+            }
+
+            // List/state area takes all remaining height below the search bar.
+            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                when {
+                    state.isSearchMode -> {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            when {
+                                state.isSearching && state.searchResults.isEmpty() -> {
+                                    SkeletonListState()
+                                }
+
+                                state.searchError != null -> {
+                                    ErrorState(
+                                        message =
+                                            state.searchError
+                                                ?: stringResource(R.string.error_unknown),
+                                        onRetry = { viewModel.setSearchQuery(state.searchQuery) },
+                                    )
+                                }
+
+                                state.searchResults.isEmpty() -> {
+                                    EmptyState(
+                                        title = stringResource(R.string.sessions_search_empty_title),
+                                        subtitle =
+                                            stringResource(
+                                                R.string.sessions_search_empty_desc,
+                                                state.searchQuery,
+                                            ),
+                                        icon = Icons.Filled.Search,
+                                    )
+                                }
+
+                                else -> {
+                                    Column(modifier = Modifier.fillMaxSize()) {
+                                        Text(
+                                            text =
+                                                stringResource(
+                                                    R.string.sessions_search_results_header,
+                                                    state.searchResults.size,
+                                                    state.searchQuery,
+                                                ),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier =
+                                                Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(
+                                                        horizontal = spacing.md,
+                                                        vertical = spacing.sm,
+                                                    ),
+                                        )
+                                        LazyColumn(
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentPadding = listPadding,
+                                            verticalArrangement = listItemSpacing,
+                                        ) {
+                                            items(sessionsToDisplay, key = { it.session.id }) { item ->
+                                                val session = item.session
+                                                SearchResultCard(
+                                                    session = session,
+                                                    query = state.searchQuery,
+                                                    isSelecting = state.isSelecting,
+                                                    isSelected = session.id in state.selectedIds,
+                                                    isDeleting = session.id in state.deletingSessionIds,
+                                                    highlightBackground = primaryContainer,
+                                                    highlightForeground = onPrimaryContainer,
+                                                    onCardClick = {
+                                                        if (state.isSelecting) {
+                                                            viewModel.toggleSessionSelection(session.id)
+                                                        } else {
+                                                            NavigationController.openChatSession(session.id)
+                                                        }
+                                                    },
+                                                    onToggleSelection = {
+                                                        viewModel.toggleSessionSelection(
+                                                            session.id,
+                                                        )
+                                                    },
+                                                    onSelect = {
+                                                        viewModel.toggleSelecting()
+                                                        viewModel.toggleSessionSelection(session.id)
+                                                    },
+                                                    onRename = {
+                                                        viewModel.openRenameDialog(
+                                                            session.id,
+                                                            session.title.orEmpty(),
+                                                        )
+                                                    },
+                                                    onDelete = { viewModel.requestDeleteSession(session.id) },
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    state.isLoading && state.sessions.isEmpty() -> {
+                        SkeletonListState()
+                    }
+
+                    state.errorMessage != null -> {
+                        val errorMsg = state.errorMessage
+                        ErrorState(
+                            message = errorMsg ?: stringResource(R.string.error_unknown),
+                            onRetry = { viewModel.loadSessions() },
+                        )
+                    }
+
+                    state.sessions.isEmpty() -> {
+                        EmptyState(
+                            title = stringResource(R.string.history_empty_title),
+                            subtitle = stringResource(R.string.history_empty_desc),
+                            icon = Icons.Filled.History,
+                            actionLabel = stringResource(R.string.empty_action_start_chat),
+                            onAction = { NavigationController.navigateTo(ChatScreen) },
+                        )
+                    }
+
+                    state.displaySessions.isEmpty() -> {
+                        EmptyState(
+                            title = stringResource(R.string.history_empty_title),
+                            subtitle = stringResource(R.string.sessions_all_hidden_desc),
+                            icon = Icons.Filled.VisibilityOff,
+                            actionLabel = stringResource(R.string.sessions_show_hidden),
+                            onAction = { viewModel.toggleShowHidden() },
+                        )
+                    }
+
+                    else -> {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            // ── Stats row ───────────────────────────────────────
+                            Row(
+                                modifier =
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .height(IntrinsicSize.Max)
+                                        .padding(horizontal = spacing.md, vertical = spacing.sm),
+                                horizontalArrangement = Arrangement.spacedBy(spacing.sm),
+                            ) {
+                                StatCard(
+                                    label = stringResource(R.string.sessions_stat_total),
+                                    value = if (state.isLoadingStats) "…" else formatCompactCount(state.stats.total),
+                                    icon = Icons.Filled.History,
+                                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                                )
+                                StatCard(
+                                    label = stringResource(R.string.sessions_stat_messages),
+                                    value = if (state.isLoadingStats) "…" else formatCompactCount(state.stats.messages),
+                                    icon = Icons.Filled.Email,
+                                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                                )
+                                // Prune button — compact card sized to its label, so the
+                                // stat cards keep enough width for large counts.
+                                Card(
+                                    modifier = Modifier.fillMaxHeight(),
+                                    colors =
+                                        CardDefaults.cardColors(
+                                            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                                        ),
+                                    onClick = { viewModel.showPruneDialog() },
+                                ) {
+                                    Box(
+                                        // NOTE: fillMaxHeight only — never fillMaxSize here.
+                                        // An unweighted Row child with fillMaxSize expands to the
+                                        // full row width and starves the weighted stat cards.
+                                        modifier = Modifier.fillMaxHeight().padding(horizontal = spacing.md),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.spacedBy(spacing.xs),
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.DeleteSweep,
+                                                contentDescription = null,
+                                                tint = statusColors.warning,
+                                                modifier = Modifier.size(20.dp),
+                                            )
+                                            Text(
+                                                text = stringResource(R.string.sessions_action_prune),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = statusColors.warning,
+                                                fontWeight = FontWeight.SemiBold,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            // Stats error snack
+                            val statsError = state.statsError
+                            if (statsError != null) {
+                                Text(
+                                    text = statsError,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = statusColors.error,
+                                    modifier = Modifier.padding(horizontal = spacing.md),
+                                )
+                            }
+
+                            // ── Session list ────────────────────────────────────
+                            val listState = rememberLazyListState()
+                            // Fluid infinite scroll: once the user reaches within
+                            // AUTO_LOAD_THRESHOLD items of the end, pull the next
+                            // page automatically. Driven by real scroll position
+                            // (layoutInfo is snapshot state), so it recomputes on
+                            // every scroll — not a frozen first-composition read.
+                            val nearListEnd by remember {
+                                derivedStateOf {
+                                    val info = listState.layoutInfo
+                                    val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+                                    if (lastVisible < 0 || info.totalItemsCount == 0) {
+                                        false
+                                    } else if (info.totalItemsCount <= AUTO_LOAD_THRESHOLD) {
+                                        lastVisible >= info.totalItemsCount - 1
+                                    } else {
+                                        lastVisible >= info.totalItemsCount - AUTO_LOAD_THRESHOLD
+                                    }
+                                }
+                            }
+                            LaunchedEffect(
+                                nearListEnd,
+                                state.isLoadingMore,
+                                state.hasMore,
+                                state.isSearchMode,
+                            ) {
+                                if (nearListEnd && !state.isLoadingMore && state.hasMore && !state.isSearchMode) {
+                                    viewModel.loadMore()
+                                }
+                            }
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = listPadding,
+                                verticalArrangement = listItemSpacing,
+                            ) {
+                                items(sessionsToDisplay, key = { it.session.id }) { item ->
+                                    val session = item.session
+                                    SessionCard(
+                                        session = session,
+                                        displayTitle = item.displayTitle,
+                                        branchStem = item.branchStem,
+                                        isFork = item.isFork,
+                                        forkDepth = item.forkDepth,
+                                        query = state.searchQuery,
+                                        isSelecting = state.isSelecting,
+                                        isSelected = session.id in state.selectedIds,
+                                        isDeleting = session.id in state.deletingSessionIds,
+                                        isPinned = session.pinned == true,
+                                        isHidden = session.hidden == true,
+                                        highlightBackground = primaryContainer,
+                                        highlightForeground = onPrimaryContainer,
+                                        onCardClick = {
+                                            if (state.isSelecting) {
+                                                viewModel.toggleSessionSelection(session.id)
+                                            } else {
+                                                NavigationController.openChatSession(session.id)
+                                            }
+                                        },
+                                        onToggleSelection = { viewModel.toggleSessionSelection(session.id) },
+                                        onSelect = {
+                                            viewModel.toggleSelecting()
+                                            viewModel.toggleSessionSelection(session.id)
+                                        },
+                                        onRename = {
+                                            viewModel.openRenameDialog(
+                                                session.id,
+                                                item.displayTitle,
+                                            )
+                                        },
+                                        onTogglePin = { viewModel.togglePin(session.id) },
+                                        onToggleHide = { viewModel.toggleHide(session.id) },
+                                        onDelete = { viewModel.requestDeleteSession(session.id) },
+                                    )
+                                }
+
+                                // Load more
+                                if (state.hasMore || state.isLoadingMore) {
+                                    item {
+                                        Box(
+                                            modifier =
+                                                Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(vertical = spacing.sm),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            if (state.isLoadingMore) {
+                                                CircularProgressIndicator(
+                                                    modifier = Modifier.size(24.dp),
+                                                    strokeWidth = 2.dp,
+                                                )
+                                            } else {
+                                                Text(
+                                                    text = stringResource(R.string.history_load_more),
+                                                    style = MaterialTheme.typography.labelLarge,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    modifier =
+                                                        Modifier
+                                                            .testTag("load_more_sessions")
+                                                            .clickable(role = Role.Button) {
+                                                                viewModel.loadMore()
+                                                            },
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Bulk action toolbar (animated) ──────────────────────────────────
+        AnimatedVisibility(
+            visible = state.isSelecting && hasSelection,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shadowElevation = 8.dp,
+                    tonalElevation = 4.dp,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ) {
+                    Row(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = spacing.md, vertical = spacing.sm),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // Select all / deselect
+                        OutlinedButton(
+                            onClick = {
+                                if (allVisibleSessionsSelected) {
+                                    viewModel.clearSelection()
+                                } else {
+                                    viewModel.selectAll(visibleSessionIds)
+                                }
+                            },
+                            shapes = ButtonDefaults.shapes(),
+                        ) {
+                            Icon(
+                                imageVector =
+                                    if (allVisibleSessionsSelected) {
+                                        Icons.Filled.Close
+                                    } else {
+                                        Icons.Filled.SelectAll
+                                    },
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(modifier = Modifier.width(spacing.xs))
+                            Text(
+                                if (allVisibleSessionsSelected) {
+                                    stringResource(R.string.sessions_action_deselect_all)
+                                } else {
+                                    stringResource(R.string.sessions_action_select_all)
+                                },
+                            )
+                        }
+
+                        // Delete selected
+                        Button(
+                            onClick = { viewModel.requestBulkDelete() },
+                            enabled = !state.isDeletingBulk,
+                            colors =
+                                ButtonDefaults.buttonColors(
+                                    containerColor = statusColors.error,
+                                ),
+                            shapes = ButtonDefaults.shapes(),
+                        ) {
+                            if (state.isDeletingBulk) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = statusColors.onError,
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Filled.Delete,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(spacing.xs))
+                            Text(
+                                stringResource(
+                                    R.string.sessions_action_delete_n,
+                                    state.selectedIds.size,
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SessionCard(
+    session: com.m57.hermescontrol.data.model.SessionInfo,
+    displayTitle: String,
+    branchStem: String?,
+    isFork: Boolean = false,
+    forkDepth: Int = 0,
+    query: String,
+    isSelecting: Boolean,
+    isSelected: Boolean,
+    isDeleting: Boolean,
+    isPinned: Boolean,
+    isHidden: Boolean = false,
+    highlightBackground: Color,
+    highlightForeground: Color,
+    onCardClick: () -> Unit,
+    onToggleSelection: () -> Unit,
+    onSelect: () -> Unit,
+    onRename: () -> Unit,
+    onTogglePin: () -> Unit,
+    onToggleHide: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val spacing = LocalSpacing.current
+    val statusColors = LocalHermesStatusColors.current
+    val isActive = session.status?.lowercase() == "active" || session.status?.lowercase() == "streaming"
+    val srcIcon = sourceIcon(session.source)
+    var menuExpanded by remember { mutableStateOf(false) }
+
+    Card(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .testTag("session_card_${session.id}")
+                .combinedClickable(
+                    onClick = onCardClick,
+                    // Long-press opens the per-session action menu (issue #785):
+                    // Select / Rename / Delete. The old long-press behavior
+                    // (jump straight into selection mode) is now the menu's
+                    // "Select" item.
+                    onLongClick = { if (!isSelecting) menuExpanded = true },
+                ),
+        colors =
+            CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+            ),
+        border =
+            if (isActive && !isSelecting) {
+                BorderStroke(2.dp, statusColors.success)
+            } else if (isSelected) {
+                BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+            } else {
+                null
+            },
+    ) {
+        Box {
+            Row(
+                modifier = Modifier.padding(spacing.md),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // Checkbox in select mode
+                if (isSelecting) {
+                    Checkbox(
+                        checked = isSelected,
+                        onCheckedChange = { onToggleSelection() },
+                        modifier = Modifier.testTag("session_checkbox_${session.id}"),
+                    )
+                    Spacer(modifier = Modifier.width(spacing.sm))
+                }
+
+                // Fork marker: a fork icon + its nesting depth, so a chain reads
+                // 🍴1 → 🍴2 → 🍴3 and a branch-off pops out. No indentation — the
+                // number carries the structure so names never get squished.
+                if (isFork && !isSelecting) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.CallSplit,
+                        contentDescription = stringResource(R.string.sessions_fork_indicator),
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    if (forkDepth > 0) {
+                        Spacer(modifier = Modifier.width(spacing.xs))
+                        Text(
+                            text = forkDepth.toString(),
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(spacing.sm))
+                }
+
+                // Source icon
+                if (srcIcon != null && !isSelecting) {
+                    Icon(
+                        imageVector = srcIcon,
+                        contentDescription = sourceLabel(session.source),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(spacing.sm))
+                }
+
+                // Main content
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text =
+                                if (query.isNotBlank()) {
+                                    highlightText(displayTitle, query, highlightBackground, highlightForeground)
+                                } else {
+                                    AnnotatedString(displayTitle)
+                                },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (isPinned) {
+                            Spacer(modifier = Modifier.width(spacing.xs))
+                            Icon(
+                                imageVector = Icons.Filled.PushPin,
+                                contentDescription = stringResource(R.string.sessions_pinned_indicator),
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(14.dp),
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(spacing.xs))
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.history_message_count, session.message_count ?: 0),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (session.hidden == true) {
+                            Spacer(modifier = Modifier.width(spacing.sm))
+                            StatusBadge(
+                                text = stringResource(R.string.sessions_hidden_badge),
+                                status = StatusBadgeType.NEUTRAL,
+                            )
+                        }
+                        if (!session.status.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.width(spacing.sm))
+                            StatusBadge(
+                                text = session.status,
+                                status = if (isActive) StatusBadgeType.SUCCESS else StatusBadgeType.NEUTRAL,
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Per-session action menu (hold the card to open)
+            SessionActionMenu(
+                expanded = menuExpanded,
+                onDismiss = { menuExpanded = false },
+                isDeleting = isDeleting,
+                isPinned = isPinned,
+                onTogglePin = {
+                    menuExpanded = false
+                    onTogglePin()
+                },
+                isHidden = isHidden,
+                onToggleHide = {
+                    menuExpanded = false
+                    onToggleHide()
+                },
+                onSelect = {
+                    menuExpanded = false
+                    onSelect()
+                },
+                onRename = {
+                    menuExpanded = false
+                    onRename()
+                },
+                onDelete = {
+                    menuExpanded = false
+                    onDelete()
+                },
+            )
+        }
+    }
+}
+
+/**
+ * Search-result card. The backend search payload has no session title, so this card is
+ * honest about it: it shows a "Match" label + the highlighted snippet as the body, plus
+ * source / model / played-at metadata chips. It never presents the snippet as a name.
+ */
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
+@Composable
+private fun SearchResultCard(
+    session: com.m57.hermescontrol.data.model.SessionInfo,
+    query: String,
+    isSelecting: Boolean,
+    isSelected: Boolean,
+    isDeleting: Boolean,
+    highlightBackground: Color,
+    highlightForeground: Color,
+    onCardClick: () -> Unit,
+    onToggleSelection: () -> Unit,
+    onSelect: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val spacing = LocalSpacing.current
+    val snippet = session.preview?.takeIf { it.isNotBlank() } ?: stringResource(R.string.history_untitled)
+    val cleanSnippet = cleanSearchSnippet(snippet)
+    val playedAt = formatPlayedAt(session.started_at)
+    var menuExpanded by remember { mutableStateOf(false) }
+
+    Card(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .testTag("session_card_${session.id}")
+                .combinedClickable(
+                    onClick = onCardClick,
+                    // Long-press opens the per-session action menu (issue #785)
+                    onLongClick = { if (!isSelecting) menuExpanded = true },
+                ),
+        colors =
+            CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+            ),
+        border =
+            if (isSelected) {
+                BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+            } else {
+                null
+            },
+    ) {
+        Box {
+            Row(
+                modifier = Modifier.padding(spacing.sm),
+                verticalAlignment = Alignment.Top,
+            ) {
+                // Checkbox in select mode
+                if (isSelecting) {
+                    Checkbox(
+                        checked = isSelected,
+                        onCheckedChange = { onToggleSelection() },
+                        modifier = Modifier.testTag("session_checkbox_${session.id}"),
+                    )
+                    Spacer(modifier = Modifier.width(spacing.sm))
+                }
+
+                Column(modifier = Modifier.weight(1f)) {
+                    // Header row: "Match" label + source icon
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(spacing.xs),
+                    ) {
+                        val srcIcon = sourceIcon(session.source)
+                        if (srcIcon != null && !isSelecting) {
+                            Icon(
+                                imageVector = srcIcon,
+                                contentDescription = sourceLabel(session.source),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                        Text(
+                            text = stringResource(R.string.sessions_search_match_label),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            letterSpacing = 0.5.sp,
+                        )
+                        if (!session.id.isNullOrBlank()) {
+                            Text(
+                                text = "· ${session.id.take(8)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(spacing.xs))
+
+                    // The matched snippet, highlighted — shown as the body, NOT as a title.
+                    Text(
+                        text = highlightText(cleanSnippet, query, highlightBackground, highlightForeground),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+
+                    Spacer(modifier = Modifier.height(spacing.xs))
+
+                    // Metadata chips row
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(spacing.xs),
+                        verticalArrangement = Arrangement.spacedBy(spacing.xs),
+                    ) {
+                        session.source?.let { src ->
+                            StatusBadge(
+                                text = sourceLabel(src),
+                                status = StatusBadgeType.NEUTRAL,
+                            )
+                        }
+                        session.model?.let { mdl ->
+                            StatusBadge(
+                                text = stringResource(R.string.sessions_search_model_label) + ": " + mdl,
+                                status = StatusBadgeType.INFO,
+                            )
+                        }
+                        playedAt?.let { time ->
+                            StatusBadge(
+                                text = stringResource(R.string.sessions_search_played_at, time),
+                                status = StatusBadgeType.NEUTRAL,
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Per-session action menu (hold the card to open)
+            SessionActionMenu(
+                expanded = menuExpanded,
+                onDismiss = { menuExpanded = false },
+                isDeleting = isDeleting,
+                onSelect = {
+                    menuExpanded = false
+                    onSelect()
+                },
+                onRename = {
+                    menuExpanded = false
+                    onRename()
+                },
+                onDelete = {
+                    menuExpanded = false
+                    onDelete()
+                },
+            )
+        }
+    }
+}
+
+/**
+ * Per-session hold menu (issue #785): Pin/Unpin / Select / Rename / Delete.
+ * Opened by long-pressing a session card. The pin item is only shown when
+ * [onTogglePin] is provided (history cards; search-result cards omit it).
+ */
+@Composable
+private fun SessionActionMenu(
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    isDeleting: Boolean,
+    isPinned: Boolean = false,
+    onTogglePin: (() -> Unit)? = null,
+    isHidden: Boolean = false,
+    onToggleHide: (() -> Unit)? = null,
+    onSelect: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val statusColors = LocalHermesStatusColors.current
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        if (onTogglePin != null) {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        stringResource(
+                            if (isPinned) {
+                                R.string.sessions_action_unpin
+                            } else {
+                                R.string.sessions_action_pin
+                            },
+                        ),
+                    )
+                },
+                leadingIcon = { Icon(Icons.Filled.PushPin, contentDescription = null) },
+                onClick = onTogglePin,
+            )
+        }
+        if (onToggleHide != null) {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        stringResource(
+                            if (isHidden) {
+                                R.string.sessions_action_unhide
+                            } else {
+                                R.string.sessions_action_hide
+                            },
+                        ),
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector =
+                            if (isHidden) {
+                                Icons.Filled.Visibility
+                            } else {
+                                Icons.Filled.VisibilityOff
+                            },
+                        contentDescription = null,
+                    )
+                },
+                onClick = onToggleHide,
+            )
+        }
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.sessions_action_select)) },
+            leadingIcon = { Icon(Icons.Filled.CheckCircle, contentDescription = null) },
+            onClick = onSelect,
+        )
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.sessions_action_rename)) },
+            leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+            onClick = onRename,
+        )
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.action_delete)) },
+            leadingIcon = {
+                if (isDeleting) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(
+                        imageVector = Icons.Filled.Delete,
+                        contentDescription = null,
+                        tint = statusColors.error,
+                    )
+                }
+            },
+            enabled = !isDeleting,
+            onClick = onDelete,
+        )
+    }
+}

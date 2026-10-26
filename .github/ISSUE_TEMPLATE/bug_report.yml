@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a bug or unexpected behaviour
+title: '[bug] '
+labels: ['bug']
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: What happened and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: To reproduce
+      description: Steps to trigger it.
+      placeholder: |
+        1. Go to '...'
+        2. Tap on '...'
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Device, Android version, app version.
+      placeholder: |
+        - Device: Pixel 8
+        - Android version: Android 15
+        - App version: v1.2.3
+    validations:
+      required: true
+  - type: textarea
+    id: gateway
+    attributes:
+      label: Gateway version & commit
+      description: Version and git commit of the Hermes gateway the app is connected to. Find the version in the app (Gateway screen, or System screen → Hermes version). The commit is the short SHA on the gateway host (`git rev-parse --short HEAD` in the hermes-agent checkout).
+      placeholder: |
+        - Gateway version: v0.8.3
+        - Gateway commit: 8f2712725
+    validations:
+      required: false
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Logs, screenshots, or anything else relevant.

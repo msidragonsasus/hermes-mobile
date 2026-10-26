@@ -1,0 +1,10 @@
+name: today_home
+version: 0.1.9
+description: メール・manabaから今日の対応を整理し、ホームへ保存
+provides_tools:
+  - today_plan
+  - today_sources
+  - today_cached_read
+  - today_mail_search
+  - today_mail_read
+  - today_manaba_read

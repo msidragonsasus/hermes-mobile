@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "1.0",
+  "id": "career",
+  "name": {
+    "ja": "就活",
+    "en": "Career"
+  },
+  "description": {
+    "ja": "締切、企業研究、ES、面接準備をまとめます。",
+    "en": "Deadlines, company research, applications, and interviews."
+  },
+  "version": "0.1.0",
+  "minHostVersion": "0.1.0",
+  "publisher": {
+    "id": "personal",
+    "name": "Personal AI"
+  },
+  "icon": {
+    "type": "material",
+    "name": "Work"
+  },
+  "entry": {
+    "type": "sdui",
+    "documentUrl": "/api/plugins/career/mobile/sdui/index",
+    "initialRoute": "career.overview",
+    "componentVersion": "1.0"
+  },
+  "contributions": {
+    "homeCards": [
+      {
+        "id": "career.deadlines",
+        "route": "career.deadlines",
+        "priority": 200
+      }
+    ],
+    "commands": [
+      {
+        "id": "career.prepare-es",
+        "label": {
+          "ja": "ESを準備",
+          "en": "Prepare application"
+        },
+        "description": {
+          "ja": "対象企業の設問・締切・過去素材を確認します。"
+        },
+        "action": "career.prepareEs",
+        "keywords": [
+          "ES",
+          "締切",
+          "企業"
+        ]
+      }
+    ],
+    "composerActions": [
+      {
+        "id": "career.import-company-page",
+        "route": "career.importCompany",
+        "priority": 100
+      }
+    ]
+  },
+  "permissions": [
+    "hermes.sessions.read",
+    "hermes.runs.create",
+    "hermes.runs.read",
+    "hermes.files.read",
+    "plugin.api:career"
+  ],
+  "offline": {
+    "cachePolicy": "metadata",
+    "maxAgeSeconds": 86400,
+    "allowDrafts": true
+  }
+}

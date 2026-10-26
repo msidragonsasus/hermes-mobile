@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rich_answer_source">コード</string>
+    <string name="rich_answer_preview">プレビュー</string>
+    <string name="rich_answer_expand">全体を表示</string>
+    <string name="rich_answer_reset">リセット</string>
+    <string name="rich_answer_collapse">折りたたむ</string>
+    <string name="rich_answer_local">操作できます</string>
+    <string name="rich_answer_options">図解のオプション</string>
+    <string name="rich_answer_too_large">プレビューの上限を超えています。コードは確認できます。</string>
+    <string name="rich_answer_unavailable">プレビューが停止しました。リセットで再表示できます。</string>
+    <string name="rich_answer_image_failed">画像を読み込めませんでした。タップして開く</string>
+</resources>

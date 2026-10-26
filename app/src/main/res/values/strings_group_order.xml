@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="group_order_control">Control speaking order</string>
+    <string name="group_order_control_desc">Discuss in this order for the configured rounds. Bot @mentions temporarily take priority, then the remaining order resumes. Your direct @mentions select only those members for one round.</string>
+    <string name="group_order_legacy_desc">Use saved member order, with existing bot handoffs and turn limits.</string>
+    <string name="group_order_up">Up</string>
+    <string name="group_order_down">Down</string>
+    <string name="group_order_summary">Final summary speaker</string>
+    <string name="group_order_summary_desc">Summarize once after every whole-group round completes successfully. The summary counts toward the turn limit. No summary after failure, cancellation or an unconfirmed send.</string>
+    <string name="group_order_summary_none">None</string>
+    <string name="group_order_save_failed">Could not save group order. The previous order is kept. Reconnect and save again.</string>
+    <string name="group_discussion_rounds">Discussion rounds: %1$d</string>
+    <string name="group_discussion_rounds_desc">1–10 rounds. Mentioning a member who has not spoken moves their turn forward in this round. Mentioning a member who already spoke adds a bounded handoff.</string>
+    <string name="group_discussion_turn_cap_desc">Turn limit: %1$d. Includes all rounds, handoffs and the summary. PASS also counts as a turn. This is separate from the round count.</string>
+    <string name="group_discussion_handoff_cap_desc">Additional handoff limit: %1$d. Applies across all rounds to members who already spoke. Remaining scheduled turns continue when this limit is reached.</string>
+</resources>

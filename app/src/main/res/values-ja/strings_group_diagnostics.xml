@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="group_send_diagnostics">送信診断</string>
+    <string name="group_diagnostics_explanation">選んだbotの保存済み情報だけを表示します。コピーは任意です。この画面を開いても送信や状態照合は行いません。</string>
+    <string name="group_diagnostics_select_bot">botのターンを選択</string>
+    <string name="group_diagnostics_bot_turn">%1$s · ターン%2$d</string>
+    <string name="group_diagnostics_preview">診断情報のプレビュー</string>
+    <string name="group_diagnostics_missing_fields">not_recorded は「記録なし」です。投稿記録時刻は端末に記録した投稿のUTC時刻で、送信・ACK時刻ではありません。接続先は会話の保存スコープの設定値で、実通信の記録ではありません。従来版はターン保存時刻やACK詳細を保持していません。</string>
+    <string name="group_diagnostics_missing">この会話の該当投稿には、保存済みターン情報がありません。以前の版で保存されなかった情報は、ここでは復元できません。</string>
+    <string name="group_diagnostics_copy">診断情報をコピー</string>
+    <string name="group_diagnostics_copied">コピーしました</string>
+    <string name="group_diagnostics_copy_failed">現在の情報をコピーできませんでした。プレビューを閉じて開き直してください。</string>
+</resources>

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shell_agent">Agent</string>
+    <string name="agent_hub_intro">エージェントを選んで、接続状態と使える機能を確認できます。会話と権限はエージェントごとに分かれます。</string>
+    <string name="agent_connection_unverified">接続未確認</string>
+    <string name="agent_bro_description">このアプリから、いつものbroへの接続は未確認です。既存のbroからHermesへのテキスト中継だけでは、逆方向の接続は使えません。</string>
+    <string name="agent_hermes_description">このハブ用のHermes接続は、本人認証と依頼・結果の照合が未確認です。既存のChatは別の接続経路で利用できます。</string>
+    <string name="agent_view_details">%1$sの接続詳細を見る</string>
+    <string name="agent_destination">依頼先：%1$s</string>
+    <string name="agent_future_integrations">追加エージェントはAPI・認証・権限を確認してから検討します。この画面から追加の導入や接続は行っていません。</string>
+    <string name="agent_actions_unavailable">接続を検証するまで、ここから依頼の送信・承認・取消はできません。詳細を開くだけでは、接続・送信・会話履歴の共有は行いません。</string>
+    <string name="agent_capabilities">この接続の対応機能</string>
+    <string name="agent_capability_submit">依頼の送信</string>
+    <string name="agent_capability_requests">依頼履歴の取得</string>
+    <string name="agent_capability_results">返信・結果の取得</string>
+    <string name="agent_capability_progress">進捗の取得</string>
+    <string name="agent_capability_approval">承認への回答</string>
+    <string name="agent_capability_cancel">依頼の取消</string>
+    <string name="agent_capability_unknown">未確認</string>
+    <string name="agent_capability_unsupported">非対応</string>
+    <string name="agent_capability_supported">対応確認済み</string>
+    <string name="agent_capability_blocked">利用不可</string>
+    <string name="agent_history_title">%1$sへの依頼と結果</string>
+    <string name="agent_history_unverified">接続が未確認のため、履歴は取得していません。未完了の依頼や承認待ちがないことを示すものではありません。</string>
+    <string name="agent_unavailable_title">エージェントを開けません</string>
+    <string name="agent_unavailable_body">この依頼先は登録されていません。戻って選び直してください。別のエージェントへの転送は行っていません。</string>
+</resources>

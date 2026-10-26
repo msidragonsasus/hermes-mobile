@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily career research at 09:00 JST
+
+[Timer]
+OnCalendar=*-*-* 09:00:00 Asia/Tokyo
+Persistent=true
+Unit=hermes-career-research.service
+
+[Install]
+WantedBy=timers.target

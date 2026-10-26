@@ -1,0 +1,195 @@
+package com.m57.hermescontrol
+
+import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.Lifecycle
+import com.m57.hermescontrol.data.local.AuthManager
+import com.m57.hermescontrol.data.local.StorageStartup
+import com.m57.hermescontrol.data.local.StorageStartupState
+import com.m57.hermescontrol.data.ws.HermesWsClient
+import com.m57.hermescontrol.domain.hermes.RequestReferenceCodec
+import com.m57.hermescontrol.notification.AttentionNotificationRoute
+import com.m57.hermescontrol.notification.NotificationHelper
+import com.m57.hermescontrol.notification.NotificationReplyReceiver
+import com.m57.hermescontrol.theme.HermesControlTheme
+import com.m57.hermescontrol.ui.common.ErrorState
+import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.LoadingState
+import com.m57.hermescontrol.util.LocaleContextWrapper
+
+class MainActivity : ComponentActivity() {
+    companion object {
+        private const val SAVED_PENDING_CHAT = "pending_chat_navigation"
+        private const val SAVED_PENDING_ATTENTION = "pending_attention_navigation"
+        private const val SAVED_PENDING_CAREER = "pending_career_notice"
+        private const val SAVED_PENDING_OPENCLAW = "pending_openclaw_notice"
+
+        /**
+         * Action that identifies notification-driven "open this chat" intents.
+         * [ChatNotificationService] stamps it on the content intent; the
+         * consumer refuses anything else (issue #832 — MainActivity is
+         * exported as the launcher, so a foreign app could otherwise inject
+         * a session id via an explicit intent).
+         */
+        const val ACTION_OPEN_CHAT_FROM_NOTIFICATION =
+            "com.m57.hermescontrol.ACTION_OPEN_CHAT_FROM_NOTIFICATION"
+    }
+
+    /**
+     * Apply the user-selected display language before any view is inflated.
+     * Reads the persisted code from [AuthManager]; an uninitialized store
+     * (shouldn't happen here, but guarded) falls back to the device locale.
+     */
+    override fun attachBaseContext(base: Context) {
+        val code =
+            runCatching { AuthManager.getAppLanguage() }
+                .getOrDefault(LocaleContextWrapper.SYSTEM_LANGUAGE)
+        super.attachBaseContext(LocaleContextWrapper.wrapWithCode(base, code))
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        NavigationController.backStack = null
+        NavigationController.restorePendingChatNavigation(savedInstanceState?.getString(SAVED_PENDING_CHAT))
+        NavigationController.restorePendingAttentionNavigation(savedInstanceState?.getString(SAVED_PENDING_ATTENTION))
+        NavigationController.pendingCareerNotice = savedInstanceState?.getString(SAVED_PENDING_CAREER)
+        NavigationController.pendingOpenClawNotice = savedInstanceState?.getString(SAVED_PENDING_OPENCLAW)
+        consumeNotificationIntent(intent)
+
+        enableEdgeToEdge()
+        setContent {
+            val storageState by StorageStartup.state.collectAsState()
+            LaunchedEffect(storageState) {
+                if (storageState == StorageStartupState.Ready &&
+                    lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+                ) {
+                    resumeServices()
+                }
+            }
+            val themePreference by AuthManager.themePreferenceFlow.collectAsState()
+            val useDynamicColors by AuthManager.useDynamicColorsFlow.collectAsState()
+            val themePreset by AuthManager.themePresetFlow.collectAsState()
+            val chatFontScale by AuthManager.chatFontScaleFlow.collectAsState()
+            HermesControlTheme(
+                themePreference = themePreference,
+                useDynamicColors = useDynamicColors,
+                themePreset = themePreset,
+                chatFontScale = chatFontScale,
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background,
+                ) {
+                    when (storageState) {
+                        StorageStartupState.Ready -> {
+                            MainNavigation()
+                        }
+
+                        else -> {
+                            HermesScaffold(
+                                title = { Text(stringResource(R.string.storage_startup_title)) },
+                                drawerGesturesEnabled = false,
+                            ) {
+                                if (storageState == StorageStartupState.Loading) {
+                                    LoadingState(subtitle = stringResource(R.string.storage_startup_loading))
+                                } else {
+                                    ErrorState(message = stringResource(R.string.storage_startup_blocked))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        NavigationController.savePendingChatNavigation()?.let { outState.putString(SAVED_PENDING_CHAT, it) }
+        NavigationController.savePendingAttentionNavigation()?.let { outState.putString(SAVED_PENDING_ATTENTION, it) }
+        NavigationController.pendingCareerNotice?.let { outState.putString(SAVED_PENDING_CAREER, it) }
+        NavigationController.pendingOpenClawNotice?.let { outState.putString(SAVED_PENDING_OPENCLAW, it) }
+        super.onSaveInstanceState(outState)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        consumeNotificationIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (StorageStartup.state.value == StorageStartupState.Ready) resumeServices()
+    }
+
+    private fun resumeServices() {
+        com.m57.hermescontrol.openclaw.OpenClawRuntime
+            .setForeground(true)
+        NotificationHelper.setAppForeground(this, true)
+        ExternalActivityLifecycleGuard.onHostResumed()
+        NotificationHelper.stop(this)
+        if (AuthManager.isGatedMode() || !AuthManager.getToken().isNullOrBlank()) {
+            HermesWsClient.connect()
+        }
+    }
+
+    override fun onPause() {
+        if (StorageStartup.state.value != StorageStartupState.Ready) {
+            super.onPause()
+            return
+        }
+        ExternalActivityLifecycleGuard.onHostPaused()
+        com.m57.hermescontrol.openclaw.OpenClawRuntime
+            .setForeground(false)
+        com.m57.hermescontrol.openclaw.OpenClawNotifications
+            .background(this)
+        NotificationHelper.setAppForeground(this, false)
+        NotificationHelper.start(this)
+        super.onPause()
+    }
+
+    private fun consumeNotificationIntent(intent: Intent?) {
+        if (intent?.action == com.m57.hermescontrol.openclaw.OpenClawNotifications.ACTION) {
+            val token = intent.getStringExtra(com.m57.hermescontrol.openclaw.OpenClawNotifications.EXTRA)
+            intent.removeExtra(com.m57.hermescontrol.openclaw.OpenClawNotifications.EXTRA)
+            if (token != null &&
+                Regex("[a-f0-9-]{36}").matches(token)
+            ) {
+                NavigationController.pendingOpenClawNotice = token
+            }
+            return
+        }
+        if (intent?.action == com.m57.hermescontrol.career.CareerNotifications.ACTION) {
+            val token = intent.getStringExtra(com.m57.hermescontrol.career.CareerNotifications.EXTRA_TOKEN)
+            intent.removeExtra(com.m57.hermescontrol.career.CareerNotifications.EXTRA_TOKEN)
+            if (token != null && Regex("[a-f0-9-]{36}").matches(token)) NavigationController.pendingCareerNotice = token
+            return
+        }
+        if (intent?.action == AttentionNotificationRoute.ACTION) {
+            val ref = RequestReferenceCodec.decode(intent.getStringExtra(AttentionNotificationRoute.EXTRA_REF))
+            intent.removeExtra(AttentionNotificationRoute.EXTRA_REF)
+            ref?.let(NavigationController::openAttentionFromNotification)
+            return
+        }
+        // Issue #832: MainActivity is exported (launcher requirement) — only
+        // honor intents stamped with our own notification action.
+        if (intent?.action != ACTION_OPEN_CHAT_FROM_NOTIFICATION) return
+        val sessionId = intent.getStringExtra(NotificationReplyReceiver.EXTRA_SESSION_ID)
+        intent.removeExtra(NotificationReplyReceiver.EXTRA_SESSION_ID)
+        sessionId?.takeIf { it.isNotBlank() }?.let(NavigationController::openChatSessionFromNotification)
+    }
+}

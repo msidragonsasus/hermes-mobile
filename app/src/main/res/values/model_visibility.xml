@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="model_visibility_title">Edit visible models</string>
+    <string name="model_visibility_description">Choose which models appear in selection lists. The model in use stays unchanged.</string>
+    <string name="model_visibility_count">%1$d / %2$d visible</string>
+    <string name="model_visibility_show_all">Show all</string>
+    <string name="model_visibility_empty">All models are hidden. Use Edit visible models to show them again.</string>
+    <string name="model_visibility_load_error">Could not load display settings. Reopen this screen to retry.</string>
+    <string name="model_visibility_save_error">Could not save display settings. Your previous choices were kept. Try again.</string>
+</resources>

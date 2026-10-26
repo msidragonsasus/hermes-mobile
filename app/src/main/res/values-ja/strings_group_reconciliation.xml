@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="group_send_rpc_code">サーバー応答コード: %1$d。結果不明の送信を成功扱いにはしていません。</string>
+    <string name="group_check_offline">元の接続が準備できていません。再接続後に確認してください。再送はしていません。</string>
+    <string name="group_check_read_unavailable">メッセージ履歴を読み取れませんでした。未確認のまま保持し、再送はしていません。</string>
+    <string name="group_check_auth_required">元の履歴を読むための認証または権限が必要です。送信結果は未確認のままです。</string>
+    <string name="group_check_session_missing">保存済みIDを、このbotの現在の履歴保存先で確認できませんでした。送信結果は未確認です。</string>
+    <string name="group_check_id_missing">この送信には保存済みセッションIDがないため、結果を自動照合できません。</string>
+    <string name="group_check_request_missing">取得できた履歴の範囲に元の送信が見つかりません。送信結果は未確認のままです。</string>
+    <string name="group_check_accepted">元の送信は履歴にありますが、最終返信はまだ確認できません。再送はしていません。</string>
+    <string name="group_check_completed">確認できた返信を元の会話へ反映しました。他の未確認送信はそのまま保持しています。</string>
+    <string name="group_check_none">照合対象となる保存済みの未確認送信はありません。</string>
+    <string name="group_check_connection_changed">照合中に接続が変わりました。結果を反映せず保持しています。再接続後に確認してください。</string>
+    <string name="group_check_profile_missing">指定したbotのprofileが見つかりません。他のprofileは検索せず、送信結果を未確認のまま保持しています。</string>
+    <string name="group_check_endpoint_unavailable">履歴APIで404が返りました。セッションの不存在は確認できず、送信結果は未確認です。</string>
+    <string name="group_check_id_mismatch">サーバーが別のセッションIDを返したため、その履歴は反映していません。送信結果は未確認です。</string>
+    <string name="group_check_history_incomplete">取得した履歴ページに元の送信がありません。未取得の履歴が残るため、送信結果は未確認です。</string>
+</resources>

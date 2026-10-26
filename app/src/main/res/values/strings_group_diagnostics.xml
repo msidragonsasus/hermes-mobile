@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="group_send_diagnostics">Send diagnostics</string>
+    <string name="group_diagnostics_explanation">Preview the saved metadata for one bot turn. Copying is optional. Opening this view does not send or check a message.</string>
+    <string name="group_diagnostics_select_bot">Select a bot turn</string>
+    <string name="group_diagnostics_bot_turn">%1$s · turn %2$d</string>
+    <string name="group_diagnostics_preview">Metadata preview</string>
+    <string name="group_diagnostics_missing_fields">not_recorded means no saved record. Message time is the local post timestamp in UTC, not a send/ACK timestamp. The endpoint is the archive configuration, not a captured request. Earlier versions did not retain turn save times or ACK details.</string>
+    <string name="group_diagnostics_missing">No saved turn metadata is available for this post in the current conversation. Information that an earlier version did not save cannot be recovered here.</string>
+    <string name="group_diagnostics_copy">Copy diagnostics</string>
+    <string name="group_diagnostics_copied">Copied</string>
+    <string name="group_diagnostics_copy_failed">Could not copy the current metadata. Close this preview and open it again.</string>
+</resources>

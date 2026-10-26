@@ -1,0 +1,25 @@
+<resources>
+    <string name="attention_open_details">依頼の詳細を確認</string>
+    <string name="attention_detail_title">依頼の詳細</string>
+    <string name="attention_not_provided">不明（サーバーから未提供）</string>
+    <string name="attention_missing">この依頼を確認できません。以前の接続やアプリ起動時の通知の可能性があります。回答は送信しません。TodayまたはChatで現在の依頼を確認してください。</string>
+    <string name="attention_pending">回答が必要です</string>
+    <string name="attention_on_hold">元の接続と依頼を確認するまで回答を保留します</string>
+    <string name="attention_submitting">回答を送信中・確認待ち</string>
+    <string name="attention_confirmed">回答を確認しました</string>
+    <string name="attention_expired">この依頼は失効しました</string>
+    <string name="attention_unknown_result">結果を確認できません。再送せず、現在の状況を確認してください。</string>
+    <string name="attention_action">実行内容・質問</string>
+    <string name="attention_target">対象</string>
+    <string name="attention_impact">外部への影響・リスク</string>
+    <string name="attention_reversibility">元に戻せるか</string>
+    <string name="attention_permission">要求されている権限</string>
+    <string name="attention_expiry">有効期限</string>
+    <string name="attention_source">依頼元のサーバー・プロファイル・セッション</string>
+    <string name="attention_request">依頼ID</string>
+    <string name="attention_question">質問ID</string>
+    <string name="attention_modify_unsupported">この接続では元の依頼の修正に対応していません。編集しただけで許可することもありません。</string>
+    <string name="attention_deny">拒否</string>
+    <string name="attention_once">今回だけ許可</string>
+    <string name="attention_modify">修正</string>
+</resources>

@@ -1,0 +1,19 @@
+name: Career plugin
+on:
+  push:
+    paths: ['server/career/**', '.github/workflows/career.yml']
+  pull_request:
+    paths: ['server/career/**', '.github/workflows/career.yml']
+permissions:
+  contents: read
+jobs:
+  career-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r server/career/requirements-test.txt
+      - run: python -m unittest discover -s tests -v
+        working-directory: server/career

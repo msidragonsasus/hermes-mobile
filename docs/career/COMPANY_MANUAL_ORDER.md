@@ -1,0 +1,11 @@
+# 会社一覧の手動並べ替え
+
+一覧の「並べ替え」から、移動ハンドルを長押ししてドラッグ、または「上へ」「下へ」で移動し、「順序を保存」で確定する。TalkBackの上下移動actionも用意した。編集中は会社詳細へのタップと会社追加を止め、キャンセル/戻るで未保存編集を終了する。
+
+検索・新着・応募状況のフィルターは維持する。絞り込み時は表示中の会社のslotだけを動かし、非表示会社の全体位置を保つ。上下端で移動を無効化し、ドラッグは一覧端で自動スクロールする。
+
+保存先は既存server SQLite metadataのcompany_list_order:<profile>。company ID配列とversionのみ。現在の会社エンティティ群は既存設計でserverローカルのため、順序もGitHub shared同期には載せない。新しいschema/permission/dependencyはない。Androidの既存暗号化company cacheにも確定順とversionを保存し、再入場・再読込・App再起動で順序を復元する。同じserver/profileを使う別clientは再読込で反映される。
+
+保存は既存認証とcollection actionを利用する。全有効会社IDの重複なしの完全な順列、order versionのCAS、operation IDとpayloadのidempotencyを同じtransactionで検証する。追加会社は末尾、削除会社は非表示。編集中に会社群または順序が変わった場合は終了して再編集を案内する。破損metadataは上書きせず、従来順で閲覧だけできる。旧serverでorder_versionが無ければ並べ替えを無効化し更新を案内する。
+
+競合409は再読込を案内し、通信結果不明は同じUUID/内容だけ再試行できる。結果不明で「閉じて再読込」は取り消しを意味しない。server保存のACKはcache/再読込失敗でも保存済みとして扱う。実ユーザーの順序データは変更していない。Android端末がないため長押し・auto-scroll・TalkBack・画面回転・process deathの実機確認は残る。

@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "1.0",
+  "id": "university",
+  "name": {
+    "ja": "大学",
+    "en": "University"
+  },
+  "description": {
+    "ja": "課題、論文、研究、分析ジョブを管理します。"
+  },
+  "version": "0.1.0",
+  "minHostVersion": "0.1.0",
+  "publisher": {
+    "id": "personal",
+    "name": "Personal AI"
+  },
+  "icon": {
+    "type": "material",
+    "name": "School"
+  },
+  "entry": {
+    "type": "sdui",
+    "documentUrl": "/api/plugins/university/mobile/sdui/index",
+    "initialRoute": "university.overview",
+    "componentVersion": "1.0"
+  },
+  "contributions": {
+    "homeCards": [
+      {
+        "id": "university.assignments",
+        "route": "university.assignments",
+        "priority": 150
+      }
+    ],
+    "commands": [
+      {
+        "id": "university.add-assignment",
+        "label": {
+          "ja": "課題を登録",
+          "en": "Add assignment"
+        },
+        "action": "university.addAssignment",
+        "keywords": [
+          "課題",
+          "提出",
+          "論文"
+        ]
+      }
+    ]
+  },
+  "permissions": [
+    "hermes.runs.create",
+    "hermes.runs.read",
+    "hermes.files.read",
+    "hermes.files.write",
+    "plugin.api:university"
+  ],
+  "offline": {
+    "cachePolicy": "content",
+    "maxAgeSeconds": 604800,
+    "allowDrafts": true
+  }
+}

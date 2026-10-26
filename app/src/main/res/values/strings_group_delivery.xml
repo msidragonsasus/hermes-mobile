@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="group_send_unavailable">Group connection unavailable. This input was not sent.</string>
+    <string name="group_send_lease_held">Another client is driving this group. This input was not sent.</string>
+    <string name="group_send_lease_unconfirmed">Group ownership could not be confirmed. This input was not sent.</string>
+    <string name="group_send_member_failed">Some members could not receive this input. Check the status below the message.</string>
+    <string name="group_send_unknown">Completion could not be confirmed. No automatic resend was made. Check the message status before sending again.</string>
+    <string name="group_send_connection_changed">The connection changed. Unconfirmed input was not resent.</string>
+    <string name="group_delivery_pending">Preparing</string>
+    <string name="group_delivery_accepted">Accepted</string>
+    <string name="group_delivery_complete">Completed</string>
+    <string name="group_delivery_not_sent">Not sent</string>
+    <string name="group_delivery_unknown">Unconfirmed</string>
+    <string name="group_send_invalid_members">This group has no valid member names. Its history has been kept. This input was not sent.</string>
+    <string name="group_send_members_missing">A group member profile is missing from this server. This input was not sent.</string>
+    <string name="group_send_profiles_unavailable">The server member list could not be loaded. This input was not sent.</string>
+</resources>

@@ -1,0 +1,8 @@
+{
+  "name": "group_chat",
+  "label": "グループ会話",
+  "description": "サーバーで継続するグループ会話と永続履歴",
+  "version": "0.2.0",
+  "tab": {"hidden": true},
+  "api": "plugin_api.py"
+}

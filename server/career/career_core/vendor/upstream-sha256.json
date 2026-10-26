@@ -1,0 +1,13 @@
+{
+  "v40": {
+    "state_v4": "025337650236d9803023619d98235e334596ea7227df06e39f6d68f6f8107b66",
+    "validate_state_v4": "8ea36391edcac92c6b387cd326b75df43172f4cbf435e8e7c5bd2969f0a13b49"
+  },
+  "v41": {
+    "state_v4": "9bbb0c8707f317234bc9bcc8623a10463e2e4e100a2f237c294e4d1c1ea4e867",
+    "validate_state_v4": "14698ea9310b2851bf8765030283d8b6d257f2a45bda9479acdcaba4b6f4d9cb",
+    "coaching_state": "3f3cac300e938d6c80af9a2e0a5ab62439a0c4da91d72c8ce362ac00dfb58a99",
+    "migrate_state_v40": "1de824a3ce49d9d651edb4f03ecc0aee8a87024c85a84508a0f70a987002b4dd",
+    "merge_state_v4": "41b5e1839e17473c803f4e4f082f9c3e49f93b1ebc99cbd83a9e7157641cb001"
+  }
+}

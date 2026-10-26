@@ -1,0 +1,8 @@
+{
+  "name": "mobile-terminal",
+  "label": "サーバーターミナル",
+  "description": "人が操作するスマホ用PTY。エージェントのツールは登録しない",
+  "version": "0.1.0",
+  "tab": {"hidden": true},
+  "api": "plugin_api.py"
+}

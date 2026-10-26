@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="vault_title">Passwords &amp; Logins</string>
+    <string name="vault_directory_description">Save website logins for Hermes to use</string>
+    <string name="vault_profile">Profile: %1$s</string>
+    <string name="vault_description">Saved in the connected Hermes vault. Passwords stay out of chat and are filled only on the registered site.</string>
+    <string name="vault_disconnected">Connect to Hermes to manage saved logins.</string>
+    <string name="vault_unsupported">This Hermes server does not support Passwords &amp; Logins. Update the server, then try again.</string>
+    <string name="vault_load_failed">Could not load saved logins. Check the connection and try again.</string>
+    <string name="vault_empty">No saved logins</string>
+    <string name="vault_empty_description">Add a site, login ID and password for Hermes to use.</string>
+    <string name="vault_no_results">No matching logins</string>
+    <string name="vault_add">Add login</string>
+    <string name="vault_search">Search by name, site or login ID</string>
+    <string name="vault_refresh">Refresh saved logins</string>
+    <string name="vault_label">Name</string>
+    <string name="vault_origin">Website URL (https://…)</string>
+    <string name="vault_invalid_origin">Enter an HTTP or HTTPS URL without embedded credentials.</string>
+    <string name="vault_identifier">Email or login ID</string>
+    <string name="vault_password">Password</string>
+    <string name="vault_otp">Authenticator setup key (optional)</string>
+    <string name="vault_otp_badge">Automatic two-factor code</string>
+    <string name="vault_save">Save</string>
+    <string name="vault_saving">Saving…</string>
+    <string name="vault_saved">Login saved.</string>
+    <string name="vault_save_rejected">Could not save this login. Check the fields, including the optional authenticator key, and re-enter the password.</string>
+    <string name="vault_save_failed">Could not confirm the save. Close this form and refresh the list before trying again. Re-enter the password if needed.</string>
+    <string name="vault_delete">Delete</string>
+    <string name="vault_delete_named">Delete %1$s</string>
+    <string name="vault_delete_title">Delete saved login?</string>
+    <string name="vault_delete_message">%1$s
+%2$s
+Hermes will no longer be able to use this saved login.</string>
+    <string name="vault_deleted">Login deleted.</string>
+    <string name="vault_delete_failed">Could not confirm deletion. Refresh the list to check before trying again.</string>
+    <string name="vault_cancel">Cancel</string>
+</resources>

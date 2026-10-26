@@ -1,0 +1,17 @@
+# Merge this entry into the existing Hermes configuration after host/OAuth review.
+# Replace placeholder paths. Never put a client secret or token into this file.
+mcp_servers:
+  google-workspace:
+    trust: untrusted
+    command: uvx
+    args:
+      - workspace-mcp==2.1.0
+      - --tools
+      - drive
+      - calendar
+      - docs
+      - --tool-tier
+      - extended
+    env:
+      GOOGLE_CLIENT_SECRET_PATH: /PATH/TO/HERMES_HOME/google_mobile_client_secret.json
+      WORKSPACE_MCP_CREDENTIALS_DIR: /PATH/TO/HERMES_HOME/workspace_mcp_credentials

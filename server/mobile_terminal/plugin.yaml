@@ -1,0 +1,3 @@
+name: mobile-terminal
+version: 0.1.0
+description: Human-operated PTY for Hermes Mobile; no agent tool registration

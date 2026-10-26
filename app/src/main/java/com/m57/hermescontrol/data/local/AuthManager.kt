@@ -1,0 +1,767 @@
+package com.m57.hermescontrol.data.local
+
+import android.content.Context
+import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKeys
+import com.m57.hermescontrol.data.config.ConnectionProfile
+import com.m57.hermescontrol.data.config.ServerStore
+import com.m57.hermescontrol.data.config.ServerStoreMigration
+import com.m57.hermescontrol.data.config.ServerStoreSerializer
+import com.m57.hermescontrol.data.config.ServerUrlMigration
+import com.m57.hermescontrol.data.config.resolvedBaseUrl
+import com.m57.hermescontrol.data.config.resolvedHost
+import com.m57.hermescontrol.data.config.resolvedPort
+import com.m57.hermescontrol.data.model.PinnedModel
+import com.m57.hermescontrol.data.remote.CleartextPolicy
+import com.m57.hermescontrol.data.remote.CookieManager
+import com.m57.hermescontrol.data.remote.ServerEndpoint
+import com.m57.hermescontrol.data.session.ActiveSessionHolder
+import com.m57.hermescontrol.theme.ThemePreference
+import com.m57.hermescontrol.theme.ThemePreset
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+
+/**
+ * Singleton that manages encrypted storage of the Hermes dashboard token
+ * and connection settings.
+ *
+ * Must call [init] with a Context before any other method.
+ */
+object AuthManager {
+    private const val PREFS_FILE = "hermes_secure_prefs"
+    private const val KEY_ACTIVE_PROFILE_ID = "active_profile_id"
+
+    const val DEFAULT_PROFILE_ID = "default"
+    const val DEFAULT_PROFILE_NAME = "Default"
+    private const val KEY_SELECTED_PROFILE_ID = "selected_profile_id"
+    private const val KEY_SESSION_COOKIE = "session_cookie"
+    private const val KEY_LEGACY_TOKEN = "auth_token"
+    private const val KEY_LEGACY_DEFAULT_MIGRATED = "legacy_default_migrated"
+
+    @Volatile
+    private var prefsDeferred: Deferred<SharedPreferences>? = null
+
+    @Volatile
+    private var _serverStore: ServerStore? = null
+
+    @Volatile
+    private var appScope: CoroutineScope? = null
+
+    private val credentialTransportConsent =
+        CredentialTransportConsent(
+            read = { readUiPreference("credential-transport", "grant") },
+            write = { writeUiPreference("credential-transport", "grant", it) },
+        )
+
+    internal fun credentialTransportState(): CredentialTransportState {
+        requirePrefs()
+        val endpoint = getBaseUrl()
+        val connection = getSelectedProfileId().orEmpty()
+        val profile = activeProfileId.value
+        return credentialTransportConsent.state(
+            listOf(endpoint, connection, profile.orEmpty()).joinToString("\n"),
+            endpoint,
+            profile ?: "default",
+        )
+    }
+
+    internal fun enableCredentialTransport(expected: CredentialTransportState): CredentialTransportState {
+        val current = credentialTransportState()
+        return credentialTransportConsent.enable(
+            expected,
+            current.scope,
+            current.configuredEndpoint,
+            current.serverProfile,
+        )
+    }
+
+    internal fun disableCredentialTransport() = credentialTransportConsent.invalidateContext()
+
+    internal val credentialTransportChanges: StateFlow<Long> get() = credentialTransportConsent.changes
+
+    internal fun isCredentialTransportCurrent(expected: CredentialTransportState): Boolean =
+        expected.grantId != null && runCatching { credentialTransportState() == expected }.getOrDefault(false)
+
+    val serverStore: ServerStore
+        get() =
+            _serverStore ?: throw IllegalStateException(
+                "AuthManager not initialized. Call init(context) first.",
+            )
+
+    private val _themePreferenceFlow = MutableStateFlow<ThemePreference>(ThemePreference.SYSTEM)
+    val themePreferenceFlow: StateFlow<ThemePreference> = _themePreferenceFlow.asStateFlow()
+
+    private val _useDynamicColorsFlow = MutableStateFlow<Boolean>(false)
+    val useDynamicColorsFlow: StateFlow<Boolean> = _useDynamicColorsFlow.asStateFlow()
+
+    private val _themePresetFlow = MutableStateFlow<ThemePreset>(ThemePreset.DEFAULT)
+    val themePresetFlow: StateFlow<ThemePreset> = _themePresetFlow.asStateFlow()
+
+    private val _chatFontScaleFlow = MutableStateFlow<Float>(1.0f)
+    val chatFontScaleFlow: StateFlow<Float> = _chatFontScaleFlow.asStateFlow()
+
+    private val _tokenFlow = MutableStateFlow<String?>(null)
+    val tokenFlow: StateFlow<String?> = _tokenFlow.asStateFlow()
+
+    /** Current profile scope (mirrors serverStore.selectedProfileId). */
+    private val _selectedProfileFlow = MutableStateFlow<String?>(null)
+    val selectedProfileFlow: StateFlow<String?> = _selectedProfileFlow.asStateFlow()
+
+    /**
+     * Active server-side Hermes profile scope (e.g. "default" / "meow").
+     *
+     * DISTINCT from [selectedProfileId] (which selects a LOCAL connection
+     * profile — a server + its token). The active profile is the scope
+     * injected as REST `?profile=` and WS `params.profile`. It deliberately
+     * does NOT route through [ServerStoreState.selfHealed]: server profile
+     * ids are not guaranteed to exist in the local connection list, and
+     * clamping them silently reset the scope to "default" — the live
+     * profile-switch bug (logcat 2026-08-06: session.create carried
+     * profile=default right after switching to meow).
+     */
+    private val _activeProfileId = MutableStateFlow<String?>(null)
+    val activeProfileId: StateFlow<String?> = _activeProfileId.asStateFlow()
+
+    private val _baseUrlFlow = MutableStateFlow("")
+    val baseUrlFlow: StateFlow<String> = _baseUrlFlow.asStateFlow()
+
+    private val contextScope = CoroutineScope(Dispatchers.Default)
+
+    /**
+     * The single source of truth for connection state: server URL + token +
+     * selected profile. Emits on login, logout, profile switch, or URL change,
+     * so reactive consumers (screens, switch coordinator) re-home off ONE
+     * flow instead of tracking the pieces separately.
+     */
+    val contextFlow: StateFlow<ProfileContext?> =
+        combine(tokenFlow, baseUrlFlow, selectedProfileFlow) { token, baseUrl, profileId ->
+            if (baseUrl.isBlank()) {
+                null
+            } else {
+                ProfileContext(baseUrl = baseUrl, token = token, profileId = profileId)
+            }
+        }.stateIn(
+            scope = contextScope,
+            started = SharingStarted.Eagerly,
+            initialValue = null,
+        )
+
+    /**
+     * Initialise the encrypted preferences.
+     * Call this once from Application.onCreate() or MainActivity.onCreate().
+     */
+    fun init(context: Context) {
+        if (_serverStore != null) return
+        synchronized(this) {
+            if (_serverStore != null) return
+
+            val dataStore =
+                androidx.datastore.core.DataStoreFactory.create(
+                    serializer = ServerStoreSerializer,
+                    migrations =
+                        listOf(
+                            ServerStoreMigration(context),
+                            ServerUrlMigration(),
+                        ),
+                ) {
+                    context.filesDir.resolve("server_store.json")
+                }
+
+            val scope = CoroutineScope(Dispatchers.IO)
+            appScope = scope
+            val store =
+                ServerStore(dataStore, scope) {
+                    if (prefsDeferred?.isCompleted == true) credentialTransportConsent.invalidateContext()
+                }
+            _serverStore = store
+            _selectedProfileFlow.value = store.getLatestState().selectedProfileId
+            _baseUrlFlow.value = store.getLatestState().resolvedBaseUrl
+
+            if (prefsDeferred == null) {
+                prefsDeferred =
+                    CoroutineScope(Dispatchers.IO).async {
+                        val masterKey = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
+                        val p =
+                            EncryptedSharedPreferences.create(
+                                PREFS_FILE,
+                                masterKey,
+                                context.applicationContext,
+                                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+                            )
+                        migrateLegacyDefaultIfNeeded(p)
+                        _tokenFlow.value = getTokenInternal(p)
+                        _activeProfileId.value = p.getString(KEY_ACTIVE_PROFILE_ID, null)?.takeIf { it.isNotBlank() }
+                        p
+                    }
+            }
+
+            // Initialize the encrypted cookie store (issue #470). The legacy
+            // session-cookie prefs are passed as a Deferred so existing gated
+            // sessions can be migrated on first load WITHOUT blocking startup.
+            // The Deferred is created above, before this call.
+            val initialProfileId =
+                store.getLatestState().selectedProfileId?.takeIf { it.isNotBlank() } ?: DEFAULT_PROFILE_ID
+            CookieManager.initialize(context, prefsDeferred, initialProfileId)
+
+            scope.launch {
+                store.stateFlow.collect { state ->
+                    _themePreferenceFlow.value = state.themePreference
+                    _useDynamicColorsFlow.value = state.useDynamicColors
+                    _themePresetFlow.value = state.themePreset
+                    _chatFontScaleFlow.value = state.chatFontScale
+                    // B7 (Jul 08 2026, kanban t_470): keep cookie scope aligned with active profile.
+                    appScope?.launch { syncCookieStoreForProfile(state.selectedProfileId) }
+                }
+            }
+        }
+    }
+
+    /**
+     * Retrieves the initialized [SharedPreferences] instance.
+     *
+     * WARNING: This method is synchronous and will block the caller thread (using [runBlocking])
+     * if the asynchronous initialization is still in progress. Callers should avoid invoking this
+     * on the main thread during early startup to prevent frame drops or potential ANRs.
+     *
+     * Times out and throws [IllegalStateException] if initialization takes longer than 2 seconds.
+     */
+    private fun requirePrefs(): SharedPreferences =
+        runBlocking {
+            val deferred =
+                prefsDeferred ?: throw IllegalStateException(
+                    "AuthManager not initialized. Call init(context) first.",
+                )
+            kotlinx.coroutines.withTimeoutOrNull(2000) {
+                deferred.await()
+            } ?: throw IllegalStateException("AuthManager initialization timed out after 2 seconds.")
+        }
+
+    fun setWsAuthParam(param: String) {
+        serverStore.update { it.copy(wsAuthParam = param) }
+    }
+
+    /** Non-secret UI preferences share the encrypted, connection/profile-scoped store. */
+    fun uiPreferenceScope(): String =
+        listOf(
+            baseUrlFlow.value,
+            selectedProfileFlow.value.orEmpty(),
+            activeProfileId.value.orEmpty(),
+        ).joinToString("\n")
+
+    fun readUiPreference(
+        scope: String,
+        name: String,
+    ): String? = requirePrefs().getString("ui:$scope:$name", null)
+
+    fun writeUiPreference(
+        scope: String,
+        name: String,
+        value: String?,
+    ) {
+        val editor = requirePrefs().edit()
+        if (value == null) editor.remove("ui:$scope:$name") else editor.putString("ui:$scope:$name", value)
+        check(editor.commit()) { "画面の設定を保存できません。" }
+    }
+
+    /**
+     * True when the active connection profile authenticated against a gated
+     * dashboard (non-loopback bind → session-cookie auth) instead of loopback
+     * token mode. Derived from [ServerStoreState.wsAuthParam], which
+     * [com.m57.hermescontrol.ui.authlogin.AuthLoginViewModel.connect] sets to
+     * "ticket" on gated (basic-auth) login and "token" on loopback.
+     *
+     * Critical: gated dashboards 401 any request carrying an
+     * `Authorization: Bearer` header — even alongside a valid session cookie
+     * (verified live 2026-07-23). So REST requests in gated mode MUST rely on
+     * the session cookie in the shared [CookieManager] jar and MUST NOT stamp a
+     * Bearer header. This is the fix for the "token expired" error that broke
+     * every REST tab (skills/cron/config/...) while the WS chat (ticket auth)
+     * kept working.
+     */
+    fun isGatedMode(): Boolean = serverStore.getLatestState().wsAuthParam == "ticket"
+
+    // ── Session Cookie (for gated/dashboard REST API) ────────────────────
+
+    /**
+     * In gated mode (basic auth), the dashboard authenticates REST API
+     * requests via the `hermes_session_at` cookie, not via
+     * `Authorization: Bearer`. The cookie is now owned by the shared
+     * [CookieManager]/[PersistentCookieJar] (issue #470) which attaches it
+     * automatically on every REST call, follows redirects, and persists it
+     * encrypted. This accessor is a thin read-through to that store.
+     */
+    fun getSessionCookie(): String? = CookieManager.getSessionCookie()
+
+    fun setSessionCookie(cookie: String?) {
+        CookieManager.setSessionCookie(cookie, endpoint())
+    }
+
+    /**
+     * Evict expired (non-session) cookies for the active server scope to
+     * bound cookie growth (issue #470 step 7).
+     */
+    fun pruneServerCache() {
+        CookieManager.pruneServerCache()
+    }
+
+    // ── Database Master Password ─────────────────────────────────────────
+
+    // PR03: only the database opener may authorize first-time key creation.
+    fun getDatabasePassword(existingDatabase: Boolean = true): ByteArray =
+        DatabaseKeyStore.load(requirePrefs(), existingDatabase)
+
+    // ── Connection Profiles ──────────────────────────────────────────────
+
+    fun getConnectionProfiles(): List<ConnectionProfile> = serverStore.getLatestState().connectionProfiles
+
+    fun saveConnectionProfiles(profiles: List<ConnectionProfile>) {
+        serverStore.update { it.copy(connectionProfiles = profiles) }
+    }
+
+    /**
+     * Guarantees the selected profile is never null (issue #478).
+     *
+     * - If a profile is already selected (default or otherwise), nothing is changed.
+     * - If nothing is selected but other profiles exist, the first one is selected.
+     * - If there are no profiles at all (fresh install / legacy standalone), a [DEFAULT_PROFILE_ID]
+     *   profile is created from the current top-level host/port and selected.
+     *
+     * This never injects a Default profile into an existing user's profile list, and never
+     * clobbers a user's explicit selection.
+     */
+    fun ensureDefaultProfile() {
+        val state = serverStore.getLatestState()
+        val hasDefault = state.connectionProfiles.any { it.id == DEFAULT_PROFILE_ID }
+        val needsSelection = state.selectedProfileId.isNullOrBlank()
+
+        if (!needsSelection && (hasDefault || state.connectionProfiles.isNotEmpty())) return
+
+        if (state.connectionProfiles.isEmpty()) {
+            // Fresh install / legacy standalone: create the Default profile and select it.
+            serverStore.update { s ->
+                s.copy(
+                    connectionProfiles =
+                        listOf(
+                            ConnectionProfile(
+                                id = DEFAULT_PROFILE_ID,
+                                name = DEFAULT_PROFILE_NAME,
+                                baseUrl = s.resolvedBaseUrl,
+                            ),
+                        ),
+                    selectedProfileId = DEFAULT_PROFILE_ID,
+                )
+            }
+            return
+        }
+
+        // Profiles exist but nothing is selected: pick the first one so selection is non-null.
+        if (needsSelection) {
+            serverStore.update { s -> s.copy(selectedProfileId = s.connectionProfiles.first().id) }
+        }
+    }
+
+    /** Ensure a profile is selected (the default one if nothing else), so callers never see null. */
+    fun ensureDefaultSelected() {
+        ensureDefaultProfile()
+        if (getSelectedProfileId().isNullOrBlank()) {
+            setSelectedProfileId(DEFAULT_PROFILE_ID)
+        }
+    }
+
+    /**
+     * One-time migration: fold the legacy standalone ([KEY_LEGACY_TOKEN]) credentials into the
+     * new default [ConnectionProfile]. Runs once per install, guarded by
+     * [KEY_LEGACY_DEFAULT_MIGRATED].
+     */
+    private fun migrateLegacyDefaultIfNeeded(p: SharedPreferences) {
+        if (p.getBoolean(KEY_LEGACY_DEFAULT_MIGRATED, false)) return
+        val legacyToken = p.getString(KEY_LEGACY_TOKEN, null)
+        ensureDefaultProfile()
+        p
+            .edit()
+            .apply {
+                if (!legacyToken.isNullOrBlank()) {
+                    putString("token_$DEFAULT_PROFILE_ID", legacyToken)
+                }
+                remove(KEY_LEGACY_TOKEN)
+                putBoolean(KEY_LEGACY_DEFAULT_MIGRATED, true)
+            }.apply()
+    }
+
+    // ── Pinned Models ────────────────────────────────────────────────────
+
+    fun getPinnedModels(): List<PinnedModel> = serverStore.getLatestState().pinnedModels
+
+    fun savePinnedModels(pinned: List<PinnedModel>) {
+        serverStore.update { it.copy(pinnedModels = pinned) }
+    }
+
+    // ── Hidden Profiles (Local On-Device Filtering) ──────────────────────
+
+    fun getHiddenProfiles(): List<String> = serverStore.getLatestState().hiddenProfiles
+
+    fun isProfileHidden(name: String): Boolean = serverStore.getLatestState().hiddenProfiles.contains(name)
+
+    fun hideProfile(name: String) {
+        serverStore.update { s ->
+            s.copy(hiddenProfiles = (s.hiddenProfiles + name).distinct())
+        }
+    }
+
+    fun unhideProfile(name: String) {
+        serverStore.update { s ->
+            s.copy(hiddenProfiles = s.hiddenProfiles.filter { it != name })
+        }
+    }
+
+    fun setHiddenProfiles(hidden: List<String>) {
+        serverStore.update { it.copy(hiddenProfiles = hidden.distinct()) }
+    }
+
+    fun getProfileToken(profileId: String): String? = requirePrefs().getString("token_$profileId", null)
+
+    fun setProfileToken(
+        profileId: String,
+        token: String?,
+    ) {
+        requirePrefs().edit().putString("token_$profileId", token).apply()
+        if (getSelectedProfileId() == profileId) {
+            if (token == null) ActiveSessionHolder.clear()
+            // B7 (Jul 08 2026, kanban t_470): sync in-memory cachedToken
+            // to prevent stale tokens during ticket refresh
+            synchronized(this) {
+                cachedToken = token
+                tokenInitialized = true
+            }
+            _tokenFlow.value = token
+        }
+    }
+
+    fun getSelectedProfileId(): String? {
+        val id = serverStore.getLatestState().selectedProfileId
+        return if (id.isNullOrBlank()) null else id
+    }
+
+    fun setSelectedProfileId(id: String?) {
+        if (getSelectedProfileId() != id?.takeIf { it.isNotBlank() }) {
+            ActiveSessionHolder.clear()
+        }
+        serverStore.update { it.copy(selectedProfileId = id) }
+        // Keep contextFlow truthful: the base URL resolves per selected
+        // profile, so a connection-profile switch must re-emit the NEW
+        // server's URL (previously stale — reactive consumers saw the old
+        // server's URL after a switch).
+        _baseUrlFlow.value = serverStore.getLatestState().resolvedBaseUrl
+        _selectedProfileFlow.value = id
+        synchronized(this) {
+            tokenInitialized = false
+        }
+        _tokenFlow.value = getToken()
+        // B7 (Jul 08 2026, kanban t_470): keep cookie scope aligned with active profile.
+        appScope?.launch { syncCookieStoreForProfile(id) }
+    }
+
+    /**
+     * Set the active server-side Hermes profile scope.
+     *
+     * Unlike [setSelectedProfileId], this does NOT touch the server store —
+     * it is prefs-backed and immune to [ServerStoreState.selfHealed], so a
+     * server profile that has no local [ConnectionProfile] (the normal case)
+     * survives the switch instead of being clamped to null/default.
+     *
+     * NOTE: read the value via [activeProfileId].value — a JVM getter named
+     * `getActiveProfileId()` would collide with the property's generated
+     * getter (same name, different return type) and silently resolve to the
+     * property getter at runtime (ClassCastException: ReadonlyStateFlow ->
+     * String, 2026-08-06 CI).
+     */
+    fun setActiveProfileId(id: String?) {
+        val normalized = id?.takeIf { it.isNotBlank() }
+        if (_activeProfileId.value != normalized) {
+            if (prefsDeferred?.isCompleted == true) {
+                credentialTransportConsent.invalidateContext()
+            } else {
+                credentialTransportConsent.reset()
+            }
+        }
+        _activeProfileId.value = normalized
+        runCatching {
+            requirePrefs().edit().putString(KEY_ACTIVE_PROFILE_ID, normalized).apply()
+        }
+    }
+
+    private fun normalizedProfileId(profileId: String?): String =
+        profileId?.takeIf { it.isNotBlank() } ?: DEFAULT_PROFILE_ID
+
+    /**
+     * Swaps the cookie jar's ACTIVE store to the given profile's. Idempotent
+     * (no-op when the store is already active). Suspends because switching
+     * store reads/writes the encrypted prefs.
+     *
+     * Internal so the switch coordinator can AWAIT the swap before re-dialing
+     * the WebSocket — a dial that races it mints the WS ticket with the
+     * PREVIOUS server's cookie → 401 → dead socket (split-brain follow-up,
+     * reproduced live 2026-08-12).
+     */
+    internal suspend fun syncCookieStoreForProfile(profileId: String?) {
+        if (!CookieManager.isInitialized()) return
+        val normalizedId = normalizedProfileId(profileId)
+        if (CookieManager.cookieJar.currentServer() != normalizedId) {
+            CookieManager.useStore(normalizedId)
+        }
+    }
+
+    // ── Token ────────────────────────────────────────────────────────────
+
+    @Volatile
+    private var cachedToken: String? = null
+
+    @Volatile
+    private var tokenInitialized: Boolean = false
+
+    // For testing purposes
+    fun resetTokenCacheForTest() {
+        synchronized(this) {
+            cachedToken = null
+            tokenInitialized = false
+        }
+    }
+
+    // For testing purposes
+    fun resetAuthStateForTest() {
+        synchronized(this) {
+            credentialTransportConsent.reset()
+            cachedToken = null
+            tokenInitialized = false
+            _serverStore = null
+            prefsDeferred = null
+            appScope?.let {
+                try {
+                    it.cancel()
+                } catch (_: Exception) {
+                }
+            }
+            appScope = null
+        }
+        _activeProfileId.value = null
+        _baseUrlFlow.value = ""
+    }
+
+    fun getToken(): String? {
+        if (tokenInitialized) return cachedToken
+        synchronized(this) {
+            if (tokenInitialized) return cachedToken
+            val token = resolveConnectionToken(getSelectedProfileId(), ::getProfileToken)
+            cachedToken = token
+            tokenInitialized = true
+            return token
+        }
+    }
+
+    private fun getTokenInternal(p: SharedPreferences): String? {
+        val selectedId = serverStore.getLatestState().selectedProfileId
+        return resolveConnectionToken(selectedId) { id -> p.getString("token_$id", null) }
+    }
+
+    /**
+     * Per-server token semantics: a profile that has no token of its own
+     * inherits the connection (default) token — same dashboard = same auth.
+     * This is what makes profile switching never require a re-login, and it
+     * is restart-safe (the fallback applies on every resolution, not just
+     * at switch time). Profiles with their own token (a different server
+     * connection) keep it untouched.
+     */
+    internal fun resolveConnectionToken(
+        selectedId: String?,
+        tokenFor: (String) -> String?,
+    ): String? {
+        val id = selectedId?.takeIf { it.isNotBlank() } ?: DEFAULT_PROFILE_ID
+        return tokenFor(id) ?: tokenFor(DEFAULT_PROFILE_ID)
+    }
+
+    fun setToken(token: String?) {
+        val selectedId =
+            getSelectedProfileId() ?: run {
+                ensureDefaultSelected()
+                DEFAULT_PROFILE_ID
+            }
+        setProfileToken(selectedId, token)
+        synchronized(this) {
+            cachedToken = token
+            tokenInitialized = true
+        }
+    }
+
+    // ── Server endpoint ──────────────────────────────────────────────────
+
+    fun getBaseUrl(): String = serverStore.getLatestState().resolvedBaseUrl
+
+    fun endpoint(): ServerEndpoint =
+        ServerEndpoint.parse(
+            getBaseUrl(),
+            CleartextPolicy.ALLOW_WITH_WARNING,
+        )
+
+    fun endpointForBuild(): ServerEndpoint = ServerEndpoint.parseForBuild(getBaseUrl())
+
+    fun setBaseUrl(baseUrl: String) {
+        val normalized =
+            ServerEndpoint
+                .parse(
+                    baseUrl,
+                    CleartextPolicy.ALLOW_WITH_WARNING,
+                ).baseUrl
+                .toString()
+        _baseUrlFlow.value = normalized
+        val selectedId =
+            getSelectedProfileId() ?: run {
+                ensureDefaultSelected()
+                DEFAULT_PROFILE_ID
+            }
+        serverStore.update { state ->
+            val profiles =
+                state.connectionProfiles.map { profile ->
+                    if (profile.id == selectedId) {
+                        profile.copy(
+                            host = "",
+                            port = 0,
+                            baseUrl = normalized,
+                        )
+                    } else {
+                        profile
+                    }
+                }
+            // Also cache the login URL at the top level so that getBaseUrl() and
+            // the store-level resolvedBaseUrl (used by the profile list display)
+            // reflect the URL actually authenticated against, never the hardcoded
+            // loopback default. Fixes issue #647: a Default profile whose own
+            // baseUrl was never stamped must still resolve to this URL, not
+            // 127.0.0.1:9119.
+            state.copy(
+                baseUrl = normalized,
+                connectionProfiles = profiles,
+            )
+        }
+    }
+
+    /** Convenience accessors for the resolved host/port (WebSocket + chat). */
+    fun getHost(): String = serverStore.getLatestState().resolvedHost
+
+    fun getPort(): Int = serverStore.getLatestState().resolvedPort
+
+    // ── Auto-reconnect ───────────────────────────────────────────────────
+
+    fun isAutoReconnect(): Boolean = serverStore.getLatestState().autoReconnect
+
+    fun setAutoReconnect(enabled: Boolean) {
+        serverStore.update { it.copy(autoReconnect = enabled) }
+    }
+
+    // ── Theme preference ──────────────────────────────────────────────────
+
+    fun getThemePreference(): ThemePreference = serverStore.getLatestState().themePreference
+
+    fun setThemePreference(theme: ThemePreference) {
+        serverStore.update { it.copy(themePreference = theme) }
+    }
+
+    fun isUseDynamicColors(): Boolean = serverStore.getLatestState().useDynamicColors
+
+    fun setUseDynamicColors(value: Boolean) {
+        serverStore.update { it.copy(useDynamicColors = value) }
+    }
+
+    fun getThemePreset(): ThemePreset = serverStore.getLatestState().themePreset
+
+    fun setThemePreset(preset: ThemePreset) {
+        serverStore.update { it.copy(themePreset = preset) }
+    }
+
+    /** Canonical build-allowed Retrofit base URL. */
+    fun baseUrl(): String = endpointForBuild().baseUrl.toString()
+
+    /** Canonical WebSocket URL with an encoded token or short-lived ticket. */
+    fun wsUrl(): String {
+        val raw = serverStore.getLatestState().wsAuthParam
+        val authParam = if (raw.isBlank()) "token" else raw
+        return endpointForBuild().webSocketUrl(
+            authParameter = authParam,
+            credential = getToken().orEmpty(),
+        )
+    }
+
+    // ── Typing Effect ───────────────────────────────────────────────────
+
+    fun isTypingEffectEnabled(): Boolean = serverStore.getLatestState().typingEffectEnabled
+
+    fun setTypingEffectEnabled(enabled: Boolean) {
+        serverStore.update { it.copy(typingEffectEnabled = enabled) }
+    }
+
+    // ── App display language ───────────────────────────────────────────
+    // "system" follows the device locale; any other value is a BCP-47 code.
+
+    fun getAppLanguage(): String = serverStore.getLatestState().appLanguage
+
+    fun setAppLanguage(code: String) {
+        serverStore.update { it.copy(appLanguage = code) }
+    }
+
+    fun getTypingEffectDelayMs(): Int = serverStore.getLatestState().typingEffectDelayMs
+
+    fun setTypingEffectDelayMs(delayMs: Int) {
+        serverStore.update { it.copy(typingEffectDelayMs = delayMs) }
+    }
+
+    // ── Chat Font Scale (issue #1004) ───────────────────────────────────
+
+    fun getChatFontScale(): Float = serverStore.getLatestState().chatFontScale
+
+    fun setChatFontScale(scale: Float) {
+        serverStore.update { it.copy(chatFontScale = scale) }
+        _chatFontScaleFlow.value = scale
+    }
+
+    // ── In-app update check (issue #867) ─────────────────────────────────
+
+    /** App version the silent update check last completed for (null = never). */
+    fun getUpdateCheckDoneForVersion(): String? = serverStore.getLatestState().updateCheckDoneForVersion
+
+    fun setUpdateCheckDoneForVersion(version: String) {
+        serverStore.update { it.copy(updateCheckDoneForVersion = version) }
+    }
+
+    /** Latest release tag the launch check (issue #890) persisted. */
+    fun getLastKnownLatestTag(): String? = serverStore.getLatestState().lastKnownLatestTag
+
+    fun setLastKnownLatestTag(tag: String) {
+        serverStore.update { it.copy(lastKnownLatestTag = tag) }
+    }
+
+    /** Timestamp of the last background update check. */
+    fun getLastUpdateCheckTimestamp(): Long = serverStore.getLatestState().lastUpdateCheckTimestamp
+
+    fun setLastUpdateCheckTimestamp(timestamp: Long) {
+        serverStore.update { it.copy(lastUpdateCheckTimestamp = timestamp) }
+    }
+
+    /** Release tag dismissed by the user. */
+    fun getDismissedUpdateTag(): String? = serverStore.getLatestState().dismissedUpdateTag
+
+    fun setDismissedUpdateTag(tag: String?) {
+        serverStore.update { it.copy(dismissedUpdateTag = tag) }
+    }
+}

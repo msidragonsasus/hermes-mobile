@@ -1,0 +1,10 @@
+[Unit]
+Description=Synchronize career state every five minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=5min
+Unit=hermes-career-sync.service
+
+[Install]
+WantedBy=timers.target

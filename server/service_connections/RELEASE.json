@@ -1,0 +1,13 @@
+{
+  "feature": "slack-login-connect-v1",
+  "revision": "cancel-contract-r2-20261024",
+  "source_sha256": {
+    "mobile_service_connections.py": "dc46daf32a17e0487c777952ea2a1dd8b028c39479113e18c2f82aac84a747f1",
+    "prepare_install.py": "232407982dd56314c4283d63bcbb4003487cb27b07dcd9c90377a63bbfa0c624",
+    "test_connections.py": "5c62c56309a9466514273a6d0d607405811917389931289793492fe15cd6ee49",
+    "slack.example.yaml": "93035fc89ce2df24ecb630e64ebfffc6fae4051d2ebfea2b8de15d669d429d9b",
+    "README.md": "c6f9505af536a45ea6ac583289a8becf7daeca829d070b73b7ab03b9a9f2a0f9"
+  },
+  "server_tests": 33,
+  "production_applied": false
+}

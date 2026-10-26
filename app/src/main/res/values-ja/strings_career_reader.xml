@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="career_reader_title">案内の詳細</string>
+    <string name="career_reader_loading">保存済みの本文を読み込んでいます…</string>
+    <string name="career_reader_empty">保存済みの本文がありません。</string>
+    <string name="career_reader_expand_subject">件名をすべて表示</string>
+    <string name="career_reader_collapse_subject">件名を折りたたむ</string>
+    <string name="career_reader_origin">元の画面を開く</string>
+    <string name="career_reader_consult">この内容について相談</string>
+    <string name="career_reader_open_link">元の案内を開く</string>
+</resources>

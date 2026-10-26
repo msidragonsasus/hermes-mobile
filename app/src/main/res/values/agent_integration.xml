@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="agent_select">Choose agent</string>
+    <string name="agent_hermes_selected">Hermes · current agent</string>
+    <string name="agent_bro_unavailable">bro · not available yet</string>
+</resources>

@@ -1,0 +1,128 @@
+<main class="viz" id="nisa">
+  <header class="viz-header"><h2>積立シミュレーター</h2><p class="viz-description">条件を変えて、資産の推移を比較。</p></header>
+  <section class="viz-panel" aria-label="シミュレーション条件">
+    <div class="viz-row"><h3>シミュレーション条件</h3><button class="viz-action" id="reset" type="button">リセット</button></div>
+    <div class="viz-segmented" aria-label="想定利回りのプリセット">
+      <button type="button" data-rate="2" aria-pressed="false">控えめ</button>
+      <button type="button" data-rate="5" aria-pressed="true">標準</button>
+      <button type="button" data-rate="8" aria-pressed="false">積極的</button>
+    </div>
+    <div class="viz-controls nisa-inputs">
+      <label for="monthly"><span class="viz-row"><span>毎月の積立額</span><output id="monthly-label">30,000円</output></span>
+        <input id="monthly" aria-label="毎月の積立額" type="range" min="0" max="10" step="0.5" value="3">
+        <span class="viz-row"><small>0円</small><small>10万円</small></span>
+      </label>
+      <label for="rate"><span class="viz-row"><span>想定年率</span><output id="rate-label">5.0%</output></span>
+        <input id="rate" aria-label="想定年率" type="range" min="-5" max="10" step="0.5" value="5">
+        <span class="viz-row"><small>−5%</small><small>10%</small></span>
+      </label>
+      <div><div class="viz-row"><span class="viz-caption">運用期間</span><output id="years-label">20年</output></div>
+        <div class="viz-segmented" aria-label="運用期間">
+          <button type="button" data-years="10" aria-pressed="false">10年</button>
+          <button type="button" data-years="20" aria-pressed="true">20年</button>
+          <button type="button" data-years="30" aria-pressed="false">30年</button>
+          <button type="button" data-years="40" aria-pressed="false">40年</button>
+        </div>
+      </div>
+    </div>
+  </section>
+  <section aria-live="polite">
+    <div class="viz-row"><h3 id="result-title">20年後の試算</h3><span class="viz-caption">単位：万円</span></div>
+    <div class="viz-panel nisa-result">
+      <div class="viz-result"><span class="viz-caption">NISAの最終資産額</span><div><strong class="viz-value" id="total">1,217.4</strong><span class="viz-unit">万円</span></div></div>
+      <div class="viz-metrics nisa-breakdown">
+        <div class="viz-stat"><span>積立元本</span><strong id="principal">720.0万円</strong></div>
+        <div class="viz-stat"><span>運用損益</span><strong class="viz-positive" id="gain">+497.4万円</strong></div>
+      </div>
+    </div>
+    <div class="viz-metrics nisa-comparison" id="tax-metrics" hidden>
+      <div class="viz-stat"><span>非課税メリット</span><strong class="viz-positive" id="saving"></strong></div>
+      <div class="viz-stat"><span>課税口座の税引後資産</span><strong id="taxed"></strong></div>
+    </div>
+  </section>
+  <section aria-label="資産推移">
+    <div class="viz-row"><h3>資産推移</h3><span class="viz-caption">毎月末積立・月次複利</span></div>
+    <figure class="viz-chart nisa-chart">
+      <svg viewBox="0 0 340 210" role="img" aria-labelledby="chart-title chart-desc">
+        <title id="chart-title">積立元本と運用資産の推移</title><desc id="chart-desc">条件の変更に合わせて更新します。</desc><g id="plot"></g>
+      </svg>
+      <figcaption class="viz-legend"><span><i class="viz-dot"></i>NISA資産</span><span><i class="viz-dot nisa-principal"></i>積立元本</span><span id="tax-legend" hidden><i class="viz-dot nisa-taxed"></i>課税口座</span></figcaption>
+    </figure>
+    <label><input id="compare" type="checkbox">課税口座との比較を表示</label>
+  </section>
+  <section class="viz-panel" aria-label="非課税保有限度額の利用状況">
+    <div class="viz-row"><h3>非課税保有限度額</h3><output id="cap-percent">40%</output></div>
+    <progress id="cap" max="1800" value="720" aria-label="購入元本の限度額利用率"></progress>
+    <div class="viz-row viz-caption"><span id="cap-used"></span><span id="cap-remaining"></span></div>
+    <p class="viz-caption" id="cap-note"></p>
+  </section>
+  <details class="viz-details"><summary>期間別の内訳</summary><table><thead><tr><th>経過</th><th>積立元本</th><th>NISA資産</th><th>運用損益</th></tr></thead><tbody id="breakdown"></tbody></table></details>
+  <details class="viz-details"><summary>計算の前提</summary><p class="viz-caption">他のNISA保有がない成人のつみたて投資枠を想定。月額上限10万円、購入元本1,800万円で新規積立を停止します。一定の年率を月率に換算し、分配金なしで複利運用。比較は利益に仮定税率20%を適用。売却・手数料・物価変動は含みません。運用成果を予測するものではありません。</p></details>
+</main>
+<style>
+#nisa .nisa-inputs{grid-template-columns:1fr;gap:10px}
+#nisa output{color:var(--hermes-foreground);font-weight:600}
+#nisa .nisa-result{margin-top:8px}
+#nisa .nisa-breakdown{margin-top:12px;padding-top:12px;border-top:1px solid var(--viz-line)}
+#nisa .nisa-comparison{margin-top:12px}
+#nisa [hidden]{display:none!important}
+#nisa .nisa-chart{margin-top:8px;padding:8px 4px 12px;background:var(--viz-soft);border-radius:var(--hermes-radius)}
+#nisa .nisa-chart figcaption{justify-content:center;gap:8px 12px}
+#nisa .nisa-principal{background:var(--viz-series-3)}
+#nisa .nisa-taxed{background:var(--viz-series-2)}
+#nisa progress{margin:12px 0 8px}
+#nisa td:not(:first-child),#nisa th:not(:first-child){text-align:end}
+</style>
+<script>
+(()=>{
+  const root=document.getElementById('nisa'),el=id=>root.querySelector('#'+id);
+  const fmt=n=>(n/10000).toLocaleString('ja-JP',{minimumFractionDigits:1,maximumFractionDigits:1});
+  const signed=n=>(n<0?'−':'+')+fmt(Math.abs(n))+'万円';
+  const taxed=p=>p.value-Math.max(0,p.value-p.principal)*.2;
+  let years=20;
+  function simulate(monthly,period,rate){
+    let value=0,principal=0,capMonth=null;
+    const r=Math.pow(1+rate/100,1/12)-1,points=[{year:0,value:0,principal:0}];
+    for(let m=1;m<=period*12;m++){
+      const pay=Math.min(monthly,Math.max(0,18000000-principal));
+      value=value*(1+r)+pay;principal+=pay;
+      if(capMonth===null&&principal>=18000000)capMonth=m;
+      if(m%12===0)points.push({year:m/12,value,principal});
+    }
+    return {value,principal,points,capMonth};
+  }
+  function update(){
+    const monthly=Number(el('monthly').value)*10000,rate=Number(el('rate').value),compare=el('compare').checked;
+    const s=simulate(monthly,years,rate),gain=s.value-s.principal;
+    el('monthly-label').textContent=monthly.toLocaleString('ja-JP')+'円';
+    el('rate-label').textContent=rate.toFixed(1)+'%';el('years-label').textContent=years+'年';
+    el('result-title').textContent=years+'年後の試算';el('total').textContent=fmt(s.value);
+    el('principal').textContent=fmt(s.principal)+'万円';el('gain').textContent=signed(gain);
+    el('gain').className=gain<0?'viz-negative':'viz-positive';
+    el('tax-metrics').hidden=!compare;el('tax-legend').hidden=!compare;
+    el('saving').textContent=signed(Math.max(0,gain)*.2);el('taxed').textContent=fmt(taxed(s))+'万円';
+    el('cap').value=s.principal/10000;el('cap-percent').textContent=Math.round(s.principal/18000000*100)+'%';
+    el('cap-used').textContent='元本 '+fmt(s.principal)+' / 1,800万円';
+    el('cap-remaining').textContent='残り '+fmt(18000000-s.principal)+'万円';
+    el('cap-note').textContent=s.capMonth===null?'購入元本の上限までは積立を続けます。':
+      Math.floor(s.capMonth/12)+'年'+(s.capMonth%12)+'か月で上限に到達。その後は保有資産だけを運用します。';
+    root.querySelectorAll('[data-rate]').forEach(b=>b.setAttribute('aria-pressed',Number(b.dataset.rate)===rate));
+    root.querySelectorAll('[data-years]').forEach(b=>b.setAttribute('aria-pressed',Number(b.dataset.years)===years));
+    const max=Math.max(10000,...s.points.map(p=>Math.max(p.value,p.principal)))*1.12;
+    const x=y=>48+y/years*276,y=v=>170-v/max*150;
+    const path=fn=>s.points.map((p,i)=>(i?'L':'M')+x(p.year).toFixed(2)+','+y(fn(p)).toFixed(2)).join(' ');
+    let grid='';
+    for(let i=0;i<=4;i++){const v=max*i/4,yy=y(v);grid+='<line x1="48" y1="'+yy+'" x2="324" y2="'+yy+'" stroke="var(--hermes-muted)" opacity=".16"/><text x="42" y="'+(yy+4)+'" text-anchor="end" font-size="12">'+Math.round(v/10000).toLocaleString('ja-JP')+'</text>';}
+    for(let i=0;i<=4;i++){const yy=Math.round(years*i/4);grid+='<text x="'+x(yy)+'" y="194" text-anchor="middle" font-size="12">'+yy+'年</text>';}
+    const line=(fn,color,dash='')=>'<path d="'+path(fn)+'" fill="none" stroke="'+color+'" stroke-width="2.3" stroke-linejoin="round" '+dash+'/>';
+    el('plot').innerHTML=grid+line(p=>p.principal,'var(--viz-series-3)','stroke-dasharray="4 4"')+(compare?line(taxed,'var(--viz-series-2)'):'')+line(p=>p.value,'var(--hermes-primary)');
+    const rows=[...new Set([5,10,20,years])].filter(v=>v<=years).sort((a,b)=>a-b);
+    el('breakdown').innerHTML=rows.map(year=>{const p=s.points[year];return '<tr><td>'+year+'年</td><td>'+fmt(p.principal)+'万</td><td>'+fmt(p.value)+'万</td><td>'+signed(p.value-p.principal)+'</td></tr>';}).join('');
+  }
+  ['monthly','rate','compare'].forEach(id=>el(id).addEventListener('input',update));
+  root.querySelectorAll('[data-years]').forEach(b=>b.addEventListener('click',()=>{years=Number(b.dataset.years);update();}));
+  root.querySelectorAll('[data-rate]').forEach(b=>b.addEventListener('click',()=>{el('rate').value=b.dataset.rate;update();}));
+  el('reset').addEventListener('click',()=>{years=20;el('monthly').value=3;el('rate').value=5;el('compare').checked=false;update();});
+  update();
+})();
+</script>

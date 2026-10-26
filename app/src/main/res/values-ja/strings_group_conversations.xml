@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="group_conversations">会話一覧</string>
+    <string name="group_new_conversation">新しい会話</string>
+    <string name="group_conversation_empty">この会話にはまだメッセージがありません</string>
+    <string name="group_conversations_local">会話はこの端末に保存され、履歴とbotの文脈は会話ごとに分かれます。切り替えると議論の進行を止め、未確認の返信は元の会話に保持します。</string>
+    <string name="group_reconcile">メッセージの状態を確認</string>
+    <string name="group_reconciling">メッセージの状態を確認中…</string>
+    <string name="group_send_storage_unavailable">会話を保存できません。既存の履歴を保持し、送信を停止しています。保存先が利用可能になってから画面を開き直してください。</string>
+    <string name="group_delivery_failed">拒否済み</string>
+</resources>

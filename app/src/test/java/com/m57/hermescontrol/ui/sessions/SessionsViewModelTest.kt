@@ -1,0 +1,364 @@
+package com.m57.hermescontrol.ui.sessions
+
+import com.m57.hermescontrol.data.model.SessionInfo
+import com.m57.hermescontrol.data.model.SessionListResponse
+import com.m57.hermescontrol.data.remote.ApiClient
+import com.m57.hermescontrol.data.remote.HermesApiService
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.mockkObject
+import io.mockk.unmockkAll
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.setMain
+import okhttp3.ResponseBody.Companion.toResponseBody
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import retrofit2.Response
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class SessionsViewModelTest {
+    private val testDispatcher = StandardTestDispatcher()
+    private val mockApi = mockk<HermesApiService>(relaxed = true)
+
+    private fun createViewModel(): SessionsViewModel {
+        val vm = SessionsViewModel()
+        testDispatcher.scheduler.advanceUntilIdle()
+        return vm
+    }
+
+    @Before
+    fun setUp() {
+        Dispatchers.setMain(testDispatcher)
+        mockkObject(ApiClient)
+        every { ApiClient.hermesApi } returns mockApi
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
+        unmockkAll()
+    }
+
+    @Test
+    fun `blank query resets search mode`() {
+        val vm = createViewModel()
+        vm.setSearchQuery("something")
+        vm.setSearchQuery("")
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals("", vm.uiState.value.searchQuery)
+        assertFalse(vm.uiState.value.isSearchMode)
+        assertEquals(0, vm.uiState.value.searchResults.size)
+        assertFalse(vm.uiState.value.isSearching)
+    }
+
+    @Test
+    fun `non-blank query enters search mode and resolves`() {
+        val vm = createViewModel()
+        vm.setSearchQuery("hello")
+        // state is set synchronously
+        assertEquals("hello", vm.uiState.value.searchQuery)
+        assertTrue(vm.uiState.value.isSearchMode)
+        // advance past debounce + (failing, offline) network call
+        testDispatcher.scheduler.advanceTimeBy(500)
+        testDispatcher.scheduler.advanceUntilIdle()
+        // Either way the spinner must stop and the query persists.
+        assertFalse(vm.uiState.value.isSearching)
+        assertEquals("hello", vm.uiState.value.searchQuery)
+    }
+
+    @Test
+    fun `select all uses the IDs shown in the current view`() {
+        val vm = createViewModel()
+
+        vm.selectAll(setOf("search-session-1", "search-session-2"))
+
+        assertEquals(
+            setOf("search-session-1", "search-session-2"),
+            vm.uiState.value.selectedIds,
+        )
+    }
+
+    @Test
+    fun `clean search snippet extracts text from JSON payload`() {
+        assertEquals(
+            "Find the deployment logs",
+            cleanSearchSnippet("{\"role\":\"user\",\"content\":\">>>Find<<< the deployment logs\"}"),
+        )
+    }
+
+    // ── Pagination (fluid load-more) ──────────────────────────────────────
+
+    @Test
+    fun `loadSessions with fewer than page size items caps total and sets hasMore false`() {
+        val vm = createViewModel()
+
+        // Server reports total = 10 (e.g. cross-profile count), but returns only 2 sessions (< PAGE_SIZE 50).
+        // hasMore must be false and total must be capped at 2 to prevent infinite auto-load loops.
+        coEvery { mockApi.getSessions(any(), any(), any()) } returns
+            Response.success(
+                SessionListResponse(
+                    sessions = listOf(SessionInfo("s-1"), SessionInfo("s-2")),
+                    total = 10,
+                ),
+            )
+        vm.loadSessions()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(
+            listOf("s-1", "s-2"),
+            vm.uiState.value.sessions
+                .map { it.id },
+        )
+        assertEquals(2, vm.uiState.value.total)
+        assertFalse(vm.uiState.value.hasMore)
+        assertFalse(vm.uiState.value.isLoadingMore)
+    }
+
+    @Test
+    fun `loadMore appends the next page and dedupes overlapping ids`() {
+        val vm = createViewModel()
+
+        val page1Sessions = (1..50).map { SessionInfo("s-$it") }
+        // Page 1: 50 sessions of 51 total — hasMore stays true.
+        coEvery { mockApi.getSessions(limit = 50, offset = 0, order = any()) } returns
+            Response.success(
+                SessionListResponse(
+                    sessions = page1Sessions,
+                    total = 51,
+                ),
+            )
+        vm.loadSessions()
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals(50, vm.uiState.value.sessions.size)
+        assertTrue(vm.uiState.value.hasMore)
+        assertFalse(vm.uiState.value.isLoadingMore)
+
+        // Page 2 overlaps page 1 (offset churn: a new session landed on top
+        // between loads) — the duplicate id must not double-append.
+        coEvery { mockApi.getSessions(limit = 50, offset = 50, order = any()) } returns
+            Response.success(
+                SessionListResponse(
+                    sessions = listOf(SessionInfo("s-51"), SessionInfo("s-50")),
+                    total = 51,
+                ),
+            )
+        vm.loadMore()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(51, vm.uiState.value.sessions.size)
+        assertEquals(51, vm.uiState.value.total)
+        assertFalse(vm.uiState.value.hasMore)
+        assertFalse(vm.uiState.value.isLoadingMore)
+    }
+
+    @Test
+    fun `loadMore is a no-op while a load is already running`() {
+        val vm = createViewModel()
+
+        val page1Sessions = (1..50).map { SessionInfo("s-$it") }
+        coEvery { mockApi.getSessions(limit = 50, offset = 0, order = any()) } returns
+            Response.success(
+                SessionListResponse(
+                    sessions = page1Sessions,
+                    total = 52,
+                ),
+            )
+        vm.loadSessions()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // Fire two loadMore calls back-to-back before the dispatcher runs: the
+        // first sets isLoadingMore=true synchronously, the second must be dropped.
+        vm.loadMore()
+        vm.loadMore()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // loadSessions (1) + exactly one loadMore (1) = 2 API hits total.
+        coVerify(exactly = 2) { mockApi.getSessions(any(), any(), any()) }
+        assertFalse(vm.uiState.value.isLoadingMore)
+    }
+
+    // ── Pin / unpin ────────────────────────────────────────────────────────
+
+    @Test
+    fun `loaded list keeps pinned sessions on top`() {
+        val vm = createViewModel()
+        // Backend returns recency order with the pinned flag set; the client
+        // must lift pins above the rest while keeping the rest's order.
+        coEvery { mockApi.getSessions(any(), any(), any()) } returns
+            Response.success(
+                SessionListResponse(
+                    sessions =
+                        listOf(
+                            SessionInfo("recent", pinned = false),
+                            SessionInfo("old-pinned", pinned = true),
+                        ),
+                    total = 2,
+                ),
+            )
+        vm.loadSessions()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(
+            listOf("old-pinned", "recent"),
+            vm.uiState.value.sessions
+                .map { it.id },
+        )
+    }
+
+    @Test
+    fun `togglePin moves the session to the top and sets the flag`() {
+        val vm = createViewModel()
+        coEvery { mockApi.getSessions(any(), any(), any()) } returns
+            Response.success(
+                SessionListResponse(
+                    sessions = listOf(SessionInfo("s-1"), SessionInfo("s-2")),
+                    total = 2,
+                ),
+            )
+        vm.loadSessions()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        coEvery { mockApi.setSessionPinned(any(), any()) } returns Response.success(Unit)
+        vm.togglePin("s-2")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(
+            listOf("s-2", "s-1"),
+            vm.uiState.value.sessions
+                .map { it.id },
+        )
+        assertEquals(
+            true,
+            vm.uiState.value.sessions
+                .first()
+                .pinned,
+        )
+        assertEquals("Session pinned", vm.uiState.value.toastMessage)
+    }
+
+    @Test
+    fun `togglePin failure keeps the order and surfaces a toast`() {
+        val vm = createViewModel()
+        coEvery { mockApi.getSessions(any(), any(), any()) } returns
+            Response.success(
+                SessionListResponse(
+                    sessions = listOf(SessionInfo("s-1", pinned = true), SessionInfo("s-2")),
+                    total = 2,
+                ),
+            )
+        vm.loadSessions()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        coEvery { mockApi.setSessionPinned(any(), any()) } returns
+            retrofit2.Response.error(500, "".toResponseBody(null))
+        vm.togglePin("s-2")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(
+            listOf("s-1", "s-2"),
+            vm.uiState.value.sessions
+                .map { it.id },
+        )
+        assertFalse(
+            vm.uiState.value.sessions[1]
+                .pinned ?: false,
+        )
+        assertNotNull(vm.uiState.value.toastMessage)
+        assertTrue(
+            vm.uiState.value.toastMessage!!
+                .contains("Pin failed"),
+        )
+    }
+
+    @Test
+    fun `displaySessions filters out hidden sessions by default and shows them on toggleShowHidden`() {
+        val vm = createViewModel()
+        coEvery { mockApi.getSessions(any(), any(), any()) } returns
+            Response.success(
+                SessionListResponse(
+                    sessions =
+                        listOf(
+                            SessionInfo("s-visible-1", hidden = false),
+                            SessionInfo("s-hidden", hidden = true),
+                            SessionInfo("s-visible-2", hidden = null),
+                        ),
+                    total = 3,
+                ),
+            )
+        vm.loadSessions()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue(vm.uiState.value.hasHiddenSessions)
+        assertFalse(vm.uiState.value.showHidden)
+        assertEquals(
+            listOf("s-visible-1", "s-visible-2"),
+            vm.uiState.value.displaySessions
+                .map { it.id },
+        )
+
+        vm.toggleShowHidden()
+        assertTrue(vm.uiState.value.showHidden)
+        assertEquals(
+            listOf("s-visible-1", "s-hidden", "s-visible-2"),
+            vm.uiState.value.displaySessions
+                .map { it.id },
+        )
+
+        vm.toggleShowHidden()
+        assertFalse(vm.uiState.value.showHidden)
+        assertEquals(
+            listOf("s-visible-1", "s-visible-2"),
+            vm.uiState.value.displaySessions
+                .map { it.id },
+        )
+    }
+
+    @Test
+    fun `toggleHide updates hidden status and surfaces toast`() {
+        val vm = createViewModel()
+        coEvery { mockApi.getSessions(any(), any(), any()) } returns
+            Response.success(
+                SessionListResponse(
+                    sessions = listOf(SessionInfo("s-1", hidden = false)),
+                    total = 1,
+                ),
+            )
+        vm.loadSessions()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        coEvery { mockApi.setSessionHidden(any(), any()) } returns Response.success(Unit)
+        vm.toggleHide("s-1")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(
+            true,
+            vm.uiState.value.sessions
+                .first()
+                .hidden,
+        )
+        assertEquals("Session hidden", vm.uiState.value.toastMessage)
+
+        vm.toggleHide("s-1")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(
+            false,
+            vm.uiState.value.sessions
+                .first()
+                .hidden,
+        )
+        assertEquals("Session unhidden", vm.uiState.value.toastMessage)
+    }
+}

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="agent_select">エージェントを選択</string>
+    <string name="agent_hermes_selected">Hermes・利用中</string>
+    <string name="agent_bro_unavailable">bro・未接続（利用不可）</string>
+</resources>

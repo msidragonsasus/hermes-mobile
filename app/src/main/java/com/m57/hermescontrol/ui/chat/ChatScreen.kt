@@ -1,0 +1,1063 @@
+package com.m57.hermescontrol.ui.chat
+
+import android.Manifest
+import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.speech.RecognizerIntent
+import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.m57.hermescontrol.ExternalActivityLifecycleGuard
+import com.m57.hermescontrol.HistoryScreen
+import com.m57.hermescontrol.NavigationController
+import com.m57.hermescontrol.R
+import com.m57.hermescontrol.agents.agentLabel
+import com.m57.hermescontrol.data.local.AuthManager
+import com.m57.hermescontrol.data.model.Attachment
+import com.m57.hermescontrol.data.model.AttachmentSource
+import com.m57.hermescontrol.data.update.AppUpdateCache
+import com.m57.hermescontrol.data.update.AppUpdateState
+import com.m57.hermescontrol.data.update.UpdateNoticeManager
+import com.m57.hermescontrol.data.ws.ConnectionStatus
+import com.m57.hermescontrol.data.ws.HermesWsClient
+import com.m57.hermescontrol.notification.NotificationHelper
+import com.m57.hermescontrol.theme.LocalHermesStatusColors
+import com.m57.hermescontrol.ui.chat.components.ChatConnectionBanner
+import com.m57.hermescontrol.ui.chat.components.ChatInputBar
+import com.m57.hermescontrol.ui.chat.components.ChatLifecycleEffects
+import com.m57.hermescontrol.ui.chat.components.ChatLoadingOverlay
+import com.m57.hermescontrol.ui.chat.components.ChatResumeErrorOverlay
+import com.m57.hermescontrol.ui.chat.components.ChatScrollToBottomFab
+import com.m57.hermescontrol.ui.chat.components.ChatTimelineNoPrefetchStrategy
+import com.m57.hermescontrol.ui.chat.components.ContextDetailSheet
+import com.m57.hermescontrol.ui.chat.components.ContextUsageChip
+import com.m57.hermescontrol.ui.chat.components.ConversationHistoryDrawer
+import com.m57.hermescontrol.ui.chat.components.ReactionHeartsOverlay
+import com.m57.hermescontrol.ui.chat.components.ReloginDialog
+import com.m57.hermescontrol.ui.chat.components.SearchBarRow
+import com.m57.hermescontrol.ui.chat.components.SideQuestionSheet
+import com.m57.hermescontrol.ui.chat.components.SubagentInspectionSheet
+import com.m57.hermescontrol.ui.chat.components.TaskProgressChip
+import com.m57.hermescontrol.ui.chat.components.rememberChatScrollController
+import com.m57.hermescontrol.ui.chat.components.shouldShowProgressChip
+import com.m57.hermescontrol.ui.chat.components.tailContentKey
+import com.m57.hermescontrol.ui.chat.fullbleed.FullBleedChatList
+import com.m57.hermescontrol.ui.common.ActionProgressDialog
+import com.m57.hermescontrol.ui.common.AppUpdateDialog
+import com.m57.hermescontrol.ui.common.CredentialWarningBanner
+import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.NavIcon
+import com.m57.hermescontrol.ui.model.components.ModelPickerDialog
+import com.m57.hermescontrol.ui.settings.AppUpdateViewModel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+private const val SESSION_SYNC_INTERVAL_MS = 30_000L
+
+internal fun acceptedSaveDestination(
+    resultCode: Int,
+    destination: Uri?,
+): Uri? = destination.takeIf { resultCode == Activity.RESULT_OK }
+
+internal fun canStartAttachmentSave(
+    pendingSavePath: String?,
+    savingAttachmentPath: String?,
+): Boolean = pendingSavePath == null && savingAttachmentPath == null
+
+/**
+ * Chat screen — the primary conversation surface of Hermes Control.
+ *
+ * This file is a thin compositor that delegates all UI rendering to focused
+ * composable components under `ui/chat/components/`. See issue #621 for the
+ * rationale behind the split and the full file→content mapping.
+ *
+ * The original 2,267-line god file was split into 11 single-purpose files;
+ * this entry point handles only state hoisting, scaffold wiring, and the
+ * remembered launchers that need to be activity-scoped.
+ */
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@Composable
+fun ChatScreen(
+    modifier: Modifier = Modifier,
+    onOpenDrawer: (() -> Unit)? = null,
+    sessionId: String? = null,
+    viewModel: ChatViewModel = viewModel(),
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val streamingState by viewModel.streamingState.collectAsStateWithLifecycle()
+    val credentialWarning by HermesWsClient.credentialWarning.collectAsStateWithLifecycle()
+    // Snapshot-backed search state — read directly so only the scopes that
+    // read its fields recompose on search changes (bar, matched bubbles).
+    val searchState = viewModel.searchState
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val listState = rememberLazyListState(prefetchStrategy = ChatTimelineNoPrefetchStrategy)
+    com.m57.hermescontrol.home
+        .HomeChatReadEffect(state, listState)
+    val scrollScope = rememberCoroutineScope()
+    val scrollController = rememberChatScrollController(listState, scrollScope)
+    var isOlderPagingArmed by remember(state.currentSessionId) { mutableStateOf(false) }
+    var showContextSheet by remember { mutableStateOf(false) }
+    var showConversationMenu by remember(state.currentSessionId) { mutableStateOf(false) }
+    var pendingSavePath by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingSaveName by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingSaveMimeType by rememberSaveable { mutableStateOf<String?>(null) }
+    val saveAttachmentLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            try {
+                ExternalActivityLifecycleGuard.externalActivityReturned()
+                val path = pendingSavePath
+                val destination = acceptedSaveDestination(result.resultCode, result.data?.data)
+                if (destination != null && path != null) {
+                    viewModel.saveAttachment(
+                        Attachment(
+                            uri = "gateway:$path",
+                            name = pendingSaveName ?: "download",
+                            mimeType = pendingSaveMimeType ?: "application/octet-stream",
+                            size = 0,
+                            source = AttachmentSource.GATEWAY,
+                        ),
+                        destination,
+                    )
+                }
+            } finally {
+                pendingSavePath = null
+                pendingSaveName = null
+                pendingSaveMimeType = null
+            }
+        }
+
+    // Periodic session sync while connected.
+    LaunchedEffect(lifecycleOwner, state.currentSessionId, state.connectionStatus) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            if (state.currentSessionId != null && state.connectionStatus == ConnectionStatus.CONNECTED) {
+                viewModel.syncCurrentSession()
+                viewModel.fetchContextUsage()
+            }
+            while (state.currentSessionId != null && state.connectionStatus == ConnectionStatus.CONNECTED) {
+                delay(SESSION_SYNC_INTERVAL_MS)
+                viewModel.syncCurrentSession()
+                viewModel.fetchContextUsage()
+            }
+        }
+    }
+
+    // /resume · /history (issue #864): open the session history tab so the
+    // user picks a past session — client-side, no gateway round-trip.
+    LaunchedEffect(state.openHistoryRequested) {
+        if (state.openHistoryRequested) {
+            NavigationController.navigateTo(HistoryScreen)
+            viewModel.consumeOpenHistoryRequest()
+        }
+    }
+
+    // Arm + trigger older-message paging when the user scrolls near the top.
+    // Before prepending, capture the anchor (first visible message id + offset)
+    // so the same content stays under the reader's eye after the insert
+    // (issue #682). Restored in a LaunchedEffect once the page actually lands.
+    val pagingAnchor = remember { mutableStateOf<Pair<String, Int>?>(null) }
+    LaunchedEffect(listState, state.currentSessionId, state.hasOlderMessages, state.isLoadingOlder) {
+        if (!state.hasOlderMessages || state.isLoadingOlder) return@LaunchedEffect
+        snapshotFlow { listState.firstVisibleItemIndex }
+            .distinctUntilChanged()
+            .collectLatest { firstVisibleIndex ->
+                if (firstVisibleIndex > 2) {
+                    isOlderPagingArmed = true
+                } else if (isOlderPagingArmed || state.messages.size <= 3) {
+                    val anchorId = state.messages.getOrNull(firstVisibleIndex)?.id
+                    val offset = scrollController.captureAnchorOffset()
+                    pagingAnchor.value = if (anchorId != null) anchorId to offset else null
+                    viewModel.loadOlderMessages()
+                }
+            }
+    }
+
+    // After older history is prepended, restore the anchor message (by id, so
+    // streaming-token inserts during paging don't skew the index) plus offset.
+    LaunchedEffect(state.messages) {
+        val anchor = pagingAnchor.value ?: return@LaunchedEffect
+        val (anchorId, offset) = anchor
+        val index = state.messages.indexOfFirst { it.id == anchorId }
+        if (index >= 0) {
+            scrollController.scrollToItem(index, offset)
+            pagingAnchor.value = null
+        }
+    }
+
+    // Continuous bottom-follow tracking from LazyListState (issue #682).
+    LaunchedEffect(Unit) {
+        scrollController.observeUserScrollPosition()
+    }
+
+    // Drive follow + unseen tracking from a stable tail-content key covering
+    // messages, streaming, thinking, subagent cards, and clarify prompts
+    // (issue #682). Replaces the old item-count heuristic that ignored the
+    // streaming tail.
+    LaunchedEffect(
+        state.messages,
+        streamingState.streamingMessage,
+        streamingState.isThinking,
+        state.subagentIndicators,
+        state.todos,
+        state.clarifyRequest,
+    ) {
+        scrollController.onTailChanged(
+            tailKey =
+                tailContentKey(
+                    messages = state.messages,
+                    streamingMessage = streamingState.streamingMessage,
+                    isThinking = streamingState.isThinking,
+                    subagentIndicators = state.subagentIndicators,
+                    clarifyRequest = state.clarifyRequest,
+                ),
+            messageCount = state.messages.size,
+        )
+    }
+    val showScrollToBottom by remember {
+        derivedStateOf {
+            scrollController.showFab(state.messages.isNotEmpty())
+        }
+    }
+    var inputFieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(""))
+    }
+
+    LaunchedEffect(state.pendingPrefillText) {
+        val prefill = state.pendingPrefillText
+        if (prefill != null) {
+            inputFieldValue = ChatInputPolicy.commandFieldValue(prefill)
+            viewModel.consumePendingPrefill()
+        }
+    }
+    val navigationPrefill = NavigationController.pendingChatPrefill
+    LaunchedEffect(navigationPrefill) {
+        NavigationController.consumePendingChatPrefill()?.let { prefill ->
+            inputFieldValue = ChatInputPolicy.commandFieldValue(prefill)
+        }
+    }
+    LaunchedEffect(state.composerTextToRestore) {
+        state.composerTextToRestore?.let { text ->
+            inputFieldValue = ChatInputPolicy.restoreRejectedText(text, inputFieldValue)
+            viewModel.consumeComposerTextRestore()
+        }
+    }
+    var isListening by rememberSaveable { mutableStateOf(false) }
+    var lastAnimatedMessageId by rememberSaveable { mutableStateOf<String?>(null) }
+    var showReloginDialog by rememberSaveable { mutableStateOf(false) }
+    var showSubagentInspectionSheet by rememberSaveable { mutableStateOf(false) }
+    var viewingImage by rememberSaveable { mutableStateOf<ImageViewerModel?>(null) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val isDark = isSystemInDarkTheme()
+    val context = LocalContext.current
+    val launchExternalActivity: (() -> Unit) -> Unit = { launch ->
+        ExternalActivityLifecycleGuard.launchExternalActivity(
+            acquireConnectionLease = HermesWsClient::acquireExternalActivityConnectionLease,
+            releaseConnectionLease = HermesWsClient::releaseExternalActivityConnectionLease,
+            prepareForBackground = { NotificationHelper.start(context) },
+            cleanupAfterLaunchFailure = { NotificationHelper.stop(context) },
+            launch = launch,
+        )
+    }
+
+    val micListeningPrompt = stringResource(R.string.chat_mic_listening)
+    val sttNotAvailableMsg = stringResource(R.string.stt_not_available)
+    val sttPermissionDeniedMsg = stringResource(R.string.stt_permission_denied)
+
+    // Speech-to-text recognition launcher (issue #194)
+    val speechLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.StartActivityForResult(),
+        ) { result ->
+            ExternalActivityLifecycleGuard.externalActivityReturned()
+            isListening = false
+            if (result.resultCode == Activity.RESULT_OK) {
+                val spokenText =
+                    result.data
+                        ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                        ?.firstOrNull()
+                        .orEmpty()
+                if (spokenText.isNotBlank()) {
+                    val merged =
+                        if (inputFieldValue.text.isBlank()) {
+                            spokenText
+                        } else {
+                            "${inputFieldValue.text} $spokenText"
+                        }
+                    inputFieldValue = ChatInputPolicy.commandFieldValue(merged)
+                }
+            }
+        }
+
+    // Mic permission launcher
+    val micPermissionLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission(),
+        ) { granted ->
+            ExternalActivityLifecycleGuard.externalActivityReturned()
+            if (granted) {
+                if (SpeechInputHelper.isSpeechInputAvailable(context)) {
+                    val intent = SpeechInputHelper.createSpeechIntent(micListeningPrompt)
+                    isListening = true
+                    launchExternalActivity {
+                        try {
+                            speechLauncher.launch(intent)
+                        } catch (_: ActivityNotFoundException) {
+                            isListening = false
+                            scrollScope.launch {
+                                snackbarHostState.showSnackbar(sttNotAvailableMsg)
+                            }
+                        }
+                    }
+                } else {
+                    scrollScope.launch {
+                        snackbarHostState.showSnackbar(sttNotAvailableMsg)
+                    }
+                }
+            } else {
+                scrollScope.launch {
+                    snackbarHostState.showSnackbar(sttPermissionDeniedMsg)
+                }
+            }
+        }
+
+    // Multi-file picker for attachments (issue #195).
+    val filePickerLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.GetMultipleContents(),
+        ) { uris: List<Uri> ->
+            ExternalActivityLifecycleGuard.externalActivityReturned()
+            val attachments =
+                uris.mapNotNull { uri ->
+                    runCatching {
+                        var name = uri.lastPathSegment ?: "file"
+                        var size = 0L
+                        context.contentResolver
+                            .query(
+                                uri,
+                                arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                                null,
+                                null,
+                                null,
+                            )?.use { cursor ->
+                                if (cursor.moveToFirst()) {
+                                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                                    val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                                    if (nameIdx >= 0 && !cursor.isNull(nameIdx)) name = cursor.getString(nameIdx)
+                                    if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) size = cursor.getLong(sizeIdx)
+                                }
+                            }
+                        Attachment(
+                            uri = uri.toString(),
+                            name = name,
+                            mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream",
+                            size = size,
+                        )
+                    }.onFailure { error ->
+                        Log.w("ChatScreen", "Skipping unreadable picked attachment", error)
+                    }.getOrNull()
+                }
+            viewModel.addAttachments(attachments)
+        }
+
+    // Camera photo launcher (issue #195)
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+    val cameraErrorMsg = stringResource(R.string.chat_camera_error)
+    val cameraLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.TakePicture(),
+        ) { success ->
+            ExternalActivityLifecycleGuard.externalActivityReturned()
+            val uri = pendingCameraUri
+            pendingCameraUri = null
+            if (success && uri != null) {
+                try {
+                    val fileName =
+                        "photo_${
+                            SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(
+                                Date(),
+                            )
+                        }.jpg"
+                    val inputStream = context.contentResolver.openInputStream(uri)
+                    val size = inputStream?.use { it.available().toLong() } ?: 0L
+                    viewModel.addAttachment(uri.toString(), fileName, "image/jpeg", size)
+                } catch (e: Exception) {
+                    Log.e("ChatScreen", "Camera capture failed", e)
+                    scrollScope.launch {
+                        snackbarHostState.showSnackbar(
+                            cameraErrorMsg,
+                        )
+                    }
+                }
+            }
+        }
+
+    // Lifecycle effects, permissions, session switching, auto-scroll, errors
+    ChatLifecycleEffects(
+        sessionId = sessionId,
+        connectionStatus = state.connectionStatus,
+        currentSessionId = state.currentSessionId,
+        messages = state.messages,
+        errorMessage = state.errorMessage,
+        backgroundCompleteMessage = state.backgroundCompleteMessage,
+        openError = state.openError,
+        clarifyRequest = state.clarifyRequest,
+        sudoPrompt = state.sudoPrompt,
+        secretPrompt = state.secretPrompt,
+        vaultPrompt = state.vaultPrompt,
+        listState = listState,
+        scrollController = scrollController,
+        snackbarHostState = snackbarHostState,
+        viewModel = viewModel,
+    )
+
+    HermesScaffold(
+        modifier = modifier,
+        pinTopBar = true,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                com.m57.hermescontrol.agents
+                    .AgentSelector()
+                // Connection status dot — red when offline, hidden when connected
+                if (!state.isConnected) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(
+                        modifier =
+                            Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(LocalHermesStatusColors.current.error),
+                    )
+                }
+                // Terminal backend chip (issue #860) — ssh/docker/... next to the
+                // title; hidden when local (default) or absent.
+                val terminalBackend = state.terminalBackend
+                if (!terminalBackend.isNullOrBlank() && terminalBackend != "local") {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ) {
+                        Text(
+                            text = terminalBackend,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        },
+        navigationIcon =
+            NavIcon.Menu(
+                onOpen = { showConversationMenu = true },
+                contentDescription = stringResource(R.string.chat_open_conversation_menu),
+                tonal = true,
+            ),
+        drawerGesturesEnabled = false,
+        showShellMenu = false,
+        overlay = {
+            ConversationHistoryDrawer(
+                currentSessionId = state.currentSessionId,
+                onSelectSession = { selectedId ->
+                    showConversationMenu = false
+                    if (selectedId != state.currentSessionId) NavigationController.openChatSession(selectedId)
+                },
+                currentModel = state.currentSessionModel,
+                onHistory = {
+                    showConversationMenu = false
+                    NavigationController.navigateTo(HistoryScreen)
+                },
+                onNewConversation = {
+                    showConversationMenu = false
+                    viewModel.createNewSession()
+                },
+                onModel = {
+                    showConversationMenu = false
+                    viewModel.openModelPicker()
+                },
+                onDismiss = { showConversationMenu = false },
+                visible = showConversationMenu,
+            )
+        },
+        snackbarHost = {
+            SnackbarHost(snackbarHostState) { data ->
+                val statusColors = LocalHermesStatusColors.current
+                val isDownloadComplete = data.visuals.message.startsWith("Saved ")
+                Snackbar(
+                    snackbarData = data,
+                    containerColor =
+                        if (isDownloadComplete) statusColors.success else MaterialTheme.colorScheme.errorContainer,
+                    contentColor =
+                        if (isDownloadComplete) statusColors.onSuccess else MaterialTheme.colorScheme.onErrorContainer,
+                )
+            }
+        },
+        actions = {
+            com.m57.hermescontrol.ui.chat.components.ConversationHeaderActions(
+                onNew = { viewModel.createNewSession() },
+                onSettings = { NavigationController.navigateTo(com.m57.hermescontrol.agents.ChatSettingsKey) },
+            )
+        },
+    ) { _ ->
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background)
+                    // Swipe right anywhere on the conversation opens the history drawer (ChatGPT
+                    // style). Horizontal scrollers (code blocks) consume their drags first.
+                    .conversationHistorySwipe { showConversationMenu = true }
+                    .imePadding(),
+        ) {
+            com.m57.hermescontrol.agents
+                .AgentModeTabs(groups = false)
+            ChatConnectionBanner(
+                connectionStatus = state.connectionStatus,
+                onReconnect = viewModel::reconnect,
+                onReloginClick = { showReloginDialog = true },
+            )
+
+            // Issue #942: compact glanceable progress strip while work is active.
+            // Bound to the same hydrated todos / subagentIndicators state.
+            // Auto-hides when all todos complete/cancel and no subagent is running.
+            val workActive = shouldShowProgressChip(state.todos, state.subagentIndicators)
+            TaskProgressChip(
+                visible = workActive,
+                todos = state.todos,
+                indicators = state.subagentIndicators,
+                onClick = {
+                    showSubagentInspectionSheet = true
+                    scrollController.resumeFollowing()
+                },
+            )
+
+            credentialWarning?.let { warning ->
+                CredentialWarningBanner(
+                    warning = warning,
+                    onFix = { NavigationController.navigateTo(com.m57.hermescontrol.ProvidersScreen) },
+                    onDismiss = { HermesWsClient.clearCredentialWarning() },
+                )
+            }
+
+            // Issue #890: launch update check — non-blocking banner when a
+            // newer release exists. Tapping "Update" opens the in-place dialog.
+            val updateNotice by AppUpdateCache.state.collectAsStateWithLifecycle()
+            val appUpdateViewModel: AppUpdateViewModel =
+                viewModel {
+                    val app =
+                        this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]
+                            ?: error("Application not available")
+                    AppUpdateViewModel(app)
+                }
+
+            if (UpdateNoticeManager.enabled && !AppUpdateCache.dismissed) {
+                val noticeTag =
+                    (updateNotice as? AppUpdateState.UpdateAvailable)?.latestTag
+                        ?: UpdateNoticeManager.noticeTag()
+                if (noticeTag != null) {
+                    com.m57.hermescontrol.ui.common.UpdateNoticeBanner(
+                        latestTag = noticeTag,
+                        onUpdate = { AppUpdateCache.showDialog() },
+                        onDismiss = { AppUpdateCache.dismiss() },
+                    )
+                }
+            }
+
+            if (AppUpdateCache.isDialogVisible) {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                AppUpdateDialog(
+                    state = updateNotice,
+                    onDismiss = { AppUpdateCache.hideDialog() },
+                    onStartUpdate = { appUpdateViewModel.startUpdate() },
+                    onCancelDownload = { appUpdateViewModel.cancelDownload() },
+                    onNeverAskAgain = { appUpdateViewModel.dismissCurrentUpdate() },
+                    onOpenSettings = {
+                        val intent =
+                            android.content
+                                .Intent(
+                                    android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                    android.net.Uri.parse("package:${context.packageName}"),
+                                ).apply {
+                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                        try {
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            context.startActivity(
+                                android.content.Intent(android.provider.Settings.ACTION_SECURITY_SETTINGS).apply {
+                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                },
+                            )
+                        }
+                    },
+                )
+            }
+
+            com.m57.hermescontrol.ui.chat.components.OutgoingDraftPanel(
+                drafts = state.outgoingDrafts,
+                activeIds = state.activeDraftIds,
+                storageError = state.draftStorageError,
+                onRestore = viewModel::restoreDraft,
+                onOpenConversation = viewModel::openDraftConversation,
+                onDiscard = viewModel::discardDraft,
+                onQueue = viewModel::queueDraft,
+            )
+
+            AnimatedVisibility(
+                visible = searchState.isActive,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut(),
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    tonalElevation = 2.dp,
+                    border =
+                        BorderStroke(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
+                        ),
+                ) {
+                    Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        SearchBarRow(
+                            searchQuery = searchState.query,
+                            onQueryChange = { viewModel.setSearchQuery(it) },
+                            searchMatchCount = searchState.matchTotal,
+                            searchMatchCapped = searchState.matchCapped,
+                            currentMatchIndex = searchState.currentIndex,
+                            onNavigateUp = { viewModel.navigateSearchMatch(-1) },
+                            onNavigateDown = { viewModel.navigateSearchMatch(1) },
+                            onClose = { viewModel.clearSearch() },
+                        )
+                    }
+                }
+            }
+
+            Box(
+                modifier =
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+            ) {
+                val onSaveAttachment: (com.m57.hermescontrol.data.model.Attachment) -> Unit = { attachment ->
+                    if (canStartAttachmentSave(pendingSavePath, state.savingAttachmentPath)) {
+                        pendingSavePath = viewModel.gatewayPathFor(attachment)
+                        pendingSaveName = attachment.name
+                        pendingSaveMimeType = attachment.mimeType
+                        launchExternalActivity {
+                            saveAttachmentLauncher.launch(
+                                Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                    addCategory(Intent.CATEGORY_OPENABLE)
+                                    type =
+                                        attachment.mimeType
+                                            .substringBefore(';')
+                                            .trim()
+                                            .takeIf { it.isNotBlank() } ?: "application/octet-stream"
+                                    putExtra(
+                                        Intent.EXTRA_TITLE,
+                                        attachment.name
+                                            .substringAfterLast('/')
+                                            .substringAfterLast('\\')
+                                            .ifBlank { "download" },
+                                    )
+                                },
+                            )
+                        }
+                    }
+                }
+
+                // Full-bleed chat renderer (issue #866) — the single chat
+                // surface since the bubble renderer was removed.
+                val nativeUiScope = nativeUiKey(AuthManager.uiPreferenceScope(), state.currentSessionId.orEmpty())
+                val nativeCanSubmit = canSendNativeAction(state)
+                // Rebuilt only when the scope or send availability changes, not on every chat update.
+                val nativeUiHost =
+                    remember(nativeUiScope, nativeCanSubmit) {
+                        NativeUiHost(nativeUiScope, nativeCanSubmit) { text ->
+                            // The composer draft and attachments stay as they are.
+                            if (viewModel.sendNativeAction(text)) scrollController.jumpToBottom(animated = true)
+                        }
+                    }
+                // Turn headers name the agent you are talking to, with its bot avatar.
+                val botsViewModel: com.m57.hermescontrol.ui.bots.BotsViewModel =
+                    viewModel { com.m57.hermescontrol.ui.bots.BotsViewModel() }
+                val botsState by botsViewModel.uiState.collectAsStateWithLifecycle()
+                val activeAgent = botsState.profiles.firstOrNull { it.name == botsState.activeProfileName }
+                val agentIdentity =
+                    remember(activeAgent) {
+                        com.m57.hermescontrol.ui.chat.fullbleed.ChatAgentIdentity(
+                            name = activeAgent?.agentLabel() ?: "Hermes",
+                            avatar = activeAgent?.botMeta()?.avatar,
+                        )
+                    }
+                androidx.compose.runtime.CompositionLocalProvider(
+                    LocalNativeUiHost provides nativeUiHost,
+                    com.m57.hermescontrol.ui.chat.fullbleed.LocalChatAgentIdentity provides agentIdentity,
+                ) {
+                    FullBleedChatList(
+                        messages = state.messages,
+                        sessionKey = state.currentSessionId,
+                        streamingMessage = streamingState.streamingMessage,
+                        searchState = searchState,
+                        typingEffectEnabled = state.typingEffectEnabled,
+                        typingEffectDelayMs = state.typingEffectDelayMs,
+                        maxToolCallsPerTurn = state.maxToolCallsPerTurn,
+                        isLoading = state.isLoading,
+                        isLoadingOlder = state.isLoadingOlder,
+                        isDark = isDark,
+                        listState = listState,
+                        scrollController = scrollController,
+                        lastAnimatedMessageId = lastAnimatedMessageId,
+                        onLastAnimatedMessageIdChange = { lastAnimatedMessageId = it },
+                        viewModel = viewModel,
+                        clarifyRequest = state.clarifyRequest,
+                        onRespondClarify = { answer ->
+                            state.clarifyRequest?.let { viewModel.respondToClarify(it, answer) }
+                        },
+                        onRespondClarifyBatch = { answers ->
+                            state.clarifyRequest?.let { viewModel.respondToClarifyBatch(it, answers) }
+                        },
+                        onDismissClarify = { state.clarifyRequest?.let(viewModel::dismissClarify) },
+                        onSaveAttachment = onSaveAttachment,
+                        savingAttachmentPath = pendingSavePath ?: state.savingAttachmentPath,
+                        openingAttachmentPath = state.openingAttachmentPath,
+                        onImageClick = { viewingImage = it },
+                    )
+                }
+
+                // Loading overlay
+                ChatLoadingOverlay(isLoading = state.isLoading && state.resumeError == null)
+
+                // Resume-exhausted overlay — explicit error + Retry instead
+                // of an infinite spinner (desktop parity).
+                ChatResumeErrorOverlay(
+                    errorMessage = state.resumeError,
+                    onRetry = viewModel::retryResumeSession,
+                )
+
+                // Scroll-to-bottom FAB (issue #682): shows while follow is
+                // paused and renders the unseen-message badge.
+                ChatScrollToBottomFab(
+                    show = showScrollToBottom,
+                    pendingCount = scrollController.pendingCount,
+                    onScrollToBottom = scrollController::resumeFollowing,
+                )
+
+                // Reaction heartsanimation (purely cosmetic — fades out
+                // automatically after the ViewModel clears the state)
+                key(state.reactionTriggerId) {
+                    ReactionHeartsOverlay(
+                        reactionKind = state.reactionKind,
+                    )
+                }
+            }
+
+            // Context-window meter (used / full) — sits above the composer so it
+            // stays visible while the session is active, grouped with the model
+            // it belongs to without crowding the title or the control row.
+            // Only worth a line once the window is filling up; below half it is just noise.
+            val contextFull = state.fullContextTokens
+            val contextUsed = state.usedContextTokens
+            if (contextFull != null && contextUsed != null && contextFull > 0 && contextUsed * 2 >= contextFull) {
+                ContextUsageChip(
+                    usedTokens = contextUsed,
+                    fullTokens = state.fullContextTokens,
+                    compressionCount = state.compressionCount,
+                    onClick =
+                        if (state.contextBreakdown != null) {
+                            { showContextSheet = true }
+                        } else {
+                            null
+                        },
+                )
+            }
+
+            ChatInputBar(
+                inputFieldValue = inputFieldValue,
+                onInputChange = { inputFieldValue = it },
+                onSend = {
+                    viewModel.sendMessage(inputFieldValue.text)
+                    inputFieldValue = TextFieldValue("")
+                    // Jump to bottom after send (serialized through the controller).
+                    scrollController.jumpToBottom(animated = true)
+                },
+                onMicTap = {
+                    if (isListening) {
+                        isListening = false
+                    } else if (
+                        ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.RECORD_AUDIO,
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        if (SpeechInputHelper.isSpeechInputAvailable(context)) {
+                            val intent = SpeechInputHelper.createSpeechIntent(micListeningPrompt)
+                            isListening = true
+                            launchExternalActivity {
+                                try {
+                                    speechLauncher.launch(intent)
+                                } catch (_: ActivityNotFoundException) {
+                                    isListening = false
+                                    scrollScope.launch {
+                                        snackbarHostState.showSnackbar(sttNotAvailableMsg)
+                                    }
+                                }
+                            }
+                        } else {
+                            scrollScope.launch {
+                                snackbarHostState.showSnackbar(sttNotAvailableMsg)
+                            }
+                        }
+                    } else {
+                        launchExternalActivity {
+                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    }
+                },
+                queueOnSend = state.isAgentTyping || state.responseStatusUnknown || !state.isConnected,
+                allowOfflineQueue = true,
+                onSteer =
+                    if (state.isConnected && state.isAgentTyping && !state.responseStatusUnknown &&
+                        state.pendingAttachments.isEmpty()
+                    ) {
+                        {
+                            viewModel.sendMessage(inputFieldValue.text, steer = true)
+                            inputFieldValue = TextFieldValue("")
+                            scrollController.jumpToBottom(animated = true)
+                        }
+                    } else {
+                        null
+                    },
+                isListening = isListening,
+                isAgentTyping = state.isAgentTyping,
+                responseStatusUnknown = state.responseStatusUnknown,
+                isConnected = state.isConnected,
+                commandCatalog = state.commandCatalog,
+                slashUsageCounts = state.slashUsageCounts,
+                pendingAttachments = state.pendingAttachments,
+                onCameraTap = {
+                    try {
+                        val timeStamp =
+                            SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                        val photoFile =
+                            File.createTempFile("camera_${timeStamp}_", ".jpg", context.cacheDir)
+                        val uri =
+                            FileProvider.getUriForFile(
+                                context,
+                                "${context.packageName}.fileprovider",
+                                photoFile,
+                            )
+                        pendingCameraUri = uri
+                        launchExternalActivity {
+                            cameraLauncher.launch(uri)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("ChatScreen", "Camera launch failed", e)
+                    }
+                },
+                onImageTap = {
+                    launchExternalActivity {
+                        filePickerLauncher.launch("image/*")
+                    }
+                },
+                onFileTap = {
+                    launchExternalActivity {
+                        filePickerLauncher.launch("*/*")
+                    }
+                },
+                onRemoveAttachment = viewModel::removeAttachment,
+                onPreviewAttachment = { attachment ->
+                    if (attachment.isImage) {
+                        viewingImage =
+                            ImageViewerModel(
+                                model = attachment.uri,
+                                name = attachment.name,
+                                mimeType = attachment.mimeType,
+                            )
+                    }
+                },
+                // Composer toolbar wiring (PR 1)
+                currentSessionModel = state.currentSessionModel,
+                reasoningLevel = state.reasoningLevel,
+                onModelTap = { viewModel.openModelPicker() },
+                onReasoningTap = { level -> viewModel.setReasoningLevel(level) },
+                canDisableReasoning = state.currentModelCapabilities?.can_disable_reasoning,
+                supportsReasoning = state.currentModelCapabilities?.reasoning,
+            )
+        }
+
+        if (showReloginDialog) {
+            ReloginDialog(
+                onDismiss = { showReloginDialog = false },
+                onRelogin = { username, password, onResult ->
+                    viewModel.relogin(username, password, onResult)
+                },
+            )
+        }
+
+        // /update from chat (issue #862): confirm, then the shared progress
+        // popup tracks the background update (live log tail + final state).
+        if (state.updateConfirmOpen) {
+            AlertDialog(
+                onDismissRequest = viewModel::closeUpdateConfirm,
+                title = { Text(stringResource(R.string.system_update_confirm_title)) },
+                text = { Text(stringResource(R.string.system_update_confirm_desc)) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        viewModel.closeUpdateConfirm()
+                        viewModel.applyUpdate()
+                    }) {
+                        Text(stringResource(R.string.system_confirm_update_now))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = viewModel::closeUpdateConfirm, shapes = ButtonDefaults.shapes()) {
+                        Text(stringResource(R.string.system_confirm_cancel))
+                    }
+                },
+            )
+        }
+        ActionProgressDialog(
+            controller = viewModel.actionProgress,
+            title = stringResource(R.string.system_update_progress_title),
+        )
+
+        // In-session model picker (issue #589) — opens on "/model".
+        if (state.showModelPicker) {
+            ModelPickerDialog(
+                providers = state.modelPickerProviders,
+                title = stringResource(R.string.chat_switch_model_title),
+                isLoading = state.modelPickerLoading,
+                errorMessage = state.modelPickerError,
+                onRefresh = viewModel::refreshModelOptions,
+                pinnedModels = state.modelPickerPinned,
+                onPinToggle = { provider, model -> viewModel.togglePinModel(provider, model) },
+                onSelect = { provider, model ->
+                    viewModel.sendSlashModel(provider, model)
+                },
+                onDismiss = { viewModel.closeModelPicker() },
+            )
+        }
+
+        // Expensive / Data-policy model confirmation dialog (issue #589 follow-up)
+        if (state.modelSwitchConfirmMessage != null) {
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissModelSwitchConfirm() },
+                title = { Text(stringResource(R.string.model_expensive_title)) },
+                text = { Text(state.modelSwitchConfirmMessage!!) },
+                confirmButton = {
+                    Button(onClick = { viewModel.confirmModelSwitchExpensive() }, shapes = ButtonDefaults.shapes()) {
+                        Text(stringResource(R.string.model_confirm_continue))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.dismissModelSwitchConfirm() }, shapes = ButtonDefaults.shapes()) {
+                        Text(stringResource(R.string.common_cancel))
+                    }
+                },
+            )
+        }
+
+        if (showContextSheet && state.contextBreakdown != null) {
+            ContextDetailSheet(
+                breakdown = state.contextBreakdown!!,
+                usedTokens = state.usedContextTokens,
+                fullTokens = state.fullContextTokens,
+                onDismiss = { showContextSheet = false },
+            )
+        }
+
+        if (showSubagentInspectionSheet) {
+            SubagentInspectionSheet(
+                indicators = state.subagentIndicators,
+                todos = state.todos,
+                onSteerSubagent = { indicator, msg -> viewModel.steerSubagent(indicator, msg) },
+                onStopSubagent = { indicator -> viewModel.stopSubagent(indicator) },
+                onDismiss = { showSubagentInspectionSheet = false },
+            )
+        }
+
+        state.btwState?.let { btw ->
+            SideQuestionSheet(
+                state = btw,
+                onDismiss = { viewModel.dismissBtw() },
+            )
+        }
+
+        viewingImage?.let { image ->
+            ImageViewerDialog(
+                image = image,
+                onDismiss = { viewingImage = null },
+            )
+        }
+    }
+}

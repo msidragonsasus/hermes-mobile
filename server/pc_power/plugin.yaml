@@ -1,0 +1,3 @@
+name: pc-power
+version: 0.1.0
+description: 固定した自宅PCの起動とスリープを行うDashboard API

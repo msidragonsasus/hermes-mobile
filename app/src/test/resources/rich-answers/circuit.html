@@ -1,0 +1,46 @@
+<main class="viz">
+  <header class="viz-header">
+    <h2>抵抗と電流</h2>
+    <p class="viz-description">抵抗を増やすと、流れる電流は小さくなります。</p>
+  </header>
+  <section class="viz-result" aria-live="polite">
+    <span class="viz-caption">回路を流れる電流</span>
+    <output class="viz-value"><span id="current">0.30</span> <span class="viz-unit">A</span></output>
+  </section>
+  <figure class="viz-chart">
+    <svg viewBox="0 0 340 172" role="img" aria-label="9ボルトの電源と抵抗をつないだ直列回路">
+      <path d="M56 73V32H142M198 32H284V140H56V105" fill="none" stroke="var(--hermes-muted)" stroke-width="2.5" stroke-linejoin="round"/>
+      <path d="M37 79H75M44 97H68" fill="none" stroke="var(--hermes-foreground)" stroke-width="3"/>
+      <rect x="142" y="20" width="56" height="24" rx="6" fill="var(--viz-soft)" stroke="var(--hermes-primary)" stroke-width="2.5"/>
+      <circle cx="284" cy="94" r="23" fill="var(--hermes-primary)" opacity=".15" id="glow"/>
+      <circle cx="284" cy="94" r="13" fill="var(--hermes-background)" stroke="var(--hermes-primary)" stroke-width="2.5"/>
+      <path d="M278 88L290 100M290 88L278 100" stroke="var(--hermes-primary)" stroke-width="2"/>
+      <text x="170" y="66" text-anchor="middle" font-size=".875em" id="resistor">30 Ω</text>
+      <text x="56" y="128" text-anchor="middle" font-size=".875em">9 V</text>
+      <path id="flow" d="M213 32H251" stroke="var(--hermes-primary)" stroke-width="4" stroke-linecap="round"/>
+      <path d="M247 27L253 32L247 37" fill="none" stroke="var(--hermes-primary)" stroke-width="2"/>
+    </svg>
+  </figure>
+  <section class="viz-controls" aria-label="回路の条件">
+    <label><span class="viz-row">抵抗 <output id="resistance-label">30 Ω</output></span><input id="resistance" type="range" min="10" max="100" step="5" value="30"></label>
+  </section>
+  <p class="viz-caption">理想的な抵抗の計算例：電流 = 電圧 ÷ 抵抗。光の強さは変化のイメージです。</p>
+  <button class="viz-secondary" id="details-toggle" aria-expanded="false" aria-controls="details">計算の内訳</button>
+  <p id="details" class="viz-caption" hidden>電圧は9 Vで一定です。抵抗が2倍になると電流は半分になります。スライダーで抵抗を動かし、数値と図の変化を比べてください。</p>
+</main>
+<script>
+function update(){
+  const resistance=Number(document.getElementById('resistance').value);
+  document.getElementById('current').textContent=(9/resistance).toFixed(2);
+  document.getElementById('resistor').textContent=resistance+' Ω';
+  document.getElementById('resistance-label').textContent=resistance+' Ω';
+  document.getElementById('glow').setAttribute('opacity',9/resistance*.7);
+  document.getElementById('flow').setAttribute('stroke-width',2+9/resistance*4);
+}
+document.getElementById('resistance').addEventListener('input',update);
+document.getElementById('details-toggle').addEventListener('click',()=>{
+  const details=document.getElementById('details');details.hidden=!details.hidden;
+  document.getElementById('details-toggle').setAttribute('aria-expanded',String(!details.hidden));
+});
+update();
+</script>

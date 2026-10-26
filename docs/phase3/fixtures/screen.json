@@ -1,0 +1,61 @@
+{
+  "app_id": "career.mypage",
+  "protocol_version": 1,
+  "component_version": 1,
+  "release_id": "bundled-1",
+  "company_id": "synthetic-company",
+  "profile": "synthetic-profile",
+  "title": "マイページの確認",
+  "state": "idle",
+  "components": [
+    {
+      "type": "Section",
+      "title": "確認する企業",
+      "children": [
+        {
+          "type": "KeyValue",
+          "label": "企業",
+          "value": "合成テスト企業"
+        },
+        {
+          "type": "Status",
+          "text": "手動で確認できます。",
+          "tone": "info"
+        },
+        {
+          "type": "Text",
+          "text": "確認は手動で開始します。ログイン情報とブラウザの許可は既存の設定を使います。"
+        }
+      ]
+    },
+    {
+      "type": "Column",
+      "children": [
+        {
+          "type": "Button",
+          "label": "マイページを確認",
+          "action": "mypage.check",
+          "enabled": true
+        },
+        {
+          "type": "Button",
+          "label": "表示を更新",
+          "action": "refresh",
+          "enabled": true
+        },
+        {
+          "type": "Button",
+          "label": "マイページの設定",
+          "action": "native.settings",
+          "enabled": true
+        },
+        {
+          "type": "Button",
+          "label": "内部ブラウザを開く",
+          "action": "native.browser",
+          "enabled": true
+        }
+      ]
+    }
+  ]
+}

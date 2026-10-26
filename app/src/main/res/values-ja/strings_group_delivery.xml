@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="group_send_unavailable">グループに接続できません。この入力は未送信です。</string>
+    <string name="group_send_lease_held">別の端末がこのグループを進行中です。この入力は未送信です。</string>
+    <string name="group_send_lease_unconfirmed">グループの進行権を確認できません。この入力は未送信です。</string>
+    <string name="group_send_member_failed">一部のメンバーに送信できませんでした。メッセージ下の状態を確認してください。</string>
+    <string name="group_send_unknown">完了を確認できません。自動再送はしていません。再度送る前にメッセージの状態を確認してください。</string>
+    <string name="group_send_connection_changed">接続先が変わりました。未確認の入力は再送していません。</string>
+    <string name="group_delivery_pending">準備中</string>
+    <string name="group_delivery_accepted">受付済み</string>
+    <string name="group_delivery_complete">完了</string>
+    <string name="group_delivery_not_sent">未送信</string>
+    <string name="group_delivery_unknown">未確認</string>
+    <string name="group_send_invalid_members">グループに有効なメンバー名がありません。履歴は保持しています。この入力は未送信です。</string>
+    <string name="group_send_members_missing">グループのメンバーのprofileがこのサーバーに見つかりません。この入力は未送信です。</string>
+    <string name="group_send_profiles_unavailable">サーバーのメンバー一覧を取得できません。この入力は未送信です。</string>
+</resources>

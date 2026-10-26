@@ -1,0 +1,7 @@
+{
+  "name": "today_home",
+  "label": "今日やること",
+  "version": "0.1.9",
+  "tab": {"hidden": true},
+  "api": "plugin_api.py"
+}

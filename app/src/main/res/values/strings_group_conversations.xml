@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="group_conversations">Conversations</string>
+    <string name="group_new_conversation">New conversation</string>
+    <string name="group_conversation_empty">No messages in this conversation yet</string>
+    <string name="group_conversations_local">Conversations are saved on this device. Each has its own history and bot context. Switching pauses local orchestration; pending replies stay with the original conversation.</string>
+    <string name="group_reconcile">Check message status</string>
+    <string name="group_reconciling">Checking message status…</string>
+    <string name="group_send_storage_unavailable">Conversation storage is unavailable. History has been preserved. Sending is blocked; reopen after storage becomes available.</string>
+    <string name="group_delivery_failed">Rejected</string>
+</resources>

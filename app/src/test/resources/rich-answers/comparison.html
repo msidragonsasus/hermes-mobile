@@ -1,0 +1,43 @@
+<main class="viz">
+  <header class="viz-header">
+    <h2>移動時間を比べる</h2>
+    <p class="viz-description">同じ距離でも、速さでこれだけ変わります。</p>
+  </header>
+  <section class="viz-result" aria-live="polite">
+    <span class="viz-caption">自転車なら</span>
+    <output class="viz-value"><span id="result">48</span> <span class="viz-unit">分</span></output>
+  </section>
+  <figure class="viz-chart">
+    <svg viewBox="0 0 340 186" role="img" aria-label="徒歩、自転車、車の所要時間" id="chart">
+      <text x="0" y="17" font-size=".875em">徒歩</text><text id="foot-label" x="340" y="17" text-anchor="end" font-size=".875em">180分</text>
+      <rect x="0" y="28" width="340" height="16" rx="8" fill="var(--viz-soft)"/>
+      <rect id="foot" x="0" y="28" width="340" height="16" rx="8" fill="var(--viz-series-2)"/>
+      <text x="0" y="79" font-size=".875em">自転車</text><text id="bike-label" x="340" y="79" text-anchor="end" font-size=".875em">48分</text>
+      <rect x="0" y="90" width="340" height="16" rx="8" fill="var(--viz-soft)"/>
+      <rect id="bike" x="0" y="90" width="91" height="16" rx="8" fill="var(--viz-series-1)"/>
+      <text x="0" y="141" font-size=".875em">車</text><text id="car-label" x="340" y="141" text-anchor="end" font-size=".875em">24分</text>
+      <rect x="0" y="152" width="340" height="16" rx="8" fill="var(--viz-soft)"/>
+      <rect id="car" x="0" y="152" width="45" height="16" rx="8" fill="var(--viz-series-3)"/>
+    </svg>
+  </figure>
+  <section class="viz-controls" aria-label="比較の条件">
+    <label><span class="viz-row">距離 <output id="distance-label">12 km</output></span><input id="distance" type="range" min="1" max="40" value="12"></label>
+  </section>
+  <p class="viz-caption">速さを徒歩4・自転車15・車30 km/hとした計算例。信号や休憩は含みません。</p>
+</main>
+<script>
+function update(){
+  const km = Number(document.getElementById('distance').value);
+  document.getElementById('distance-label').textContent = km+' km';
+  document.getElementById('result').textContent = Math.round(km/15*60);
+  const maxMinutes = Math.max(180,km/4*60);
+  for(const [name,speed] of [['foot',4],['bike',15],['car',30]]){
+    const minutes = km/speed*60;
+    document.getElementById(name).setAttribute('width', Math.max(8,340*minutes/maxMinutes));
+    document.getElementById(name+'-label').textContent = Math.round(minutes)+'分';
+  }
+  document.getElementById('chart').setAttribute('aria-label', km+'キロの移動時間の比較');
+}
+document.getElementById('distance').addEventListener('input',update);
+update();
+</script>

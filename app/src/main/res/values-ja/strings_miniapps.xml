@@ -1,0 +1,32 @@
+<resources>
+    <string name="miniapps_preparing">Mini Appを準備しています</string>
+    <string name="miniapps_examples_explanation">同梱サンプルで、今後の機能を紹介しています。インストール済みのアプリや、接続済みのサービスではありません。</string>
+    <string name="miniapps_unavailable">紹介サンプル・まだ利用できません</string>
+    <string name="miniapps_review_details">予定する権限を確認</string>
+    <string name="miniapps_close_details">詳細を閉じる</string>
+    <string name="miniapps_publisher_version">サンプルの作成者：%1$s · %2$s</string>
+    <string name="miniapps_permissions_not_granted">サンプルの要求権限（まだ許可していません）</string>
+    <string name="miniapps_no_activation">この版では有効化できません。この画面を開いても、権限の許可や作業の実行は行いません。</string>
+    <string name="miniapps_read_error">同梱サンプルを読み込めませんでした。</string>
+    <string name="miniapps_plugin_api">連携先のAPI：%1$s %2$s</string>
+    <string name="miniapps_permission_sessions_read">会話履歴の参照</string>
+    <string name="miniapps_permission_sessions_write">会話の更新</string>
+    <string name="miniapps_permission_runs_create">作業の開始</string>
+    <string name="miniapps_permission_runs_read">実行状況の参照</string>
+    <string name="miniapps_permission_runs_steer">実行中の作業への追加入力</string>
+    <string name="miniapps_permission_runs_interrupt">実行中の作業の停止</string>
+    <string name="miniapps_permission_approvals">人の確認を伴う承認要求への回答</string>
+    <string name="miniapps_permission_jobs_read">予定の参照</string>
+    <string name="miniapps_permission_jobs_manage">予定の変更</string>
+    <string name="miniapps_permission_memory_read">サーバーのメモリの参照</string>
+    <string name="miniapps_permission_memory_write">サーバーのメモリの更新</string>
+    <string name="miniapps_permission_files_read">サーバー上のファイルの参照</string>
+    <string name="miniapps_permission_files_write">サーバー上のファイルの変更</string>
+    <string name="miniapps_permission_camera">カメラの利用</string>
+    <string name="miniapps_permission_photos">写真へのアクセス</string>
+    <string name="miniapps_permission_device_files">端末のファイルへのアクセス</string>
+    <string name="miniapps_permission_microphone">マイクの利用</string>
+    <string name="miniapps_permission_notifications">通知の表示</string>
+    <string name="miniapps_permission_share">共有された内容の受け取り</string>
+    <string name="miniapps_permission_open_url">外部リンクを開く</string>
+</resources>

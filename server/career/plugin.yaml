@@ -1,0 +1,23 @@
+name: career
+version: 0.5.0
+description: 就活App内の継続するコーチ会話、Skill実行、依頼された成果物の保存
+provides_tools:
+  - career_read
+  - career_propose
+  - career_context
+  - career_skill
+  - career_fetch
+  - career_save
+  - career_checkpoint
+  - career_count
+  - career_recall
+  - career_app
+  - career_consult
+  - career_consult_status
+  - career_consult_stop
+  - career_collect
+  - career_mypage_read
+  - career_mypage_login
+  - career_mypage_open
+  - career_mypage_save
+  - career_mypage_finish

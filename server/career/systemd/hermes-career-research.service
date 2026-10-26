@@ -1,0 +1,22 @@
+[Unit]
+Description=Hermes career official recruiting research
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=hermes
+Group=hermes
+Environment=HOME=/var/lib/hermes
+Environment=HERMES_HOME=/var/lib/hermes/.hermes
+Environment=CAREER_DATA_DIR=/var/lib/hermes/career
+EnvironmentFile=/var/lib/hermes/career/runtime.env
+WorkingDirectory=/var/lib/hermes/.hermes/plugins/career
+ExecStart=/var/lib/hermes/venv/bin/python -m career_core.jobs research
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/hermes
+TimeoutStartSec=2h

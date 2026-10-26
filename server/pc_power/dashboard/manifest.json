@@ -1,0 +1,8 @@
+{
+  "name": "pc-power",
+  "label": "PC電源",
+  "description": "固定した自宅PCの起動とスリープを行う認証済みAPI",
+  "version": "0.1.0",
+  "tab": {"hidden": true},
+  "api": "plugin_api.py"
+}

@@ -1,0 +1,357 @@
+{
+  "schema_version": "1.0",
+  "kind": "design-contract-not-existing-api",
+  "language": "ja-JP",
+  "scope": "Existing Hermes career company detail flow only",
+  "authority": [
+    "CODEX_BRIEF.md",
+    "ACCEPTANCE.md",
+    "ui_spec.json",
+    "prototype.html",
+    "rendered screenshots",
+    "generated concept image"
+  ],
+  "assumptions": {
+    "fourth_tab": "管理 (proposed default)",
+    "reference_theme": "light; preserve user/system theme in production",
+    "actual_feature_renderer": "Unverified; inspect local implementation before selecting Compose vs Web"
+  },
+  "tabs": [
+    {
+      "id": "mypage",
+      "label": "マイページ",
+      "index": 0,
+      "purpose": "募集・案内・締切を確認する",
+      "allowed_sources": [
+        "MYPAGE"
+      ],
+      "sections": [
+        "source_status",
+        "open_opportunities",
+        "announcements",
+        "closed_opportunities_link"
+      ],
+      "primary_action": "open_opportunity_detail",
+      "forbidden": [
+        "email_body",
+        "credential_card",
+        "sender_rule_form",
+        "raw_snapshot_list",
+        "auto_es_question_fetch"
+      ]
+    },
+    {
+      "id": "mail",
+      "label": "メール",
+      "index": 1,
+      "purpose": "この企業のメール原文を読む",
+      "allowed_sources": [
+        "EMAIL"
+      ],
+      "sections": [
+        "source_status",
+        "search",
+        "filters",
+        "message_list"
+      ],
+      "primary_action": "open_message",
+      "secondary_action_in_detail": "consult_about_message",
+      "forbidden": [
+        "mypage_announcement_as_mail",
+        "ai_summary_as_original",
+        "sender_rule_form",
+        "automatic_gmail_read_mutation"
+      ]
+    },
+    {
+      "id": "prep",
+      "label": "対策",
+      "index": 2,
+      "purpose": "企業の文脈を保って相談・下書き・面接準備を進める",
+      "sections": [
+        "company_consultation",
+        "opportunity_context",
+        "saved_drafts",
+        "research_and_interview"
+      ],
+      "primary_action": "resume_or_open_existing_company_chat",
+      "allow_manual_es_question_input": true,
+      "auto_llm_on_enter": false
+    },
+    {
+      "id": "manage",
+      "label": "管理",
+      "index": 3,
+      "purpose": "企業の状態・接続・取得を管理する",
+      "sections": [
+        "user_company_status",
+        "source_connections",
+        "sender_rules_in_detail",
+        "sync_settings",
+        "history"
+      ],
+      "credential_display": "minimum necessary; no passwords/tokens; no duplicate login ID"
+    }
+  ],
+  "navigation": {
+    "tap_and_swipe": "same selected-tab state",
+    "loop": false,
+    "preserve_by_company_and_tab": [
+      "scroll",
+      "search",
+      "filter",
+      "selected_opportunity",
+      "pending_draft"
+    ],
+    "back_order": [
+      "dismiss_detail",
+      "company_detail",
+      "previous_company_list"
+    ],
+    "preserve_global_navigation": true,
+    "edge_swipe": "respect Android system back",
+    "tab_change_network_requests": 0,
+    "tab_change_llm_requests": 0,
+    "tab_change_es_fetch_requests": 0
+  },
+  "source_state": {
+    "definition": "Independent axes. data=null is not an empty result.",
+    "fields": {
+      "source_type": [
+        "MYPAGE",
+        "EMAIL"
+      ],
+      "connection": [
+        "unknown",
+        "disconnected",
+        "connected",
+        "reauth_required"
+      ],
+      "sync": [
+        "never",
+        "idle",
+        "loading_initial",
+        "refreshing",
+        "failed",
+        "partial"
+      ],
+      "automation": [
+        "unsupported",
+        "disabled",
+        "enabled"
+      ],
+      "data": "null | loaded collection (possibly empty)",
+      "last_success_at": "nullable server-confirmed source observation time",
+      "last_attempt_at": "nullable; not interchangeable with success time",
+      "coverage": "nullable {from,to,pagination_complete,scope_description}",
+      "error": "nullable {category,safe_message,retryable,diagnostic_id}; no secrets",
+      "freshness": "unknown | current | stale based on source-specific policy"
+    },
+    "scenarios": [
+      "not_connected",
+      "not_fetched",
+      "initial_loading",
+      "success_nonempty",
+      "success_empty",
+      "refreshing_with_cache",
+      "failure_with_cache",
+      "failure_without_cache",
+      "reauthentication",
+      "offline_with_cache",
+      "partially_fetched",
+      "automation_disabled"
+    ],
+    "failure_rules": [
+      "never map failure to count zero",
+      "never discard usable cache to display empty",
+      "never update last_success_at merely because refresh was tapped",
+      "show warning in affected reading tab; put technical details in management",
+      "only prescribe reauthentication when cause is known"
+    ]
+  },
+  "conceptual_entities": {
+    "company": [
+      "companyId",
+      "displayName",
+      "userPriority?",
+      "userStage?"
+    ],
+    "opportunity": [
+      "opportunityId",
+      "companyId",
+      "sourceRef",
+      "title",
+      "recruitmentStatus?",
+      "deadlines[]",
+      "startsAt?"
+    ],
+    "deadline": [
+      "kind",
+      "originalText",
+      "date?",
+      "time?",
+      "timezone?",
+      "precision",
+      "verificationStatus",
+      "sourceRef"
+    ],
+    "announcement": [
+      "announcementId",
+      "companyId",
+      "opportunityId?",
+      "sourceType=MYPAGE",
+      "sourceUrl?",
+      "sourcePublishedAt?",
+      "sourceUpdatedAt?",
+      "observedAt",
+      "contentHash",
+      "body"
+    ],
+    "message": [
+      "accountId",
+      "messageId",
+      "companyId",
+      "receivedAt",
+      "senderName",
+      "senderAddress",
+      "subject",
+      "snippet",
+      "body",
+      "gmailUnread?",
+      "localReviewedAt?",
+      "originalUrl?"
+    ],
+    "draft": [
+      "draftId",
+      "companyId",
+      "opportunityId?",
+      "type",
+      "content",
+      "sourceRefs[]",
+      "editedAt",
+      "saveState"
+    ],
+    "consultation_handoff": [
+      "companyId",
+      "opportunityId?",
+      "sourceRefs[]",
+      "draftId?",
+      "sessionId?"
+    ]
+  },
+  "deduplication": {
+    "prefer": "stable upstream source ID",
+    "fallback": "company/opportunity + canonical URL + carefully normalized content identity",
+    "never_key_only_by": "fetched timestamp or title alone",
+    "on_content_change": "update current view; preserve history; do not rewrite user drafts"
+  },
+  "date_rules": [
+    "keep deadline kind and opportunity identity",
+    "do not invent missing 23:59/timezone/year",
+    "separate source publish/update time from fetch time",
+    "show original timezone or explicit conversion",
+    "do not infer user submission status from announcements"
+  ],
+  "visual_tokens": {
+    "light": {
+      "background": "#F7F9FB",
+      "surface": "#FFFFFF",
+      "text_primary": "#172D38",
+      "text_secondary": "#5C6F7A",
+      "outline": "#DBE4E8",
+      "primary": "#096F68",
+      "on_primary": "#FFFFFF",
+      "primary_container": "#E7F4F0",
+      "warning": "#81520B",
+      "warning_container": "#FFF3DA",
+      "error": "#AF342C",
+      "error_container": "#FFF0ED"
+    },
+    "dark": {
+      "background": "#10181D",
+      "surface": "#182329",
+      "text_primary": "#E4EDF0",
+      "text_secondary": "#B0C1C9",
+      "outline": "#35474F",
+      "primary": "#82D8C6",
+      "on_primary": "#102E28",
+      "primary_container": "#203D36",
+      "warning": "#F3CD86",
+      "warning_container": "#382F21",
+      "error": "#FFB6AD",
+      "error_container": "#382724"
+    },
+    "production_mapping": "Prefer existing semantic theme tokens. These values are reference roles, not a global theme override.",
+    "spacing_dp": {
+      "edge": [
+        18,
+        20
+      ],
+      "section_gap": 24,
+      "card_padding": [
+        16,
+        18
+      ]
+    },
+    "radius_dp": {
+      "main_card": 16,
+      "standard": 12,
+      "primary_button": [
+        10,
+        12
+      ]
+    },
+    "text_sp": {
+      "company": [
+        20,
+        22
+      ],
+      "important_deadline": [
+        28,
+        32
+      ],
+      "opportunity_title": [
+        16,
+        18
+      ],
+      "body_and_subject": [
+        15,
+        16
+      ],
+      "metadata": [
+        12,
+        13
+      ]
+    },
+    "min_touch_target_dp": 48,
+    "normal_text_contrast_target": 4.5,
+    "normal_filled_primary_actions_per_screen": 1,
+    "text_scaling": "100/130/200%; content heights grow; large-scale tabs may scroll",
+    "animation_ms": [
+      180,
+      240
+    ],
+    "reduced_motion": true
+  },
+  "prototype": {
+    "file": "prototype.html",
+    "network": "none",
+    "data": "fixtures only; not production facts",
+    "draft_persistence": "memory for this page session only",
+    "touch_swipe_threshold_css_px": 64,
+    "pointer_edge_guard_css_px": 24,
+    "state_controls_are_outside_app_scope": true
+  },
+  "out_of_scope": [
+    "global Hermes rewrite",
+    "new fifth dashboard tab",
+    "new model infrastructure",
+    "changing OAuth scopes",
+    "secret storage migration",
+    "automatically enabling disabled fetch jobs",
+    "email mutations",
+    "application submission",
+    "calendar writes",
+    "destructive data migration"
+  ]
+}

@@ -1,0 +1,32 @@
+<resources>
+    <string name="miniapps_preparing">Mini Apps are being prepared</string>
+    <string name="miniapps_examples_explanation">These bundled examples introduce planned features. They are not installed or connected services.</string>
+    <string name="miniapps_unavailable">Preview only · not available yet</string>
+    <string name="miniapps_review_details">Review planned permissions</string>
+    <string name="miniapps_close_details">Close details</string>
+    <string name="miniapps_publisher_version">Example publisher: %1$s · %2$s</string>
+    <string name="miniapps_permissions_not_granted">Requested permissions in this example — none granted</string>
+    <string name="miniapps_no_activation">This version cannot activate these examples. Opening this page does not grant permissions or start any work.</string>
+    <string name="miniapps_read_error">The bundled examples could not be read.</string>
+    <string name="miniapps_plugin_api">Plugin API: %1$s %2$s</string>
+    <string name="miniapps_permission_sessions_read">Read conversation history</string>
+    <string name="miniapps_permission_sessions_write">Update conversations</string>
+    <string name="miniapps_permission_runs_create">Start work</string>
+    <string name="miniapps_permission_runs_read">Read execution status</string>
+    <string name="miniapps_permission_runs_steer">Add input to ongoing work</string>
+    <string name="miniapps_permission_runs_interrupt">Stop ongoing work</string>
+    <string name="miniapps_permission_approvals">Answer approval requests with human confirmation</string>
+    <string name="miniapps_permission_jobs_read">Read scheduled jobs</string>
+    <string name="miniapps_permission_jobs_manage">Change scheduled jobs</string>
+    <string name="miniapps_permission_memory_read">Read server memory</string>
+    <string name="miniapps_permission_memory_write">Update server memory</string>
+    <string name="miniapps_permission_files_read">Read server files</string>
+    <string name="miniapps_permission_files_write">Change server files</string>
+    <string name="miniapps_permission_camera">Use the camera</string>
+    <string name="miniapps_permission_photos">Access photos</string>
+    <string name="miniapps_permission_device_files">Access device files</string>
+    <string name="miniapps_permission_microphone">Use the microphone</string>
+    <string name="miniapps_permission_notifications">Show notifications</string>
+    <string name="miniapps_permission_share">Receive shared content</string>
+    <string name="miniapps_permission_open_url">Open external links</string>
+</resources>

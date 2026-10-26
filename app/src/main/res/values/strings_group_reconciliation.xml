@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="group_send_rpc_code">Server response code: %1$d. An unconfirmed result is not treated as success.</string>
+    <string name="group_check_offline">The original connection is not ready. Reconnect, then check again. No message was resent.</string>
+    <string name="group_check_read_unavailable">Message history could not be read. Delivery remains unconfirmed; no message was resent.</string>
+    <string name="group_check_auth_required">Reading the original history requires authentication or permission. Delivery remains unconfirmed.</string>
+    <string name="group_check_session_missing">The saved ID was not found in this bot\'s current history store. Delivery remains unknown.</string>
+    <string name="group_check_id_missing">No saved session ID is available for this send. Its result cannot be checked automatically.</string>
+    <string name="group_check_request_missing">The exact request was not found in the available history page. Delivery remains unconfirmed.</string>
+    <string name="group_check_accepted">The request is present, but a final reply has not been confirmed. No message was resent.</string>
+    <string name="group_check_completed">A confirmed reply was restored to its original conversation. Other unconfirmed sends remain unchanged.</string>
+    <string name="group_check_none">There are no saved unconfirmed sends to check.</string>
+    <string name="group_check_connection_changed">The connection changed during the check. No result was applied; check again after reconnecting.</string>
+    <string name="group_check_profile_missing">The requested bot profile was not found. No other profile was searched; delivery remains unknown.</string>
+    <string name="group_check_endpoint_unavailable">The history API returned 404 without confirming that the session is absent. Delivery remains unknown.</string>
+    <string name="group_check_id_mismatch">The server returned a different session ID. Its history was not applied; delivery remains unknown.</string>
+    <string name="group_check_history_incomplete">The available history pages do not contain this request. Older history may remain; delivery is unknown.</string>
+</resources>

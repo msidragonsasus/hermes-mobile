@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rich_answer_source">Code</string>
+    <string name="rich_answer_preview">Preview</string>
+    <string name="rich_answer_expand">Show full view</string>
+    <string name="rich_answer_reset">Reset</string>
+    <string name="rich_answer_collapse">Collapse view</string>
+    <string name="rich_answer_local">Interactive</string>
+    <string name="rich_answer_options">Interactive answer options</string>
+    <string name="rich_answer_too_large">This preview is too large. You can still view its code.</string>
+    <string name="rich_answer_unavailable">The preview stopped. Reset it to try again.</string>
+    <string name="rich_answer_image_failed">Image could not be loaded. Tap to open.</string>
+</resources>

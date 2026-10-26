@@ -1,0 +1,377 @@
+package com.m57.hermescontrol.data.ws
+
+import com.m57.hermescontrol.ui.chat.TodoItem
+
+/** Parsed WebSocket events emitted by [HermesWsClient]. */
+sealed class WsEvent {
+    data class VaultRequest(
+        val request: VaultPromptRequest,
+    ) : WsEvent()
+
+    data class ServerRequestCancel(
+        val requestId: String?,
+        val sessionId: String?,
+    ) : WsEvent()
+
+    /** A server request is distinct from the result of a client RPC with the same id. */
+    data class UnsupportedServerRequest(
+        val requestId: String,
+    ) : WsEvent()
+
+    // ── Gateway lifecycle ────────────────────────────────────────────────
+
+    data class GatewayReady(
+        val data: Map<String, Any?>?,
+    ) : WsEvent()
+
+    // ── Session information ──────────────────────────────────────────────
+
+    data class SessionInfo(
+        val data: Map<String, Any?>?,
+    ) : WsEvent()
+
+    // ── Message streaming ────────────────────────────────────────────────
+
+    data class MessageStart(
+        val sessionId: String?,
+    ) : WsEvent()
+
+    data class MessageToken(
+        val token: String,
+        val sessionId: String?,
+    ) : WsEvent()
+
+    data class ThinkingDelta(
+        val token: String,
+        val sessionId: String?,
+    ) : WsEvent()
+
+    data class ReasoningDelta(
+        val token: String,
+        val sessionId: String?,
+    ) : WsEvent()
+
+    data class ReasoningAvailable(
+        val sessionId: String?,
+        /**
+         * Full reasoning text, emitted once reasoning finishes streaming
+         * (`reasoning.available` payload `text`). The gateway sends the
+         * complete trace here even when per-token `reasoning.delta` events
+         * were throttled, dropped, or wiped by a mid-turn tool.start — the
+         * client must use it as the authoritative fill for the card.
+         */
+        val text: String? = null,
+    ) : WsEvent()
+
+    data class MessageComplete(
+        val text: String,
+        val sessionId: String?,
+        /**
+         * Full reasoning trace for the completed message, carried in the
+         * `message.complete` payload (`reasoning` key). Authoritative
+         * fallback when per-token `reasoning.delta` events never arrived
+         * (e.g. a tool call wiped the streaming buffer mid-turn).
+         */
+        val reasoning: String? = null,
+        /** Stored session id captured before background disconnect clears the active mapping. */
+        val storedSessionId: String? = null,
+    ) : WsEvent()
+
+    data class MessageDone(
+        val sessionId: String?,
+    ) : WsEvent()
+
+    // ── Tool execution ───────────────────────────────────────────────────
+
+    data class ToolStart(
+        val name: String?,
+        val data: Map<String, Any?>?,
+        val sessionId: String? = null,
+    ) : WsEvent()
+
+    data class ToolComplete(
+        val name: String?,
+        val data: Map<String, Any?>?,
+        val sessionId: String? = null,
+    ) : WsEvent()
+
+    /**
+     * Backend flagged tool output as having potential risk (secrets, PII).
+     * Emitted alongside tool.progress — carries risk level, findings, and
+     * whether content was redacted.
+     *
+     * Events: `tool.output_risk`
+     * Payload: `{ tool_id, name, risk, findings[], redacted }`
+     */
+    data class ToolOutputRisk(
+        val toolId: String = "",
+        val name: String = "",
+        val risk: String = "low",
+        val findings: List<String> = emptyList(),
+        val redacted: Boolean = false,
+        val sessionId: String? = null,
+    ) : WsEvent()
+
+    /**
+     * Live tool execution progress with optional preview content.
+     *
+     * Events: `tool.progress`
+     * Payload: `{ name?: string, preview?: string }`
+     */
+    data class ToolProgress(
+        val name: String? = null,
+        val preview: String? = null,
+        val sessionId: String? = null,
+    ) : WsEvent()
+
+    /**
+     * Tool generation active state.
+     *
+     * Events: `tool.generating`
+     * Payload: `{ name?: string }`
+     */
+    data class ToolGenerating(
+        val name: String? = null,
+        val sessionId: String? = null,
+    ) : WsEvent()
+
+    /**
+     * Subagent execution and delegation events.
+     *
+     * Events: `subagent.spawn_requested`, `subagent.start`, `subagent.progress`, `subagent.complete`
+     * Payload includes goal, task_index, task_count, subagent_id, child_session_id, text, status, summary, duration_seconds.
+     */
+    data class SubagentEvent(
+        val type: String,
+        val payload: Map<String, Any?>?,
+        val sessionId: String? = null,
+    ) : WsEvent()
+
+    // ── Interactive ──────────────────────────────────────────────────────
+
+    data class ClarifyQuestion(
+        val qid: String = "q0",
+        val question: String = "",
+        val choices: List<String> = emptyList(),
+        val multiSelect: Boolean = false,
+    )
+
+    data class ClarifyRequest(
+        val text: String?,
+        val options: List<String>?,
+        val clarifyId: String? = null,
+        val sessionId: String? = null,
+        val questionId: String? = null,
+        val multiSelect: Boolean = false,
+        val questions: List<ClarifyQuestion> = emptyList(),
+    ) : WsEvent()
+
+    data class ClarifyExpire(
+        val clarifyId: String? = null,
+        val sessionId: String? = null,
+    ) : WsEvent()
+
+    /**
+     * Self-improvement background review summary event.
+     * Emitted when background review patches a skill or saves a memory.
+     * Payload: `{ text: "Self-improvement review: ..." }`
+     */
+    data class ReviewSummary(
+        val text: String,
+        val sessionId: String? = null,
+    ) : WsEvent()
+
+    /**
+     * Context-aware side-question completion event (issue #1015).
+     * Emitted when `prompt.btw` completes answering a side question.
+     * Payload: `{ task_id: "...", question: "...", text: "..." }`
+     */
+    data class BtwComplete(
+        val taskId: String = "",
+        val question: String = "",
+        val text: String = "",
+        val sessionId: String? = null,
+    ) : WsEvent()
+
+    // ── Status ───────────────────────────────────────────────────────────
+
+    data class StatusUpdate(
+        val status: String?,
+        val data: Map<String, Any?>?,
+    ) : WsEvent()
+
+    data class SessionUpdated(
+        val data: Map<String, Any?>?,
+    ) : WsEvent()
+
+    /**
+     * Live token & compression usage snapshot emitted during a turn (issue #919).
+     * Carried in `session.usage` push events (`tui_gateway/server.py` `_start_usage_ticker`).
+     * Payload: `{ "usage": { "compressions": Int, "context_used": Long, "context_max": Long, ... } }`
+     */
+    data class SessionUsage(
+        val data: Map<String, Any?>?,
+        val sessionId: String? = null,
+    ) : WsEvent()
+
+    /**
+     * Revisioned todo snapshot event emitted by backend todo tool updates (issue #1018).
+     * Event: `todo.updated`
+     * Payload: `{ "todos": [...], "revision": Int }`
+     */
+    data class TodoUpdated(
+        val todos: List<TodoItem> = emptyList(),
+        val revision: Int? = null,
+        val sessionId: String? = null,
+    ) : WsEvent()
+
+    // ── RPC responses ────────────────────────────────────────────────────
+
+    data class RpcResult(
+        val id: String,
+        val result: Any?,
+    ) : WsEvent()
+
+    data class RpcError(
+        val id: String,
+        val error: JsonRpcError,
+    ) : WsEvent()
+
+    // ── Approval request ────────────────────────────────────────────────
+
+    data class ApprovalRequest(
+        val command: String?,
+        val description: String?,
+        val patternKeys: List<String>?,
+        val sessionId: String?,
+        /**
+         * Backend `request_id` — unique across sessions. Sent back as
+         * `request_id` in `approval.respond` so the gateway resolves the
+         * EXACT pending instead of FIFO-oldest (desktop parity:
+         * `prompts.ts` `receiveApprovalRequest` + `approval.tsx` respond).
+         * Null on legacy payloads → omit, FIFO-compatible.
+         */
+        val requestId: String? = null,
+        /**
+         * Backend-advertised choices (e.g. `["once","session","always","deny"]`,
+         * smart-denied → `["once","deny"]`). Null = legacy → UI falls back
+         * to Run/Deny.
+         */
+        val choices: List<String>? = null,
+        /**
+         * False when the backend won't honor a permanent allow (tirith
+         * warning) → hide "Always allow" (desktop `allowPermanent` parity).
+         */
+        val allowPermanent: Boolean? = null,
+        /**
+         * True when this is an owner override of a Smart DENY — backend
+         * restricts to once/deny only (desktop `smartDenied` parity).
+         */
+        val smartDenied: Boolean? = null,
+    ) : WsEvent()
+
+    // ── Sudo / secret requests ─────────────────────────────────────────
+
+    /**
+     * Backend needs the user's sudo password to continue a turn
+     * (desktop: `sudo.request` → `sudo.respond {request_id, password}`).
+     * Mobile previously dropped this and the agent hung forever.
+     */
+    data class SudoRequest(
+        val requestId: String?,
+        val sessionId: String?,
+    ) : WsEvent()
+
+    /**
+     * Backend sudo timeout (120s `_block`) — clears the matching dialog.
+     * Payload: `{ request_id }`. Only clears when ids match so a late
+     * expire for an old prompt never kills the current one (desktop parity).
+     */
+    data class SudoExpire(
+        val requestId: String?,
+        val sessionId: String?,
+    ) : WsEvent()
+
+    /**
+     * Backend needs a secret value (password / token) to continue a turn
+     * (desktop: `secret.request` → `secret.respond {request_id, value}`).
+     * Mobile previously dropped this and the agent hung forever.
+     * `envVar`/`prompt` mirror desktop: title = envVar ?: secretTitle,
+     * body = prompt ?: secretDesc.
+     */
+    data class SecretRequest(
+        val requestId: String?,
+        val sessionId: String?,
+        val envVar: String? = null,
+        val prompt: String? = null,
+    ) : WsEvent()
+
+    /**
+     * Backend secret timeout — clears the matching dialog.
+     * Payload: `{ request_id }`. Match-only clear like [SudoExpire].
+     */
+    data class SecretExpire(
+        val requestId: String?,
+        val sessionId: String?,
+    ) : WsEvent()
+
+    // ── Gateway-level errors ───────────────────────────────────────────
+
+    /**
+     * Backend/unhandled failure surfaced by the gateway.
+     *
+     * Desktop shows these as red toasts (the gateway also writes
+     * `[gateway.error]` lines to the console). Mobile was previously
+     * dropping this event, so a crashing turn just silently stopped with no
+     * explanation. Issue #527 surfaces it in the existing error banner.
+     */
+    data class GatewayError(
+        val message: String?,
+    ) : WsEvent()
+
+    // ── Gateway change events ───────────────────────────────────────────
+
+    /**
+     * Backend "something changed" broadcast. The gateway advertises
+     * `change_events: true` in the `gateway.ready` handshake and emits one of
+     * these when its on-disk signatures move (see [ChangeEvents] for the
+     * vocabulary), so screens can refresh on change instead of blind-polling.
+     * Backends without the feature simply never broadcast — consumers stay
+     * quiet. `pet.changed` exists on the backend but is intentionally NOT
+     * parsed: mobile has no pet feature.
+     */
+    data class ChangeEvent(
+        val type: String,
+        val data: Map<String, Any?>? = null,
+    ) : WsEvent()
+
+    // ── Background job completion ──────────────────────────────────────
+
+    /**
+     * A scheduled/background job finished on the gateway.
+     *
+     * Desktop shows a "Background job finished" toast. Mobile surfaces this as
+     * a non-blocking snackbar. The payload may carry `label`/`name` describing
+     * the job. Issue #527.
+     */
+    data class BackgroundComplete(
+        val data: Map<String, Any?>?,
+    ) : WsEvent()
+
+    // ── Reaction event ────────────────────────────────────────────────────
+
+    /**
+     * Backend emitted an affection reaction (ily / <3 / good bot).
+     * Payload: `{ "kind": "<str>" }`. Purely cosmetic — play a hearts
+     * animation in the chat UI; no persistence needed.
+     */
+    data class ReactionEvent(
+        val kind: String = "",
+    ) : WsEvent()
+
+    // ── Fallback ─────────────────────────────────────────────────────────
+
+    data class Unknown(
+        val raw: String,
+    ) : WsEvent()
+}

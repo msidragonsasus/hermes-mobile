@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="career_reader_title">Notice details</string>
+    <string name="career_reader_loading">Loading the saved content…</string>
+    <string name="career_reader_empty">No saved body is available.</string>
+    <string name="career_reader_expand_subject">Show full subject</string>
+    <string name="career_reader_collapse_subject">Collapse subject</string>
+    <string name="career_reader_origin">Open source screen</string>
+    <string name="career_reader_consult">Discuss this content</string>
+    <string name="career_reader_open_link">Open original notice</string>
+</resources>

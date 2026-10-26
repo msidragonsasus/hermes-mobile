@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shell_agent">Agent</string>
+    <string name="agent_hub_intro">Choose an agent to review its connection and available features. Each agent has its own conversations and permissions.</string>
+    <string name="agent_connection_unverified">Connection unverified</string>
+    <string name="agent_bro_description">The connection from this app to your existing bro has not been verified. The existing bro-to-Hermes text relay does not establish this reverse connection.</string>
+    <string name="agent_hermes_description">The Hermes adapter for this hub still needs authentication and request/result verification. Existing Chat remains available through its own connection.</string>
+    <string name="agent_view_details">View %1$s connection details</string>
+    <string name="agent_destination">Destination: %1$s</string>
+    <string name="agent_future_integrations">Additional agents can be considered after their API, authentication and permissions are verified. No additional agent is installed or connected here.</string>
+    <string name="agent_actions_unavailable">Requests, approvals and cancellation are unavailable here until this connection is verified. Opening these details does not connect an agent, send a request or share conversation history.</string>
+    <string name="agent_capabilities">Features for this connection</string>
+    <string name="agent_capability_submit">Send requests</string>
+    <string name="agent_capability_requests">Read request history</string>
+    <string name="agent_capability_results">Read replies and results</string>
+    <string name="agent_capability_progress">Read progress</string>
+    <string name="agent_capability_approval">Respond to approvals</string>
+    <string name="agent_capability_cancel">Cancel requests</string>
+    <string name="agent_capability_unknown">Unverified</string>
+    <string name="agent_capability_unsupported">Unsupported</string>
+    <string name="agent_capability_supported">Verified support</string>
+    <string name="agent_capability_blocked">Unavailable</string>
+    <string name="agent_history_title">%1$s requests and results</string>
+    <string name="agent_history_unverified">History has not been retrieved because this connection is unverified. This does not mean there are no pending requests or approvals.</string>
+    <string name="agent_unavailable_title">Agent unavailable</string>
+    <string name="agent_unavailable_body">This destination is not registered. Go back and select an agent. Nothing has been forwarded to another agent.</string>
+</resources>

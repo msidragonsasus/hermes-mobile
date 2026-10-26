@@ -1,0 +1,19 @@
+# Merge only this entry into the intended Hermes profile after registering its
+# Slack app. Existing Slack bot transport settings and other MCPs stay separate.
+# CLIENT_ID / CLIENT_SECRET belong in that profile's private .env, never Android.
+# Use the exact HTTPS callback registered with Slack; do not expose Hermes publicly.
+mcp_servers:
+  slack:
+    url: https://mcp.slack.com/mcp
+    auth: oauth
+    enabled: true
+    trust: untrusted
+    sampling:
+      enabled: false
+    oauth:
+      client_id: ${SLACK_MCP_CLIENT_ID}
+      client_secret: ${SLACK_MCP_CLIENT_SECRET}
+      token_endpoint_auth_method: client_secret_post
+      redirect_uri: https://YOUR-PRIVATE-HERMES-HOST/api/mcp/oauth/callback/slack
+# A separately registered public/PKCE app can instead omit client_secret and use
+# token_endpoint_auth_method: none. Do not change an existing bot app to PKCE here.

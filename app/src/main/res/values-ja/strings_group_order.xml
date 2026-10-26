@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="group_order_control">発言順を固定する</string>
+    <string name="group_order_control_desc">指定した順で設定した周回数だけ議論します。ボットが相手を@指定したら優先し、その後は残りの順に戻ります。入力で特定の相手を@指定した場合は、その相手だけが一巡します。</string>
+    <string name="group_order_legacy_desc">保存されたメンバー順で開始し、従来のボット間の呼びかけと発言上限を使います。</string>
+    <string name="group_order_up">上へ</string>
+    <string name="group_order_down">下へ</string>
+    <string name="group_order_summary">最後のまとめ役</string>
+    <string name="group_order_summary_desc">全員宛ての議論が全巡とも正常に終わったら、一度だけまとめます。まとめも発言上限に含みます。失敗・中止・未確認の送信があればまとめません。</string>
+    <string name="group_order_summary_none">なし</string>
+    <string name="group_order_save_failed">発言順を保存できませんでした。以前の順番を保持しています。接続を確認してから、設定を保存し直してください。</string>
+    <string name="group_discussion_rounds">議論の周回数: %1$d</string>
+    <string name="group_discussion_rounds_desc">1〜10巡。まだ話していない相手への@指定は、その巡の発言を繰り上げます。同じ巡で話し終えた相手への@指定は、追加引き継ぎになります。</string>
+    <string name="group_discussion_turn_cap_desc">全巡・引き継ぎ・まとめを合わせて最大%1$d回。PASSも1回に数えます。周回数とは別の上限です。</string>
+    <string name="group_discussion_handoff_cap_desc">話し終えた相手への追加引き継ぎは、全巡を合わせて最大%1$d回。その上限に達しても、残りの通常の順番は続けます。</string>
+</resources>

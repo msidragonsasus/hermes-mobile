@@ -1,0 +1,8 @@
+{
+  "name": "career",
+  "label": "就活",
+  "description": "Hermes Mobile 就活コーチの会話・実行・保存・同期API",
+  "version": "0.5.0",
+  "tab": {"hidden": true},
+  "api": "plugin_api.py"
+}

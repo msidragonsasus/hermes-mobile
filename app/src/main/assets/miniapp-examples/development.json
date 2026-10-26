@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "1.0",
+  "id": "development",
+  "name": {
+    "ja": "開発",
+    "en": "Development"
+  },
+  "description": {
+    "ja": "Repository、Issue、CI、Codex実行を確認します。"
+  },
+  "version": "0.1.0",
+  "minHostVersion": "0.1.0",
+  "publisher": {
+    "id": "personal",
+    "name": "Personal AI"
+  },
+  "icon": {
+    "type": "material",
+    "name": "Code"
+  },
+  "entry": {
+    "type": "native",
+    "featureId": "development",
+    "initialRoute": "development.overview"
+  },
+  "contributions": {
+    "homeCards": [
+      {
+        "id": "development.active-runs",
+        "route": "development.runs",
+        "priority": 120
+      }
+    ],
+    "commands": [
+      {
+        "id": "development.check-ci",
+        "label": {
+          "ja": "CIを確認",
+          "en": "Check CI"
+        },
+        "action": "development.checkCi",
+        "keywords": [
+          "CI",
+          "GitHub",
+          "テスト"
+        ]
+      }
+    ],
+    "activityRenderers": [
+      {
+        "id": "development.codex-run",
+        "route": "development.runDetail",
+        "renderer": "codexRun"
+      }
+    ]
+  },
+  "permissions": [
+    "hermes.sessions.read",
+    "hermes.runs.create",
+    "hermes.runs.read",
+    "hermes.runs.steer",
+    "hermes.runs.interrupt",
+    "plugin.api:development",
+    "external.openUrl"
+  ],
+  "offline": {
+    "cachePolicy": "metadata",
+    "maxAgeSeconds": 86400,
+    "allowDrafts": true
+  }
+}

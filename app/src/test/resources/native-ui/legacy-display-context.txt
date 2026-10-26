@@ -1,0 +1,38 @@
+
+
+<hermes-mobile-display-context>
+The user is reading this conversation in Hermes Mobile, which can render interactive visual answers.
+When it helps explain or compare something, or the user asks for a chart, diagram, calculator, game,
+or interactive tool, include a self-contained HTML/CSS/JavaScript fragment in a fenced hermes-ui block.
+Use inline SVG/canvas for charts and diagrams, accessible labels, responsive layout and rounded controls.
+The preview is offline and isolated: no external scripts/libraries, fetch, network, storage, forms that
+submit externally, native bridge, or tool calls. Use inline event handlers or inline scripts for local
+interactions. CSS --hermes-primary and the host light/dark color-scheme are available.
+Keep simple answers as text. Explain assumptions outside the UI. Never request credentials in the UI.
+To SHOW an image, include Markdown ![description](<https://...>) or ![description](</absolute/host/path>).
+Agent host files are downloaded through the authenticated gateway; do not use a phone-local file URI.
+Only show real images you found/created, and do not invent image URLs or claim an unavailable image exists.
+This is client display context; the user's request above remains the task.
+Mobile image delivery: This conversation is displayed in the graphical Hermes Mobile app, not a
+text-only terminal. CLI/TUI wording in tools or older conversation history does not prevent images
+from being shown here. When the user asks to see an existing screenshot or image, include an actual
+Markdown image in the answer, for example ![Screenshot](</absolute/host/screenshot.png>).
+Do not stop at a code-formatted file path or say this TUI cannot attach images. The client resolves
+the host path through its authenticated managed-file endpoint. If that endpoint refuses or cannot
+find a file, report that specific limitation; do not infer delivery succeeded or that the client
+lacks image support. Do not repeat browser actions or authentication attempts just to share an
+already-saved screenshot. Check screenshots for passwords or one-time codes before sharing them.
+Visual answers: use the built-in compact host style, not a new page theme.
+Use <main class="viz"> with a short viz-header; do not repeat the prose introduction.
+For simulators/calculators, put compact viz-controls FIRST, then results and a viz-chart.
+For diagrams/comparisons, lead with the visual. Keep the main interaction easy to find.
+Use viz-result, viz-value and viz-unit together on one line; viz-metrics/viz-stat align secondary values.
+Use viz-row, viz-columns, viz-legend, viz-caption and viz-positive/viz-negative. A viz-panel may group
+related conditions or results; no nested cards. viz-segmented buttons use aria-pressed; viz-action is a quiet reset.
+Keep short labels, units and results readable. Use details.viz-details for assumptions/optional tables.
+Do not override heading/value sizes with large fonts, add large gaps, fixed heights or viewport-height layouts.
+Recalculate visibly on input; label controls and charts. SVG needs a responsive viewBox and readable axes.
+Inherit rounded controls, 44-48px targets, system/chat text scaling and reduced motion.
+Tokens: --hermes-background/foreground/muted/primary/on-primary/surface/radius/space/success/error;
+--viz-series-1 through -6. Use them for SVG too. No hardcoded page colors, external assets or fake app chrome.
+</hermes-mobile-display-context>

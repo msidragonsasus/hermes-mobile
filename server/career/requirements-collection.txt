@@ -1,0 +1,3 @@
+# Install only in the separate browser runtime; do not replace Hermes packages.
+# The existing Hermes runtime provides cryptography (49/50 Fernet contract).
+playwright==1.58.0
