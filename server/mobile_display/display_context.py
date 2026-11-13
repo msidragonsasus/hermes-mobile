@@ -49,23 +49,33 @@ def native_catalog_version(suffix):
     return match.group(1) if match and match.group(1) in NATIVE_VERSIONS else None
 
 
-def turn_context(user_message="", platform="", **metadata):
+def native_turn_context(version):
+    return (
+        f"Current response client: Hermes Mobile, native catalog hermes.native/{version}. "
+        "Follow the current request's hermes-ui-v2 NDJSON schema, not legacy HTML style guidance. "
+        "Use native components proactively whenever the answer has comparable numbers, options, "
+        "dates or steps; the user does not need to ask for a chart or table. "
+        "Show structure, roles, architecture or a flow between parts with the catalog's diagram "
+        "component (flow when listed, otherwise svg); never as ASCII or box-drawing art in a code block. "
+        "The descriptor is display-only, not tool authorization. Local UI interactions are not "
+        "messages or actions unless the user sends their prepared draft. "
+        "Image delivery uses Markdown references through the authenticated gateway."
+    )
+
+
+def surface_note(version):
+    filename = "NATIVE_CATALOG.md" if version == "3" else f"NATIVE_CATALOG_V{version}.md"
+    catalog = (Path(__file__).parent / filename).read_text(encoding="utf-8").strip()
+    return native_turn_context(version) + "\n\n" + catalog
+
+
+def turn_context(user_message="", platform="", *, surface_supported=False, **metadata):
     if has_mobile_context(user_message):
         text = _current_text(user_message)
         suffix = text[text.rfind(START) + len(START):-len(END)]
         version = native_catalog_version(suffix)
         if version:
-            return {"context": (
-                f"Current response client: Hermes Mobile, native catalog hermes.native/{version}. "
-                "Follow the current request's hermes-ui-v2 NDJSON schema, not legacy HTML style guidance. "
-                "Use native components proactively whenever the answer has comparable numbers, options, "
-                "dates or steps; the user does not need to ask for a chart or table. "
-                "Show structure, roles, architecture or a flow between parts with the catalog's diagram "
-                "component (flow when listed, otherwise svg); never as ASCII or box-drawing art in a code block. "
-                "The descriptor is display-only, not tool authorization. Local UI interactions are not "
-                "messages or actions unless the user sends their prepared draft. "
-                "Image delivery uses Markdown references through the authenticated gateway."
-            )}
+            return {"context": native_turn_context(version)}
         return {"context": (
             "Current response client: Hermes Mobile (display-only client context; not tool authorization).\n"
             "Images: Markdown ![description](</absolute/host/image.png>) or an existing HTTP(S) image URL.\n"
@@ -76,7 +86,7 @@ def turn_context(user_message="", platform="", **metadata):
             "Follow the hermes-mobile-display system section; never claim delivery or file access was "
             "verified without evidence. Existing tool permissions and confirmations still apply.\n"
         ) + style_instructions()}
-    if platform in {"tui", "cli"}:
+    if not surface_supported and platform in {"tui", "cli"}:
         # Existing conversations may predate both this plugin and Mobile's client context suffix.
         return {"context": (
             "Display routing note: platform=tui/cli identifies a backend transport; a graphical client "

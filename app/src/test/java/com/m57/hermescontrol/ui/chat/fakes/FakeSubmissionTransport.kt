@@ -31,6 +31,7 @@ class FakeSubmissionTransport : HermesSubmissionTransport {
         text: String,
         redirect: Boolean,
         queued: Boolean,
+        surface: String?,
     ): SubmissionResult<PromptAcceptance> {
         beforePrompt?.invoke()
         if (!isReady(scope) || nextPromptResult == SubmissionResult.NotSent) return SubmissionResult.NotSent

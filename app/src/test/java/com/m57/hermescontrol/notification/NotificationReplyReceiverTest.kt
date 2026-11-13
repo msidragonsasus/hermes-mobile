@@ -461,6 +461,7 @@ class NotificationReplyReceiverTest {
             text: String,
             redirect: Boolean,
             queued: Boolean,
+            surface: String?,
         ): SubmissionResult<PromptAcceptance> {
             beforePrompt?.invoke()
             if (!isReady(scope)) return SubmissionResult.NotSent

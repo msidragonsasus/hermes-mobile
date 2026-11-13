@@ -11,6 +11,31 @@ The plugin has no tools, model calls, credentials, network calls, configuration
 writes, or background workers. It does not grant tool-override permission. `tui`
 alone is never treated as proof of a graphical client or a text-only terminal.
 
+## Version 0.6.0: negotiated turn surfaces
+
+When the host provides `ctx.register_client_surface`, the plugin registers
+`mobile-v1`, `mobile-v2` and `mobile-v3`. The server owns the catalog text, and the
+Android client sends its original text plus `surface: "mobile-v3"` only when that
+exact name is advertised by `gateway.capabilities`. The host carries the note in
+the model-input sidecar; the user transcript remains free of the display suffix.
+
+`NATIVE_CATALOG.md` is v3; `NATIVE_CATALOG_V1.md` and `NATIVE_CATALOG_V2.md` retain
+descriptors shipped by those Android versions. There were two v2 descriptors;
+the earlier one is used as their common supported subset. Tests compare the
+bundled descriptors with `NativeUiInstructions.kt` and enforce the 6000-character
+host limit, including routing text.
+
+Old apps still use suffix detection. Hosts without the new registrar retain the
+previous hook behavior. On capable hosts, unmarked turns do not receive the
+"renderer unconfirmed" hook note, so they do not contradict the registered
+surface note. `session.redirect` retains the suffix because that RPC does not
+accept a surface. Historical suffix stripping remains in the app.
+
+`preflight.py` reports `client_surfaces` and `display_mode` in addition to the
+required host contracts. A host without surfaces can still be `ready` in
+`legacy_suffix` mode. Core must be installed before the plugin and app for the
+new path to be used. Enable the plugin in every served execution profile.
+
 Version 0.3.1 updates the [shared authoring guide](STYLE_GUIDE.md): calculators put
 controls first, values stay beside their units, and meaningful groups use compact
 panels with readable charts. It retains the host's `viz-*` components and theme

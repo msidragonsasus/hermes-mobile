@@ -6,6 +6,7 @@ import com.m57.hermescontrol.domain.hermes.SessionRef
 import com.m57.hermescontrol.domain.hermes.SubmissionResult
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.test.runTest
@@ -18,9 +19,37 @@ class RichAnswerSubmissionTransportTest {
     private val session = SessionRef("runtime", "saved")
 
     @Test
+    fun advertisedCurrentSurfacePreservesExactTextAndQueueFlags() =
+        runTest {
+            val delegate = mockk<HermesSubmissionTransport>()
+            every { delegate.supportsClientSurface(scope, "mobile-v3") } returns true
+            val text = "  図で説明して\n"
+            coEvery { delegate.submitPrompt(scope, session, text, false, true, "mobile-v3") } returns
+                SubmissionResult.Unknown
+            assertEquals(
+                SubmissionResult.Unknown,
+                RichAnswerSubmissionTransport(delegate).submitPrompt(scope, session, text, queued = true),
+            )
+            coVerify(exactly = 1) { delegate.submitPrompt(scope, session, text, false, true, "mobile-v3") }
+        }
+
+    @Test
+    fun blankAndSlashInputNeverCarrySurfaceOrSuffix() =
+        runTest {
+            val delegate = mockk<HermesSubmissionTransport>()
+            for (text in listOf("", "  ", "  /help")) {
+                coEvery { delegate.submitPrompt(scope, session, text, false, false, null) } returns
+                    SubmissionResult.NotSent
+                RichAnswerSubmissionTransport(delegate).submitPrompt(scope, session, text)
+                coVerify(exactly = 1) { delegate.submitPrompt(scope, session, text, false, false, null) }
+            }
+        }
+
+    @Test
     fun normalSubmissionAddsDisplayHintsOnceAndPreservesUnknownAndQueueFlags() =
         runTest {
             val delegate = mockk<HermesSubmissionTransport>()
+            every { delegate.supportsClientSurface(any(), any()) } returns false
             val wire = slot<String>()
             coEvery { delegate.submitPrompt(scope, session, capture(wire), false, true) } returns
                 SubmissionResult.Unknown
@@ -35,6 +64,7 @@ class RichAnswerSubmissionTransportTest {
     fun steerAdvertisesMobileImagesWithoutChangingTheSessionOrResending() =
         runTest {
             val delegate = mockk<HermesSubmissionTransport>()
+            every { delegate.supportsClientSurface(any(), any()) } returns false
             val wire = slot<String>()
             coEvery { delegate.submitPrompt(scope, session, capture(wire), true, false) } returns
                 SubmissionResult.NotSent

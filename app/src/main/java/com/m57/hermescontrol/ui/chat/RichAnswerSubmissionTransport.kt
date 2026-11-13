@@ -16,12 +16,18 @@ internal class RichAnswerSubmissionTransport(
         text: String,
         redirect: Boolean,
         queued: Boolean,
-    ): SubmissionResult<PromptAcceptance> =
-        delegate.submitPrompt(
+        surface: String?,
+    ): SubmissionResult<PromptAcceptance> {
+        val useSurface =
+            !redirect && text.isNotBlank() && !text.trimStart().startsWith("/") &&
+                delegate.supportsClientSurface(scope, NativeUiInstructions.SURFACE)
+        return delegate.submitPrompt(
             scope,
             session,
-            RichAnswerPrompt.append(text),
+            if (useSurface) text else RichAnswerPrompt.append(text),
             redirect,
             queued,
+            if (useSurface) NativeUiInstructions.SURFACE else null,
         )
+    }
 }

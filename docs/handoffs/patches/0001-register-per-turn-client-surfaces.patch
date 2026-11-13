@@ -1,0 +1,612 @@
+From 59a3c3f90a23b946474ce1d5fafb24dc8021a818 Mon Sep 17 00:00:00 2001
+From: Keiya Deguchi <keimarumomo0227@outlook.jp>
+Date: Sat, 14 Nov 2026 01:43:41 +0900
+Subject: [PATCH] feat(plugins): register per-turn client surfaces
+
+---
+ apps/shared/src/gateway-contract.generated.ts |   6 +-
+ apps/shared/src/gateway-contract.openrpc.json |  31 +++-
+ gateway/session_surface.py                    |  62 ++++++-
+ hermes_cli/plugins.py                         |   1 +
+ hermes_cli/plugins_context.py                 |  14 ++
+ .../agent/test_plugin_surface_persistence.py  |  38 +++++
+ tests/gateway/test_plugin_client_surfaces.py  | 156 ++++++++++++++++++
+ .../test_plugin_host_client_surface.py        |  25 +++
+ tui_gateway/contracts/liveness.py             |   7 +-
+ tui_gateway/methods_prompt.py                 |   9 +-
+ tui_gateway/methods_voice.py                  |   5 +-
+ .../plugins/client-surfaces.md                |  42 +++++
+ website/docs/developer-guide/plugins/index.md |   1 +
+ 13 files changed, 385 insertions(+), 12 deletions(-)
+ create mode 100644 tests/agent/test_plugin_surface_persistence.py
+ create mode 100644 tests/gateway/test_plugin_client_surfaces.py
+ create mode 100644 tests/hermes_cli/test_plugin_host_client_surface.py
+ create mode 100644 website/docs/developer-guide/plugins/client-surfaces.md
+
+diff --git a/apps/shared/src/gateway-contract.generated.ts b/apps/shared/src/gateway-contract.generated.ts
+index 882f35ec..6b9acb97 100644
+--- a/apps/shared/src/gateway-contract.generated.ts
++++ b/apps/shared/src/gateway-contract.generated.ts
+@@ -1997,8 +1997,12 @@ export type PingParams = Record<string, never>
+ export interface PingResult {
+   pong: boolean
+ }
++export interface GatewayCapabilitiesParams {
++  profile?: string | null
++}
+ export interface GatewayCapabilitiesResult {
+   per_session_exclusive_submit: boolean
++  client_surfaces: string[]
+ }
+ export interface ClientCapabilitiesParams {
+   server_requests?: boolean
+@@ -6419,7 +6423,7 @@ export interface RpcMethods {
+   /** Pure read of the focused profile's free-tier identity state (no network, no side effects). */
+   'free_tier.status': { params: ProfileParams; result: FreeTierStatusResult }
+   /** What THIS build enforces (a client withholds a feature unless advertised). */
+-  'gateway.capabilities': { params: PingParams; result: GatewayCapabilitiesResult }
++  'gateway.capabilities': { params: GatewayCapabilitiesParams; result: GatewayCapabilitiesResult }
+   /** Resolve one exact pending approval raised by a local or peer room member. */
+   'groups.approve': { params: GroupsApproveParams; result: GroupsApproveResult }
+   /** Read one committed attachment for a live room viewer. */
+diff --git a/apps/shared/src/gateway-contract.openrpc.json b/apps/shared/src/gateway-contract.openrpc.json
+index b4a2aec6..981cd0c7 100644
+--- a/apps/shared/src/gateway-contract.openrpc.json
++++ b/apps/shared/src/gateway-contract.openrpc.json
+@@ -1057,7 +1057,7 @@
+         {
+           "name": "params",
+           "schema": {
+-            "$ref": "#/components/schemas/PingParams"
++            "$ref": "#/components/schemas/GatewayCapabilitiesParams"
+           }
+         }
+       ],
+@@ -19197,16 +19197,43 @@
+         "title": "FreeTierStatusResult",
+         "type": "object"
+       },
++      "GatewayCapabilitiesParams": {
++        "additionalProperties": false,
++        "properties": {
++          "profile": {
++            "anyOf": [
++              {
++                "type": "string"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "default": null,
++            "title": "Profile"
++          }
++        },
++        "title": "GatewayCapabilitiesParams",
++        "type": "object"
++      },
+       "GatewayCapabilitiesResult": {
+         "additionalProperties": false,
+         "properties": {
+           "per_session_exclusive_submit": {
+             "title": "Per Session Exclusive Submit",
+             "type": "boolean"
++          },
++          "client_surfaces": {
++            "items": {
++              "type": "string"
++            },
++            "title": "Client Surfaces",
++            "type": "array"
+           }
+         },
+         "required": [
+-          "per_session_exclusive_submit"
++          "per_session_exclusive_submit",
++          "client_surfaces"
+         ],
+         "title": "GatewayCapabilitiesResult",
+         "type": "object"
+diff --git a/gateway/session_surface.py b/gateway/session_surface.py
+index 7e57e5da..08336bec 100644
+--- a/gateway/session_surface.py
++++ b/gateway/session_surface.py
+@@ -7,6 +7,9 @@ persisted user row stays the words the user typed and the frozen system prefix i
+ """
+ from contextlib import contextmanager
+ from contextvars import ContextVar
++import logging
++import re
++from threading import RLock
+ 
+ from hermes_state_runtime import RuntimeStoreError
+ 
+@@ -14,6 +17,47 @@ SURFACES = frozenset({'hud', 'voice-live'})
+ _VOICE_CONTEXT_LIMIT = 6000
+ _SUBMIT_FIELDS = ('surface', 'voice_context', 'interrupted', 'voice_turn')
+ _surface_turn = ContextVar('surface_turn', default=None)
++_registry_lock = RLock()
++logger = logging.getLogger(__name__)
++
++
++def _registered_surfaces():
++    # Admission and managed workers can reach this before model_tools imports plugins.
++    from hermes_cli.plugins import _ensure_plugins_discovered
++    return _ensure_plugins_discovered()._client_surfaces
++
++
++def register_surface(name, note_fn, *, manager=None):
++    """Register a profile-local renderer; return its identity-checked release callback."""
++    if not isinstance(name, str) or re.fullmatch(r'[a-z][a-z0-9-]{0,31}', name) is None:
++        raise ValueError('surface name must match [a-z][a-z0-9-]{0,31}')
++    if not callable(note_fn):
++        raise TypeError('surface note must be callable')
++    if manager is None:
++        from hermes_cli.plugins import get_plugin_manager
++        manager = get_plugin_manager()
++    registry = manager._client_surfaces
++    with _registry_lock:
++        if name in SURFACES or name in registry:
++            raise ValueError(f'surface {name!r} is already registered')
++        registry[name] = note_fn
++
++    def release():
++        with _registry_lock:
++            if registry.get(name) is note_fn:
++                del registry[name]
++    return release
++
++
++def client_surfaces():
++    """The current profile's advertised built-in and plugin surface names."""
++    registry = _registered_surfaces()
++    with _registry_lock:
++        return sorted(SURFACES | registry.keys())
++
++
++def is_client_surface(name):
++    return isinstance(name, str) and (name in SURFACES or name in _registered_surfaces())
+ 
+ 
+ def submit_surface_fields(params):
+@@ -25,7 +69,7 @@ def admit_surface(params):
+     """Wire ``surface`` / ``voice_context`` / ``interrupted`` / ``voice_turn`` -> committed ``surface_v1``
+     (``{}`` when absent). ``voice_turn`` marks a spoken voice-mode turn: it runs on ``auxiliary.voice_chat``."""
+     surface, context, interrupted, voice_turn = (params.get(key) for key in _SUBMIT_FIELDS)
+-    if surface is not None and surface not in SURFACES:
++    if surface is not None and not is_client_surface(surface):
+         raise RuntimeStoreError('invalid_params')
+     # The spoken transcript only makes sense for a live-voice delegation; anywhere else it is
+     # a client smuggling model input past the persisted row.
+@@ -77,9 +121,25 @@ def surface_note(committed, valid_tool_names=None):
+     render = _SURFACE_NOTES.get(committed.get('surface'))
+     if render is not None:
+         notes.append(render(committed, valid_tool_names))
++    elif committed.get('surface'):
++        notes.append(_plugin_surface_note(committed, valid_tool_names))
+     return '\n\n'.join(note for note in notes if note)
+ 
+ 
++def _plugin_surface_note(committed, valid_tool_names):
++    render = _registered_surfaces().get(committed['surface'])
++    if render is None:
++        return ''
++    try:
++        note = render(dict(committed), valid_tool_names)
++        if not isinstance(note, str):
++            raise TypeError('surface note must return a string')
++        return note[:_VOICE_CONTEXT_LIMIT]
++    except Exception:
++        logger.exception('Client surface %s note failed', committed['surface'])
++        return ''
++
++
+ @contextmanager
+ def surface_turn_scope(committed):
+     token = _surface_turn.set(committed)
+diff --git a/hermes_cli/plugins.py b/hermes_cli/plugins.py
+index 3b8c7421..55047bfc 100644
+--- a/hermes_cli/plugins.py
++++ b/hermes_cli/plugins.py
+@@ -299,6 +299,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
+         self._cli_commands: dict[str, dict] = {}
+         self._plugin_commands: dict[str, dict] = {}
+         self._system_prompt_sections: dict[str, PluginSystemPromptSection] = {}
++        self._client_surfaces: dict[str, Callable] = {}
+         self._plugin_skills: dict[str, dict[str, Any]] = {}
+         self._plugin_rpc_methods: dict[str, Callable] = {}  # "plugin.<plugin_id>.<name>" -> handler
+         self._automation_blueprints: dict[str, Any] = {}  # "<plugin>:<key>" -> AutomationBlueprint
+diff --git a/hermes_cli/plugins_context.py b/hermes_cli/plugins_context.py
+index 3b8f1220..34dd9e17 100644
+--- a/hermes_cli/plugins_context.py
++++ b/hermes_cli/plugins_context.py
+@@ -805,6 +805,20 @@ class PluginContext(PluginCapabilityCtxMixin):
+                                     section, "Plugin %s registered system prompt section: %s", id,
+                                     previous=existing)
+ 
++    @_serialized_replacement
++    def register_client_surface(self, name: str, note: str | Callable) -> PluginRegistration:
++        """Register a per-turn display note, bounded to 6000 characters, in this profile.
++
++        Callbacks receive (committed, valid_tool_names). They grant no tool authority;
++        failures omit the note. Unload/reload releases the name through the ownership ledger.
++        """
++        from gateway.session_surface import register_surface
++        if not isinstance(note, str) and not callable(note):
++            raise TypeError('surface note must be a string or callable')
++        render = (lambda committed, valid_tool_names: note) if isinstance(note, str) else note
++        release = register_surface(name, render, manager=self._manager)
++        return self._track('client_surface', name, release)
++
+     def emit(self, event: str, payload: Optional[dict] = None) -> int:
+         """Publish bare *event* as ``<plugin_key>:<event>`` (namespace FORCED to this plugin); return
+         the subscriber count scheduled. Any ``':'`` in the name (``hermes:x`` is reserved for core,
+diff --git a/tests/agent/test_plugin_surface_persistence.py b/tests/agent/test_plugin_surface_persistence.py
+new file mode 100644
+index 00000000..41fb11fb
+--- /dev/null
++++ b/tests/agent/test_plugin_surface_persistence.py
+@@ -0,0 +1,38 @@
++"""A registered surface changes the API sidecar, never the visible user row or system prefix."""
++from unittest.mock import patch
++
++from gateway.session_surface import arm_surface_turn, surface_turn_scope
++from hermes_cli import plugins
++from hermes_state import SessionDB
++from tests.agent.test_plugin_live_notes_delivery import _agent, _response, _script, _sent_text
++
++
++def test_surface_note_reaches_model_and_only_the_persisted_sidecar(tmp_path, monkeypatch):
++    monkeypatch.setattr('agent.title_generator.maybe_auto_title', lambda *args, **kwargs: None)
++    manager = plugins.get_plugin_manager()
++    manager.discover_and_load()
++    ctx = plugins.PluginContext(plugins.PluginManifest(name='example-surface'), manager)
++    handle = ctx.register_client_surface('example-v1', 'Server-owned display note')
++    db = SessionDB(db_path=tmp_path / 'state.db')
++    agent = _agent()
++    agent._session_db = db
++    agent._session_db_created = False
++    requests = _script(agent, _response('done'), _response('again'))
++    text = 'original user words'
++    try:
++        with patch.object(agent, '_save_trajectory'), patch.object(agent, '_cleanup_task_resources'):
++            with surface_turn_scope({'surface': 'example-v1'}):
++                arm_surface_turn(agent)
++                first = agent.run_conversation(text)
++            arm_surface_turn(agent)
++            agent.run_conversation('next turn', conversation_history=first['messages'])
++        assert 'Server-owned display note' in _sent_text(requests[0][-1])
++        assert 'Server-owned display note' not in _sent_text(requests[1][-1])
++        assert requests[0][0] == requests[1][0]
++        rows = db.get_messages(agent.session_id)
++        user = next(row for row in rows if row['role'] == 'user')
++        assert user['content'] == text
++        assert 'Server-owned display note' in user['api_content']
++    finally:
++        handle.dispose()
++        db.close()
+diff --git a/tests/gateway/test_plugin_client_surfaces.py b/tests/gateway/test_plugin_client_surfaces.py
+new file mode 100644
+index 00000000..51bdcf08
+--- /dev/null
++++ b/tests/gateway/test_plugin_client_surfaces.py
+@@ -0,0 +1,156 @@
++"""A real plugin's per-turn note survives discovery, unload and worker restoration."""
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++from types import SimpleNamespace
++
++import pytest
++
++from gateway.session_surface import (
++    admit_surface, arm_surface_turn, client_surfaces, restore_surface, surface_note, surface_turn_scope,
++)
++from hermes_cli import plugins
++from hermes_state_runtime import RuntimeStoreError
++
++
++@pytest.fixture
++def registered(tmp_path, monkeypatch):
++    home = tmp_path / 'home'
++    plugin = home / 'plugins' / 'surface-example'
++    plugin.mkdir(parents=True)
++    (plugin / 'plugin.yaml').write_text('name: surface-example\nversion: 1.0.0\n', encoding='utf-8')
++    (plugin / '__init__.py').write_text(
++        'def register(ctx):\n'
++        '    ctx.register_client_surface("example-v1", "Server-owned display note")\n', encoding='utf-8')
++    (home / 'config.yaml').write_text('plugins:\n  enabled: [surface-example]\n', encoding='utf-8')
++    empty = tmp_path / 'no-bundled'
++    empty.mkdir()
++    monkeypatch.setenv('HERMES_HOME', str(home))
++    monkeypatch.setenv('HERMES_BUNDLED_PLUGINS', str(empty))
++    plugins._reset_plugin_managers_for_tests()
++    yield home
++    plugins._reset_plugin_managers_for_tests()
++
++
++def test_discovery_lifecycle_and_profile_isolation(registered, tmp_path):
++    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
++    assert 'example-v1' in client_surfaces()
++    committed = admit_surface({'surface': 'example-v1'})['surface_v1']
++    assert restore_surface(committed) == committed
++    agent = SimpleNamespace(valid_tool_names=set())
++    with surface_turn_scope(committed):
++        arm_surface_turn(agent)
++    assert agent._gateway_turn_context_notes == 'Server-owned display note'
++    arm_surface_turn(agent)
++    assert agent._gateway_turn_context_notes == ''
++    other = tmp_path / 'other'
++    other.mkdir()
++    token = set_hermes_home_override(other)
++    try:
++        assert 'example-v1' not in client_surfaces()
++        with pytest.raises(RuntimeStoreError):
++            restore_surface(committed)
++    finally:
++        reset_hermes_home_override(token)
++    manager = plugins.get_plugin_manager()
++    manager.unload('surface-example')
++    assert 'example-v1' not in client_surfaces()
++    manager.discover_and_load(force=True)
++    assert surface_note(committed) == 'Server-owned display note'
++
++
++def test_registration_validation_budget_failure_and_disposal(registered, caplog):
++    client_surfaces()
++    ctx = plugins.PluginContext(plugins.PluginManifest(name='test'), plugins.get_plugin_manager())
++    for name in ('hud', 'voice-live', 'example-v1', '', 'A', 'a_b', 'a' * 33, [], None):
++        with pytest.raises(ValueError):
++            ctx.register_client_surface(name, 'bad')
++    with pytest.raises(TypeError):
++        ctx.register_client_surface('invalid-note', 123)
++    seen = []
++    def note(committed, tools):
++        seen.append((committed, tools))
++        return 'x' * 6001
++    handle = ctx.register_client_surface('bounded', note)
++    assert len(surface_note({'surface': 'bounded'}, {'tool'})) == 6000
++    assert seen == [({'surface': 'bounded'}, {'tool'})]
++    handle.dispose()
++    handle.dispose()
++    assert 'bounded' not in client_surfaces()
++    def broken(committed, tools):
++        raise ValueError('synthetic failure')
++    ctx.register_client_surface('broken', broken)
++    assert surface_note({'surface': 'broken'}) == ''
++    assert 'Client surface broken note failed' in caplog.text
++    for params in ({'surface': 'missing'}, {'surface': []},
++                   {'surface': 'example-v1', 'voice_context': 'not permitted'}):
++        with pytest.raises(RuntimeStoreError, match='invalid_params'):
++            admit_surface(params)
++
++
++@pytest.mark.platforms('any')
++def test_fresh_worker_restores_after_its_own_discovery(registered):
++    frame = {'policy': {'request_json': json.dumps({'turn_v1': {
++        'finite': False, 'unattended': False, 'yolo': False,
++        'surface_v1': {'surface': 'example-v1'},
++    }})}, 'scope': {'execution_id': 'test-execution'}}
++    result = subprocess.run(
++        [sys.executable, '-c',
++         'import json,sys\n'
++         'from types import SimpleNamespace\n'
++         'from gateway.session_managed_worker import worker_turn_scope\n'
++         'from gateway.session_surface import surface_turn_note\n'
++         'with worker_turn_scope(json.loads(sys.argv[1])):\n'
++         '    print(surface_turn_note(SimpleNamespace(valid_tool_names=set())))\n', json.dumps(frame)],
++        cwd=Path(__file__).resolve().parents[2], env=dict(os.environ),
++        capture_output=True, text=True, timeout=60, check=False,
++    )
++    assert result.returncode == 0, result.stderr
++    assert 'Server-owned display note' in result.stdout
++
++
++def test_legacy_advertisement_and_unknown_surface(registered):
++    from tests.tui_gateway.test_hud_surface_note import _session
++    from tui_gateway import server
++    result = server._methods['gateway.capabilities']('probe', {})['result']
++    assert result['client_surfaces'] == client_surfaces()
++    session = _session(running=True)
++    server._sessions['surface-test'] = session
++    try:
++        for name, expected in [('example-v1', 'example-v1'), ('unknown', '')]:
++            server._methods['prompt.submit']('submit', {
++                'session_id': 'surface-test', 'text': 'unchanged user words', 'queued': True, 'surface': name,
++            })
++            assert session['client_surface'] == expected
++            assert server._hud_surface_note(session) == ('Server-owned display note' if expected else '')
++    finally:
++        server._sessions.pop('surface-test', None)
++
++
++@pytest.mark.asyncio
++async def test_canonical_admission_keeps_text_and_commits_registered_surface(registered, monkeypatch):
++    from tests.gateway.test_surface_admission import _authority
++    from gateway.session_controls import AuthorityConnection
++    from gateway.session_surface import surface_turn_note
++    from hermes_state_runtime import list_session_admissions
++    seen = []
++    async def answer(event):
++        seen.append((event.text, surface_turn_note(SimpleNamespace(valid_tool_names=set()))))
++        return 'done'
++    authority = await _authority(registered, monkeypatch, answer)
++    connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
++    try:
++        await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
++        reply = await connection.dispatch({'id': 2, 'method': 'prompt.submit', 'params': {
++            'session_id': 's', 'submission_id': 'registered-surface', 'text': 'original words',
++            'surface': 'example-v1'}})
++        assert reply['result']['status'] == 'queued', reply
++        await authority.sessions['s'].task
++        rows = list_session_admissions(authority.db, session_id='s', pending_only=False)
++        row = next(row for row in rows if row['request_id'] == 'registered-surface')
++        assert row['payload']['surface_v1'] == {'surface': 'example-v1'}
++        assert seen == [('original words', 'Server-owned display note')]
++    finally:
++        await connection.close()
+diff --git a/tests/hermes_cli/test_plugin_host_client_surface.py b/tests/hermes_cli/test_plugin_host_client_surface.py
+new file mode 100644
+index 00000000..34933bf3
+--- /dev/null
++++ b/tests/hermes_cli/test_plugin_host_client_surface.py
+@@ -0,0 +1,25 @@
++"""Client surface callbacks work through the ordinary isolated plugin host."""
++import pytest
++
++from tests.hermes_cli.test_plugin_host import _home_with_plugins
++
++
++@pytest.mark.platforms('any')
++@pytest.mark.parametrize('isolation', ['host', 'in_process'])
++def test_surface_callback_and_unload_in_either_isolation_mode(tmp_path, monkeypatch, isolation):
++    from gateway.session_surface import client_surfaces, surface_note
++    from hermes_cli import plugins
++    _home_with_plugins(tmp_path, monkeypatch, {'surfaceprobe': '''
++def register(ctx):
++    ctx.register_client_surface("example-v1", lambda committed, tools:
++        committed["surface"] + ":" + ",".join(sorted(tools or [])))
++'''}, isolation=isolation)
++    plugins._reset_plugin_managers_for_tests()
++    manager = plugins.get_plugin_manager()
++    try:
++        assert 'example-v1' in client_surfaces(), manager._plugins['surfaceprobe'].error
++        assert surface_note({'surface': 'example-v1'}, {'b', 'a'}) == 'example-v1:a,b'
++        manager.unload('surfaceprobe')
++        assert 'example-v1' not in client_surfaces()
++    finally:
++        plugins._reset_plugin_managers_for_tests()
+diff --git a/tui_gateway/contracts/liveness.py b/tui_gateway/contracts/liveness.py
+index abd2da48..ba0ba50e 100644
+--- a/tui_gateway/contracts/liveness.py
++++ b/tui_gateway/contracts/liveness.py
+@@ -20,9 +20,14 @@ method("ping", params=PingParams, result=PingResult,
+ 
+ class GatewayCapabilitiesResult(Result):
+     per_session_exclusive_submit: bool
++    client_surfaces: list[str]
+ 
+ 
+-method("gateway.capabilities", params=PingParams, result=GatewayCapabilitiesResult,
++class GatewayCapabilitiesParams(Params):
++    profile: str | None = None
++
++
++method("gateway.capabilities", params=GatewayCapabilitiesParams, result=GatewayCapabilitiesResult,
+        doc="What THIS build enforces (a client withholds a feature unless advertised).")
+ 
+ 
+diff --git a/tui_gateway/methods_prompt.py b/tui_gateway/methods_prompt.py
+index 0b2baf07..34378582 100644
+--- a/tui_gateway/methods_prompt.py
++++ b/tui_gateway/methods_prompt.py
+@@ -812,13 +812,9 @@ def _lock_in_submit_turn(
+     return None, fields
+ 
+ 
+-# Per-turn client surfaces that carry a model-bound note (session_notifications._hud_surface_note);
+-# the canonical admission path shares the same set (gateway.session_surface).
+-from gateway.session_surface import SURFACES as _CLIENT_SURFACES
+-
+-
+ @method("prompt.submit")
+ def _(rid, params: dict) -> dict:
++    from gateway.session_surface import is_client_surface
+     from hermes_cli.input_sanitize import sanitize_user_prompt_text
+     sid = params.get("session_id", "")
+     raw_text = params.get("text", "")
+@@ -863,7 +859,8 @@ def _(rid, params: dict) -> dict:
+         # leaves the session untouched.  The reason travels as machine-readable data.
+         return _slot_refusal(rid, sid, session, text, params, limit_message, internal_hosted_submit)
+     # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
+-    session["client_surface"] = params.get("surface") if params.get("surface") in _CLIENT_SURFACES else ""
++    with _session_profile_runtime_scope(session):
++        session["client_surface"] = params.get("surface") if is_client_surface(params.get("surface")) else ""
+     # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted
+     # user row stays the words the user said); anything else clears it.
+     voice_context = params.get("voice_context")
+diff --git a/tui_gateway/methods_voice.py b/tui_gateway/methods_voice.py
+index e860107a..6c7abc0b 100644
+--- a/tui_gateway/methods_voice.py
++++ b/tui_gateway/methods_voice.py
+@@ -514,11 +514,14 @@ def _wake_detect_handler(transport, sid: str, phrase: str, new_session: bool):
+ 
+ 
+ @method("gateway.capabilities")
++@_profile_scoped
+ def _(rid, params: dict) -> dict:
+     """What THIS BUILD enforces (a client withholds unless advertised), sourced from the enforcing
+     module, never config: a believed-but-absent capability is worse."""
+     from hermes_cli.active_sessions import PER_SESSION_EXCLUSIVE_SUBMIT
+-    return _ok(rid, {"per_session_exclusive_submit": bool(PER_SESSION_EXCLUSIVE_SUBMIT)})
++    from gateway.session_surface import client_surfaces
++    return _ok(rid, {"per_session_exclusive_submit": bool(PER_SESSION_EXCLUSIVE_SUBMIT),
++                     "client_surfaces": client_surfaces()})
+ 
+ 
+ @method("client.capabilities")
+diff --git a/website/docs/developer-guide/plugins/client-surfaces.md b/website/docs/developer-guide/plugins/client-surfaces.md
+new file mode 100644
+index 00000000..a455c27c
+--- /dev/null
++++ b/website/docs/developer-guide/plugins/client-surfaces.md
+@@ -0,0 +1,42 @@
++---
++title: Client surfaces
++description: Register per-turn client display context without changing user text or the system prefix.
++---
++
++# Client surfaces
++
++Use `ctx.register_client_surface(name, note)` when a client needs to tell the model
++which renderer is displaying one turn. This is display context, not permission to
++use tools or accounts. The server plugin owns the note; the client sends only a name.
++
++```python
++def register(ctx):
++    if hasattr(ctx, "register_client_surface"):
++        ctx.register_client_surface("example-v1", "This turn is shown by the example renderer.")
++```
++
++Names must match `[a-z][a-z0-9-]{0,31}`. Built-in `hud` and `voice-live` names cannot
++be replaced, and duplicate registrations raise `ValueError`. Notes are strings or
++synchronous callables `note(committed, valid_tool_names) -> str`. The callable gets
++a copy of the committed surface fields and the executing agent's available tool
++names. Rendered plugin notes are truncated to 6000 characters. A callback exception
++or non-string result is logged and omits the note without failing the turn.
++
++The returned `PluginRegistration` supports `dispose()`. Disable, unload, failed load,
++and force reload use the existing ownership ledger to release registrations. Each
++profile has its own registry; another profile's registration is neither advertised
++nor accepted. Ordinary isolated plugin hosts support the same API.
++
++Clients query `gateway.capabilities` (with their optional `profile`) and check the
++sorted `client_surfaces` list before sending `prompt.submit` with `surface: "example-v1"`.
++Cache the advertisement only for that authenticated connection and profile. When a
++name is absent, use the client's legacy behavior. Do not send an unregistered name:
++the canonical transport rejects it with `invalid_params`; the legacy transport
++clears it. `session.redirect` and `session.steer` do not accept this parameter.
++
++Canonical admission commits `surface_v1` for that turn. The note is projected onto
++the model-bound user-message sidecar; persisted user `content` and the frozen system
++prefix remain unchanged. Install and enable the plugin for both intake and execution
++processes. Admission, capability lookup and managed-worker restoration perform
++idempotent discovery in the owning profile before consulting the registry.
++`voice_context` remains restricted to the built-in `voice-live` surface.
+diff --git a/website/docs/developer-guide/plugins/index.md b/website/docs/developer-guide/plugins/index.md
+index 0f8baca0..24662a8a 100644
+--- a/website/docs/developer-guide/plugins/index.md
++++ b/website/docs/developer-guide/plugins/index.md
+@@ -935,6 +935,7 @@ def register(ctx):
+ - Called exactly once at startup
+ - `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
+ - `ctx.register_hook()` subscribes to lifecycle events
++- `ctx.register_client_surface(name, note)` registers a bounded per-turn display note; clients negotiate it through `gateway.capabilities`. See [Client surfaces](client-surfaces.md).
+ - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
+ - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
+ - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
+-- 
+2.51.1.windows.1
+

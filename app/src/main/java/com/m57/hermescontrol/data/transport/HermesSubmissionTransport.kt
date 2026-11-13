@@ -12,12 +12,18 @@ interface HermesSubmissionTransport {
 
     fun isReady(scope: ConnectionScope): Boolean
 
+    fun supportsClientSurface(
+        scope: ConnectionScope,
+        surface: String,
+    ): Boolean = false
+
     suspend fun submitPrompt(
         scope: ConnectionScope,
         session: SessionRef,
         text: String,
         redirect: Boolean = false,
         queued: Boolean = false,
+        surface: String? = null,
     ): SubmissionResult<PromptAcceptance>
 
     suspend fun attach(

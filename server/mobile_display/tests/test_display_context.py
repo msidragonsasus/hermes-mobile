@@ -51,6 +51,34 @@ class RecordingContext:
 
 
 class DisplayContextTests(unittest.TestCase):
+    def test_surface_catalogs_match_android_versions_and_fit_host_limit(self):
+        source = (REPO / "app/src/main/java/com/m57/hermescontrol/ui/chat/NativeUiInstructions.kt").read_text(encoding="utf-8")
+        descriptors = [textwrap.dedent(chunk).strip() for chunk in re.findall(r'"""(.*?)"""', source, re.DOTALL)]
+        for version in sorted(display.NATIVE_VERSIONS):
+            filename = "NATIVE_CATALOG.md" if version == "3" else f"NATIVE_CATALOG_V{version}.md"
+            descriptor = (PLUGIN / filename).read_text(encoding="utf-8").strip()
+            self.assertIn(descriptor, descriptors)
+            self.assertIn(f"Native catalog hermes.native/{version}.", descriptor)
+            note = display.surface_note(version)
+            self.assertIn(descriptor, note)
+            self.assertIn("display-only, not tool authorization", note)
+            self.assertLessEqual(len(note), 6000)
+
+    def test_surface_host_has_one_note_path_per_turn(self):
+        ctx = RecordingContext()
+        surfaces = {}
+        ctx.register_client_surface = lambda name, note: surfaces.setdefault(name, note)
+        plugin.register(ctx)
+        self.assertEqual(set(surfaces), {"mobile-v1", "mobile-v2", "mobile-v3"})
+        hook = ctx.hooks["pre_llm_call"]
+        # New client: the core's registered note is sufficient. No unknown-client hook note.
+        self.assertIsNone(hook(user_message="show UI", platform="tui"))
+        # Old client: the suffix remains the only source of the current-client hook note.
+        old = "show UI" + display.START + (PLUGIN / "NATIVE_CATALOG.md").read_text(encoding="utf-8").strip() + display.END
+        self.assertEqual(hook(user_message=old, platform="tui"), {"context": display.native_turn_context("3")})
+        # No surface and no marker never asserts a renderer from history.
+        self.assertIsNone(hook(user_message="plain", platform="cli", conversation_history=[old]))
+
     def test_current_android_wire_is_recognized(self):
         self.assertTrue(display.has_mobile_context(mobile_request()))
 
@@ -213,6 +241,8 @@ class PreflightTests(unittest.TestCase):
         self.write("agent/system_prompt.py", "raise RuntimeError('must not execute')\ndef build():\n return render_system_prompt_sections({})\n")
         before = {str(p): p.read_bytes() for p in self.root.rglob("*.py")}
         result = preflight.inspect_contract(self.root)
+        self.assertFalse(result["client_surfaces"])
+        self.assertEqual(result["display_mode"], "legacy_suffix")
         self.assertEqual(result["state"], "ready")
         self.assertEqual(result["scope"], "source_contract_only")
         self.assertEqual(before, {str(p): p.read_bytes() for p in self.root.rglob("*.py")})
@@ -229,6 +259,14 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(result["state"], "unsupported")
         self.assertIn("hermes_cli/plugins.py:unreadable", result["missing"])
 
+    def test_split_context_module_reports_optional_surface_support(self):
+        self.compatible_source()
+        self.write("hermes_cli/plugins_context.py", "class PluginContext:\n def register_hook(self): pass\n def register_system_prompt_section(self): pass\n def register_client_surface(self): pass\n")
+        result = preflight.inspect_contract(self.root)
+        self.assertEqual(result["state"], "ready")
+        self.assertTrue(result["client_surfaces"])
+        self.assertEqual(result["display_mode"], "surface")
+
 
 @unittest.skipUnless(os.environ.get("HERMES_AGENT_CONTRACT_ROOT"), "native source contract root not provided")
 class NativeHostContractTests(unittest.TestCase):
@@ -239,11 +277,18 @@ class NativeHostContractTests(unittest.TestCase):
         sys.path.insert(0, str(cls.root))
         import hermes_cli.plugins_dispatch as dispatch
         cls.dispatch = dispatch
-        source = ast.parse((cls.root / "hermes_cli/plugins.py").read_text(encoding="utf-8-sig"))
+        path = cls.root / "hermes_cli/plugins_context.py"
+        if not path.exists():
+            path = cls.root / "hermes_cli/plugins.py"
+        source = ast.parse(path.read_text(encoding="utf-8-sig"))
         context = next(n for n in source.body if isinstance(n, ast.ClassDef) and n.name == "PluginContext")
         method = next(n for n in context.body if isinstance(n, ast.FunctionDef) and n.name == "register_system_prompt_section")
         # Execute the native registrar unchanged, with its original dispatch globals.
         namespace = dict(vars(dispatch))
+        if path.name == "plugins_context.py":
+            import hermes_cli.plugins as host_plugins
+            namespace["_facade"] = lambda: host_plugins
+            cls.host_plugins = host_plugins
         namespace["PluginRegistration"] = object
         exec(compile(ast.Module(body=[method], type_ignores=[]), "native_system_prompt_registrar", "exec"), namespace)
         cls.native_register = namespace[method.name]
@@ -253,6 +298,16 @@ class NativeHostContractTests(unittest.TestCase):
         sys.path.remove(str(cls.root))
 
     def context(self):
+        if hasattr(self, "host_plugins"):
+            manager = self.host_plugins.PluginManager()
+            manager._discovered = True
+            ctx = self.host_plugins.PluginContext(
+                self.host_plugins.PluginManifest(name="mobile_display", key="mobile_display", source="user"), manager,
+            )
+            plugin.register(ctx)
+            self.addCleanup(manager.unload)
+            return ctx
+
         class Manager(self.dispatch.PluginDispatchMixin):
             def __init__(self):
                 self._system_prompt_sections = {}
@@ -260,6 +315,8 @@ class NativeHostContractTests(unittest.TestCase):
                 self._hook_timeout_lock = threading.Lock()
                 self._hook_timeout_suppressed_until = {}
                 self._hook_running_callbacks = {}
+                self._hook_abandoned = {}
+                self._hook_failures_reported = set()
                 self._hook_timeout_suppression_seconds = 60
 
         class Context:
@@ -278,6 +335,22 @@ class NativeHostContractTests(unittest.TestCase):
         ctx = Context()
         plugin.register(ctx)
         return ctx
+
+    def test_native_surface_registry_and_legacy_hook_are_complementary(self):
+        if not hasattr(self, "host_plugins"):
+            self.skipTest("older native host uses the suffix compatibility path")
+        from gateway.session_surface import admit_surface, client_surfaces, surface_note
+        ctx = self.context()
+        with patch.object(self.host_plugins, "get_plugin_manager", return_value=ctx._manager):
+            for version in sorted(display.NATIVE_VERSIONS):
+                name = f"mobile-v{version}"
+                self.assertIn(name, client_surfaces())
+                committed = admit_surface({"surface": name})["surface_v1"]
+                self.assertEqual(surface_note(committed), display.surface_note(version))
+            self.assertEqual(ctx._manager.invoke_hook("pre_llm_call", user_message="new client", platform="tui"), [])
+            self.assertEqual(len(ctx._manager.invoke_hook("pre_llm_call", user_message=mobile_request(), platform="tui")), 1)
+            ctx._manager.unload()
+            self.assertNotIn("mobile-v3", client_surfaces())
 
     def test_actual_registrar_renderer_and_persistence_container(self):
         ctx = self.context()

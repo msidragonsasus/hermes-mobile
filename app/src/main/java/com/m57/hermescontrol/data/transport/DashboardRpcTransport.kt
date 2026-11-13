@@ -206,13 +206,20 @@ class DashboardRpcTransport :
     override fun isReady(scope: ConnectionScope): Boolean =
         HermesWsClient.matchesCurrentScope(scope) && HermesWsClient.isConnected
 
+    override fun supportsClientSurface(
+        scope: ConnectionScope,
+        surface: String,
+    ): Boolean = HermesWsClient.supportsClientSurface(scope, surface)
+
     override suspend fun submitPrompt(
         scope: ConnectionScope,
         session: SessionRef,
         text: String,
         redirect: Boolean,
         queued: Boolean,
+        surface: String?,
     ): SubmissionResult<PromptAcceptance> {
+        if (surface != null && (redirect || !supportsClientSurface(scope, surface))) return SubmissionResult.NotSent
         if (redirect && (text.isBlank() || queued)) return SubmissionResult.NotSent
         return execute(
             scope,
@@ -221,6 +228,7 @@ class DashboardRpcTransport :
                 put("session_id", session.runtimeId)
                 put("text", text)
                 if (queued) put("queued", true)
+                surface?.let { put("surface", it) }
             },
             terminalSession = session.takeUnless { redirect || queued },
             terminalValue = PromptAcceptance.STREAMING,

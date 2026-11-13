@@ -1,6 +1,8 @@
 package com.m57.hermescontrol.ui.chat
 
 internal object NativeUiInstructions {
+    const val SURFACE = "mobile-v3"
+
     // Also tested against server/mobile_display/NATIVE_CATALOG.md.
     val descriptor =
         """

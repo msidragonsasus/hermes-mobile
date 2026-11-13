@@ -1,5 +1,5 @@
 name: mobile_display
-version: 0.5.2
+version: 0.6.0
 description: Hermes Mobileの画像・操作UIの出力契約をエージェントのシステム指示へ登録
 provides_hooks:
   - pre_llm_call

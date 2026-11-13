@@ -146,6 +146,56 @@ class TerminalAcceptanceTransportTest {
         unmockkAll()
     }
 
+    @Test fun surfaceOnlyAdvertisementSendsPlainTextWithoutEnablingTerminalAcceptance() =
+        runBlocking {
+            negotiate("""{"client_surfaces":["hud","mobile-v3"]}""")
+            assertTrue(HermesWsClient.supportsClientSurface(scope, "mobile-v3"))
+            duringSend = { r -> if (r["method"]?.jsonPrimitive?.content == WsMethods.PROMPT_SUBMIT) ack(r) }
+            val adapter = com.m57.hermescontrol.ui.chat.RichAnswerSubmissionTransport(DashboardRpcTransport())
+            val result = adapter.submitPrompt(scope, session, "図で説明して")
+            assertTrue(result is SubmissionResult.Confirmed)
+            val params = request()["params"]!!.jsonObject
+            assertEquals("図で説明して", params["text"]!!.jsonPrimitive.content)
+            assertEquals("mobile-v3", params["surface"]!!.jsonPrimitive.content)
+            assertFalse(params.containsKey("terminal_acceptance"))
+        }
+
+    @Test fun olderSurfaceAdvertisementUsesLegacySuffixAndNoSurface() =
+        runBlocking {
+            negotiate("""{"client_surfaces":["mobile-v1","mobile-v2"]}""")
+            duringSend = { r -> if (r["method"]?.jsonPrimitive?.content == WsMethods.PROMPT_SUBMIT) ack(r) }
+            val adapter = com.m57.hermescontrol.ui.chat.RichAnswerSubmissionTransport(DashboardRpcTransport())
+            adapter.submitPrompt(scope, session, "図で説明して")
+            val params = request()["params"]!!.jsonObject
+            assertTrue(params["text"]!!.jsonPrimitive.content.contains("<hermes-mobile-display-context>"))
+            assertFalse(params.containsKey("surface"))
+        }
+
+    @Test fun surfaceAdvertisementExpiresWithAuthenticationProfileAndSocket() =
+        runBlocking {
+            negotiate("""{"client_surfaces":["mobile-v3"]}""")
+            epoch.value = 4L
+            assertFalse(HermesWsClient.supportsClientSurface(scope, "mobile-v3"))
+            negotiate("""{"client_surfaces":["mobile-v3"]}""")
+            assertTrue(HermesWsClient.supportsClientSurface(scope, "mobile-v3"))
+            profile.value = "profile-b"
+            assertFalse(HermesWsClient.supportsClientSurface(scope, "mobile-v3"))
+            profile.value = "profile-a"
+            bind(mockk(relaxed = true))
+            assertFalse(HermesWsClient.supportsClientSurface(scope, "mobile-v3"))
+        }
+
+    @Test fun unadvertisedSurfaceIsRejectedBeforeSendingAnyPrompt() =
+        runBlocking {
+            negotiate("""{"client_surfaces":["mobile-v2"]}""")
+            val before = sent.size
+            assertEquals(
+                SubmissionResult.NotSent,
+                DashboardRpcTransport().submitPrompt(scope, session, "exact text", surface = "mobile-v3"),
+            )
+            assertEquals(before, sent.size)
+        }
+
     @Test fun immediateTerminalInsideSend_isRegisteredBeforeHandoffAndNeverCompletesRpcResponse() =
         runBlocking {
             negotiate()

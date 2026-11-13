@@ -177,6 +177,7 @@ class ChatViewModelTest {
                         text: String,
                         redirect: Boolean,
                         queued: Boolean,
+                        surface: String?,
                     ): SubmissionResult<com.m57.hermescontrol.domain.hermes.PromptAcceptance> {
                         submitted = session
                         return fakeSubmission.submitPrompt(scope, session, text, redirect, queued)
@@ -350,6 +351,7 @@ class ChatViewModelTest {
                     text: String,
                     redirect: Boolean,
                     queued: Boolean,
+                    surface: String?,
                 ): SubmissionResult<com.m57.hermescontrol.domain.hermes.PromptAcceptance> =
                     transport.submitPrompt(scope, session, text, redirect, queued).also {
                         observedResults += it

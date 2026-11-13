@@ -823,6 +823,7 @@ object HermesWsClient {
         val epoch: Long,
         val socket: WebSocket,
         val peer: String,
+        val clientSurfaces: Set<String> = emptySet(),
     )
 
     private data class TerminalExpectation(
@@ -853,12 +854,26 @@ object HermesWsClient {
         terminalCapability = null
         if (error != null) return
         val raw = (if (result is JsonElement) result.toAny() else result) as? Map<*, *> ?: return
-        val feature = raw["terminal_acceptance"] as? Map<*, *> ?: return
-        val peer = (feature["peer_id"] as? String)?.takeIf(::isTerminalUuid) ?: return
-        if (feature["version"] == 1 && feature["mode"] == "local-ordinary-text-v1") {
-            terminalCapability = candidate.copy(peer = peer)
-        }
+        val surfaces = (raw["client_surfaces"] as? List<*>)?.filterIsInstance<String>()?.toSet().orEmpty()
+        val feature = raw["terminal_acceptance"] as? Map<*, *>
+        val peer =
+            if (feature?.get("version") == 1 && feature["mode"] == "local-ordinary-text-v1") {
+                (feature["peer_id"] as? String)?.takeIf(::isTerminalUuid).orEmpty()
+            } else {
+                ""
+            }
+        terminalCapability = candidate.copy(peer = peer, clientSurfaces = surfaces)
     }
+
+    fun supportsClientSurface(
+        scope: ConnectionScope,
+        surface: String,
+    ): Boolean =
+        synchronized(outboundLock) {
+            terminalCapability?.let {
+                it.scope == scope && currentCapability(it) && surface in it.clientSurfaces
+            } == true
+        }
 
     private fun resolveTerminalProof(observation: ScopedWsEvent) {
         val event = observation.event as? WsEvent.MessageComplete ?: return
@@ -1149,9 +1164,15 @@ object HermesWsClient {
                 return@synchronized ScopedRpcSubmission(null, false, response)
             }
             val capability = terminalCapability?.takeIf { it.scope == scope && currentCapability(it) }
+            val surface = params["surface"]
+            if (surface != null && (surface !is String || surface !in capability?.clientSurfaces.orEmpty())) {
+                response.completeExceptionally(HermesRpcException("Request not sent", OfflineSendPolicy.NOT_SENT))
+                return@synchronized ScopedRpcSubmission(null, false, response)
+            }
             val text = params["text"] as? String
             val expectation =
-                if (method == WsMethods.PROMPT_SUBMIT && !savedTarget.isNullOrBlank() && capability != null &&
+                if (method == WsMethods.PROMPT_SUBMIT && !savedTarget.isNullOrBlank() &&
+                    capability != null && capability.peer.isNotEmpty() &&
                     params["queued"] != true && !text.isNullOrBlank() && !text.trimStart().startsWith("/") &&
                     !text.contains("@image:") && !text.contains("@file:") && !text.contains("MEDIA:")
                 ) {
