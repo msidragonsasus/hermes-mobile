@@ -572,15 +572,17 @@ internal fun reconcileTranscript(
 }
 
 /**
- * A finished local turn whose stored rows arrived without binding proof (interrupted, queued,
- * steered or receipt-less turns) would otherwise show twice: the optimistic bubbles and the same
- * turn from history. Fold the local copies into the server rows only when the server turn is
- * located structurally:
- * - a user-row address already known for this turn (ACK, receipt or alias), or
- * - without one, the newest unclaimed ordinary user row whose visible text equals the local
- *   bubble AND whose turn span is consistent with where every other server row is displayed.
- * The span runs to the next ordinary user row. Anything ambiguous keeps both copies (the
- * previous behavior). No reply authority is granted: footers and canonical proofs are unchanged.
+ * A finished local turn whose stored rows arrived without a complete receipt (interrupted,
+ * queued or receipt-less turns) would otherwise show twice: the optimistic bubbles and the same
+ * turn from history. Fold local copies into server rows only when:
+ * - the turn's user row is PROVEN by an address (guarded ACK row, terminal receipt or exact
+ *   alias). Text, position and time never establish which history turn a local turn is; an
+ *   unproven local turn stays as an ambiguous observation with its pending input;
+ * - each folded message keeps everything it held: a reply folds only into a server row of the
+ *   proven span with the same body, reasoning, attachments and display kind (a tool also needs
+ *   its unique call id), and nothing local-only is lost.
+ * Folded messages are substituted in place, so unfolded local messages (interim commentary, a
+ * differently stored reply, cards) keep their order. No reply authority is granted.
  */
 private fun foldUnprovenLocalTurns(
     messages: List<ChatMessage>,
@@ -596,8 +598,6 @@ private fun foldUnprovenLocalTurns(
 
     fun isOrdinaryUser(position: Int) = raw[position].role == "user" && raw[position].display_kind == null
 
-    fun normalized(text: String) = text.replace("\r\n", "\n").trim()
-
     fun spanOf(root: Int): IntRange? {
         val end = (root + 1 until raw.size).firstOrNull(::isOrdinaryUser)
         // An older page's last turn may continue on the newer page: never fold half a turn.
@@ -608,17 +608,23 @@ private fun foldUnprovenLocalTurns(
     var current = messages
     var result = ledger
     val folded = mutableSetOf<Long>()
-    val firstSeen = { record: ResponseRecord ->
-        current.indexOfFirst { it.id in record.userIds || it.id in record.messageIds }.takeIf { it >= 0 }
-            ?: Int.MAX_VALUE
-    }
-    // Newest local turn first: a repeated phrase ("はい", "続けて") pairs with the newest matching row,
-    // and each older local turn may only take rows before the turns already folded.
-    var ceiling = Int.MAX_VALUE
-    for (initial in ledger.responses.sortedByDescending(firstSeen)) {
+    for (initial in ledger.responses) {
         val record = result.responses.singleOrNull { it.id == initial.id } ?: continue
         if (record.authority.revocations.isNotEmpty()) continue // Disputed: keep every body.
         if (record.finishedAt == null && record.id == result.activeId && live) continue // Still running.
+        val localUserIds = (record.userIds + result.pendingInputs.filterValues { it == record.id }.keys).toSet()
+        val proven =
+            (
+                record.userRowIds + listOfNotNull(record.authority.opening?.userRowId) +
+                    result.aliases
+                        .filterValues { it in localUserIds }
+                        .keys
+                        .mapNotNull { it.toLongOrNull() }
+            ).toSet()
+        // No address, no identity: never pick a history turn by its words, position or time.
+        if (proven.isEmpty()) continue
+        val root = proven.mapNotNull { positionByRow[it] }.filter(::isOrdinaryUser).minOrNull() ?: continue
+        val span = spanOf(root) ?: continue
         val byId = current.associateBy { it.id }
 
         fun displayOf(row: Long): String? =
@@ -630,15 +636,6 @@ private fun foldUnprovenLocalTurns(
         fun backed(id: String) =
             id in positionOfDisplay || id in result.aliases.values || id.startsWith("canonical:") ||
                 id.startsWith("unaddressed:") || id.startsWith("disputed:") || id.startsWith("rest-")
-        val localUserIds = (record.userIds + result.pendingInputs.filterValues { it == record.id }.keys).toSet()
-        val users = current.filter { it.role == MessageRole.USER && it.id in localUserIds && !backed(it.id) }
-        val others =
-            current.filter {
-                it.id in record.messageIds && (it.role == MessageRole.ASSISTANT || it.role == MessageRole.TOOL) &&
-                    !backed(it.id) && it.approvalInfo == null && it.clarifyInfo == null
-            }
-        if (users.isEmpty() && others.isEmpty()) continue
-        if (others.any { it.isStreaming || it.toolStatus == ToolStatus.RUNNING }) continue
         val otherClaims =
             result.responses
                 .filter { it.id != record.id }
@@ -649,126 +646,100 @@ private fun foldUnprovenLocalTurns(
                 .filter { it.id != record.id }
                 .flatMap { it.userIds + it.messageIds }
                 .toSet()
-
-        fun spanUsable(span: IntRange) =
-            span.all { rows[it] != null && rows[it] !in otherClaims && rows[it] !in folded } &&
-                span.mapNotNull { rows[it]?.let(::displayOf) }.none { it in otherMembers }
-        val known =
-            (
-                record.userRowIds + listOfNotNull(record.authority.opening?.userRowId) +
-                    result.aliases
-                        .filterValues { it in localUserIds }
-                        .keys
-                        .mapNotNull { it.toLongOrNull() }
-            ).toSet()
-        val root =
-            if (known.isNotEmpty()) {
-                // A known address outside this page is never replaced by a guess.
-                known.mapNotNull { positionByRow[it] }.filter(::isOrdinaryUser).minOrNull() ?: continue
-            } else {
-                val primary = users.firstOrNull() ?: continue
-                val first = current.indexOfFirst { it.id in localUserIds || it.id in record.messageIds }
-                val last = current.indexOfLast { it.id in localUserIds || it.id in record.messageIds }
-
-                fun consistent(span: IntRange) =
-                    current.withIndex().all { (index, message) ->
-                        val position = positionOfDisplay[message.id] ?: return@all true
-                        when {
-                            position in span -> true
-                            index < first -> position < span.first
-                            index > last -> position > span.last
-                            else -> false // Another turn's row inside this local turn: ambiguous.
-                        }
-                    }
-                raw.indices
-                    .filter { position ->
-                        val row = rows[position] ?: return@filter false
-                        val shown = displayOf(row)?.let(byId::get) ?: return@filter false
-                        val span = spanOf(position) ?: return@filter false
-                        isOrdinaryUser(position) && shown.id !in otherMembers && span.last < ceiling &&
-                            normalized(shown.content) == normalized(primary.content) &&
-                            spanUsable(span) && consistent(span)
-                    }.maxOrNull() ?: continue
+        if (span.any { rows[it] == null || rows[it] in otherClaims || rows[it] in folded }) continue
+        if (span.mapNotNull { rows[it]?.let(::displayOf) }.any { it in otherMembers }) continue
+        val substitutes = mutableMapOf<String, ChatMessage>()
+        // The proven root replaces the turn's unresolved local user bubble, unless the root is
+        // already shown through it (an exact ACK alias) or the bubble holds something the row lacks.
+        val rootShown = rows[root]?.let(::displayOf)?.let(byId::get)
+        val primary =
+            current.firstOrNull {
+                it.role == MessageRole.USER && it.id in localUserIds && !backed(it.id) && it.displayKind == null
             }
-        val span = spanOf(root) ?: continue
-        if (!spanUsable(span)) continue
-        val replacementIds = span.mapNotNull { rows[it]?.let(::displayOf) }.distinct()
-        val replacement = replacementIds.map(byId::getValue)
-        // Pair the remaining local user bubbles with the span's visible user rows, in order.
-        val spanUsers =
-            span.filter { raw[it].role == "user" && raw[it].display_kind != "hidden" }.mapNotNull { position ->
-                rows[position]?.let(::displayOf)?.let { position to byId.getValue(it) }
+        if (rootShown != null && rootShown.id !in localUserIds && primary != null &&
+            primary.foldsLosslesslyInto(rootShown)
+        ) {
+            substitutes[primary.id] = rootShown.withLocalPresentation(primary)
+        }
+        val available =
+            span
+                .mapNotNull { rows[it]?.let(::displayOf)?.let(byId::get) }
+                .filter { it.role == MessageRole.ASSISTANT || it.role == MessageRole.TOOL }
+                .toMutableList()
+        val replies =
+            current.filter {
+                it.id in record.messageIds && (it.role == MessageRole.ASSISTANT || it.role == MessageRole.TOOL) &&
+                    !backed(it.id) && it.approvalInfo == null && it.clarifyInfo == null
             }
-        val unpaired = spanUsers.filter { (_, message) -> message.id !in localUserIds }
-        if (unpaired.size != users.size) continue
-        val paired =
-            unpaired.zip(users).all { (server, local) ->
-                (server.first == root && known.isNotEmpty()) ||
-                    normalized(server.second.content) == normalized(local.content)
-            }
-        if (!paired) continue
-        // A reply body is folded only into a server row of the same turn showing the same thing:
-        // identical prose, or the same unique tool call. A different stored body (partial,
-        // transformed, merged interim) is not proof that the local text is covered: keep it readable.
-        val available = replacement.filter { it.role != MessageRole.USER }.toMutableList()
-        val absorbed = mutableMapOf<String, ChatMessage>()
-        for (local in others) {
+        if (replies.any { it.isStreaming || it.toolStatus == ToolStatus.RUNNING }) continue
+        for (local in replies) {
             val match =
                 available.firstOrNull { server ->
-                    server.role == local.role &&
-                        if (local.role == MessageRole.TOOL) {
-                            local.toolCallId.isNotBlank() && server.toolCallId == local.toolCallId &&
-                                replacement.count { it.toolCallId == local.toolCallId } == 1
-                        } else {
-                            normalized(server.content).isNotEmpty() &&
-                                normalized(server.content) == normalized(local.content)
-                        }
+                    local.foldsLosslesslyInto(server) &&
+                        (
+                            local.role != MessageRole.TOOL ||
+                                (
+                                    local.toolCallId.isNotBlank() && server.toolCallId == local.toolCallId &&
+                                        available.count { it.toolCallId == local.toolCallId } == 1
+                                )
+                        )
                 } ?: continue
             available -= match
-            absorbed[local.id] = match
+            substitutes[local.id] = match.withLocalPresentation(local)
         }
-        val pairedUsers = unpaired.zip(users).associate { (server, local) -> local.id to server }
-        val removed = users + others.filter { it.id in absorbed }
-        if (removed.isEmpty()) continue
-        val keptPaths = replacement.flatMap { it.sourceMediaPaths() }.toSet()
-        if (!keptPaths.containsAll(removed.flatMap { it.sourceMediaPaths() })) continue
-        val toolPresentation = others.filter { it.id in absorbed }.associateBy { absorbed.getValue(it.id).id }
-        val merged =
-            replacement.map { row ->
-                val local = toolPresentation[row.id]?.takeIf { row.role == MessageRole.TOOL } ?: return@map row
-                row.copy(toolName = row.toolName ?: local.toolName, toolStatus = row.toolStatus ?: local.toolStatus)
-            }
-        val removedIds = removed.map { it.id }.toSet()
-        val moved = removedIds + replacementIds
-        val slot = current.indexOfFirst { it.id in moved }
+        if (substitutes.isEmpty()) continue
+        val absorbedIds = substitutes.values.map { it.id }.toSet()
         current =
-            current.take(slot).filterNot { it.id in moved } + merged +
-            current.drop(slot).filterNot { it.id in moved }
-        // Membership follows only what was actually folded; other span rows stay unowned bodies.
-        val ownedUsers = pairedUsers.values.map { (_, message) -> message.id }
-        val ownedOthers = absorbed.values.map { it.id }
-        val ownedRows =
-            (pairedUsers.values.mapNotNull { (position, _) -> rows[position] } + listOfNotNull(rows[root])).distinct()
-        val absorbedRows = absorbed.values.mapNotNull { message -> positionOfDisplay[message.id]?.let { rows[it] } }
-        val spanRows = span.mapNotNull { rows[it] }
+            current.mapNotNull { message ->
+                substitutes[message.id] ?: message.takeUnless { it.id in absorbedIds }
+            }
+        val removedIds = substitutes.keys
+        val ownedUsers = substitutes.values.filter { it.role == MessageRole.USER }.map { it.id }
+        val ownedOthers = substitutes.values.filter { it.role != MessageRole.USER }.map { it.id }
+        val ownedRows = substitutes.values.mapNotNull { message -> positionOfDisplay[message.id]?.let { rows[it] } }
+        val rootRow = rows[root]
         result =
             result
                 .update(record.id) {
                     it.copy(
                         userIds = (it.userIds.filterNot { id -> id in removedIds } + ownedUsers).distinct(),
                         messageIds = (it.messageIds.filterNot { id -> id in removedIds } + ownedOthers).distinct(),
-                        userRowIds = (it.userRowIds + ownedRows).distinct(),
-                        canonicalRowIds = (it.canonicalRowIds + absorbedRows).distinct(),
+                        userRowIds = (it.userRowIds + ownedRows.filter { row -> row == rootRow }).distinct(),
+                        canonicalRowIds = (it.canonicalRowIds + ownedRows.filter { row -> row != rootRow }).distinct(),
                     )
                 }.copy(
                     pendingInputs = result.pendingInputs - removedIds,
                     aliases = result.aliases.filterValues { it !in removedIds },
                 )
-        folded += spanRows
-        ceiling = minOf(ceiling, root)
+        folded += ownedRows
     }
     return current to result
 }
+
+/**
+ * True only when [server] keeps everything this local message holds: the same stored body and,
+ * when present locally, the same reasoning, attachments and display kind, with no local-only
+ * transient data. Equal visible text alone is not proof that nothing is lost.
+ */
+private fun ChatMessage.foldsLosslesslyInto(server: ChatMessage): Boolean {
+    fun normalized(text: String) = text.replace("\r\n", "\n").trim()
+    if (role != server.role || normalized(bodyForStorage()).isEmpty()) return false
+    if (normalized(bodyForStorage()) != normalized(server.bodyForStorage())) return false
+    if (reasoningText.isNotBlank() && normalized(reasoningText) != normalized(server.reasoningText)) return false
+    if (displayKind != null && displayKind != server.displayKind) return false
+    if (toolCallId.isNotBlank() && toolCallId != server.toolCallId) return false
+    if (toolOutputRiskData != null || !progressPreview.isNullOrBlank()) return false
+    val kept = server.attachments.orEmpty().map { Triple(it.retainedSourceAddress(), it.name, it.mimeType) }
+    return attachments.orEmpty().all { Triple(it.retainedSourceAddress(), it.name, it.mimeType) in kept }
+}
+
+/** Local presentation the server row does not carry (tool name/status, finish time). */
+private fun ChatMessage.withLocalPresentation(local: ChatMessage): ChatMessage =
+    copy(
+        toolName = toolName ?: local.toolName,
+        toolStatus = toolStatus ?: local.toolStatus,
+        finishTimestamp = finishTimestamp ?: local.finishTimestamp,
+    )
 
 /** Every row address this response already claims (inputs, receipts, coverage and aliases). */
 private fun ResponseRecord.claimedRows(ledger: ResponseLedger): List<Long> =

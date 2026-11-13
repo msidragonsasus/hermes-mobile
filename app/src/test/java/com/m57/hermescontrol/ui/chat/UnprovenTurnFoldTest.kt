@@ -39,28 +39,37 @@ class UnprovenTurnFoldTest {
         extra: List<ChatMessage> = emptyList(),
         active: Boolean = false,
         typing: Boolean = false,
+        // Whether the submit ACK arrived. Without an ACK row the default is an unacknowledged
+        // input (the result was lost): it stays a pending input with no row binding.
+        acknowledged: Boolean = ackRow != null,
     ): ChatUiState {
         val record = ResponseRecord(id = "r", messageIds = listOf("local-answer") + extra.map { it.id })
-        var ledger =
+        val sent =
             ResponseLedger(
                 responses = listOf(record),
                 activeId = if (active) "r" else null,
                 pendingSubmissions = mapOf(attempt to "r"),
                 pendingInputs = mapOf("local-user" to "r"),
-            ).acceptInput(
-                attempt,
-                "r",
-                null,
-                true,
-                "rpc-1",
-                disposition,
-                target,
-                session,
-                1L,
-                "local-user",
-                ackRow,
-                null,
             )
+        var ledger =
+            if (!acknowledged) {
+                sent
+            } else {
+                sent.acceptInput(
+                    attempt,
+                    "r",
+                    null,
+                    true,
+                    "rpc-1",
+                    disposition,
+                    target,
+                    session,
+                    1L,
+                    "local-user",
+                    ackRow,
+                    null,
+                )
+            }
         if (terminal != null) {
             ledger =
                 ledger.update("r") {
@@ -121,7 +130,8 @@ class UnprovenTurnFoldTest {
 
     @Test fun ackRowAndCompleteReceipt() = assertEquals(once, shown(localTurn(10L, terminal = complete())))
 
-    @Test fun completeReceiptWithoutAckRow() = assertEquals(once, shown(localTurn(null, terminal = complete())))
+    @Test fun completeReceiptWithoutAckRow() =
+        assertEquals(once, shown(localTurn(null, terminal = complete(), acknowledged = true)))
 
     @Test fun incompleteReceiptWithFinalRow() =
         assertEquals(
@@ -132,30 +142,29 @@ class UnprovenTurnFoldTest {
     @Test fun incompleteReceiptWithBoundFinalRow() =
         assertEquals(once, shown(localTurn(10L, terminal = incomplete(final = 11L), finalAlias = true)))
 
-    // ── Previously duplicated ─────────────────────────────────────────
+    // ── Previously duplicated, folded because the user row is proven ──
 
-    @Test fun incompleteReceiptWithoutAckRow() = assertEquals(once, shown(localTurn(null, terminal = incomplete())))
+    @Test fun incompleteReceiptWithoutAckRow() =
+        assertEquals(once, shown(localTurn(null, terminal = incomplete(), acknowledged = true)))
 
     @Test fun noReceiptWithAckRow() = assertEquals(once, shown(localTurn(10L, terminal = noReceipt())))
 
-    @Test fun noReceiptAndNoAckRow() = assertEquals(once, shown(localTurn(null, terminal = noReceipt())))
-
     @Test fun queuedInputWithoutAckRow() =
-        assertEquals(once, shown(localTurn(null, disposition = "QUEUED", terminal = complete())))
+        assertEquals(once, shown(localTurn(null, disposition = "QUEUED", terminal = complete(), acknowledged = true)))
 
     @Test fun interruptedTurnWithAckRow() =
         assertEquals(once, shown(localTurn(10L, terminal = incomplete(status = "interrupted"))))
 
     @Test fun interruptedTurnWithoutAckRow() =
-        assertEquals(once, shown(localTurn(null, terminal = incomplete(status = "interrupted"))))
+        assertEquals(once, shown(localTurn(null, terminal = incomplete(status = "interrupted"), acknowledged = true)))
 
-    @Test fun completionNeverObservedAndTurnIdle() = assertEquals(once, shown(localTurn(null, terminal = null)))
+    @Test fun completionNeverObservedWithAckRow() = assertEquals(once, shown(localTurn(10L, terminal = null)))
 
     @Test fun alreadyDuplicatedCacheHeals() {
         val duplicated =
             localTurn(
                 null,
-                terminal = noReceipt(),
+                terminal = incomplete(),
                 before =
                     listOf(
                         canonical(10L, MessageRole.USER, "original"),
@@ -166,14 +175,14 @@ class UnprovenTurnFoldTest {
     }
 
     @Test fun foldedTurnOwnsTheServerRows() {
-        val state = reconciled(localTurn(null, terminal = noReceipt()))
+        val state = reconciled(localTurn(null, terminal = incomplete()))
         val record = state.responseLedger.responses.single()
         assertEquals(listOf(canonicalMessageId(target, session, 10L)), record.userIds)
         assertEquals(listOf(canonicalMessageId(target, session, 11L)), record.messageIds)
         assertEquals(emptyMap<String, String>(), state.responseLedger.pendingInputs)
     }
 
-    @Test fun repeatedPhraseFoldsIntoTheNewestMatchingRow() {
+    @Test fun provenRowIsNeverAnOlderSameTextTurn() {
         val history =
             listOf(
                 row(5, "user", "original"),
@@ -184,7 +193,7 @@ class UnprovenTurnFoldTest {
         val state =
             localTurn(
                 null,
-                terminal = noReceipt(),
+                terminal = incomplete(),
                 before =
                     listOf(
                         canonical(5L, MessageRole.USER, "original"),
@@ -201,7 +210,7 @@ class UnprovenTurnFoldTest {
         val rows = page + listOf(row(12, "user", "from desktop"), row(13, "assistant", "desktop answer"))
         assertEquals(
             "$once | user:from desktop | assistant:desktop answer",
-            shown(localTurn(null, terminal = noReceipt()), rows),
+            shown(localTurn(null, terminal = incomplete()), rows),
         )
     }
 
@@ -213,11 +222,20 @@ class UnprovenTurnFoldTest {
                 content = "承認が必要です",
                 approvalInfo = ApprovalInfo(command = "ls", description = null, patternKeys = null),
             )
-        val result = shown(localTurn(null, terminal = noReceipt(), extra = listOf(card)))
+        val result = shown(localTurn(null, terminal = incomplete(), extra = listOf(card)))
         assertEquals("$once | system:承認が必要です", result)
     }
 
-    // ── Ambiguous or live: keep both copies ───────────────────────────
+    // ── Unproven, ambiguous, lossy or live: keep both copies ──────────
+
+    @Test fun noReceiptAndNoAckRowKeepsTheAmbiguousObservation() {
+        val result = reconciled(localTurn(null, terminal = noReceipt()))
+        assertEquals(
+            "user:original | assistant:local answer | user:original | assistant:local answer",
+            result.messages.joinToString(" | ") { "${it.role.name.lowercase()}:${it.content}" },
+        )
+        assertEquals(true, "local-user" in result.responseLedger.pendingInputs)
+    }
 
     @Test fun differentServerTextKeepsBothCopies() =
         assertEquals(
@@ -227,24 +245,88 @@ class UnprovenTurnFoldTest {
 
     @Test fun differentStoredReplyKeepsTheLocalReplyReadable() {
         val stored = listOf(row(10, "user", "original"), row(11, "assistant", "stored differently"))
+        val expected = "user:original | assistant:local answer | assistant:stored differently"
+        assertEquals(expected, shown(localTurn(null, terminal = incomplete(status = "interrupted")), stored))
+        assertEquals(expected, shown(localTurn(10L, terminal = incomplete(status = "interrupted")), stored))
+    }
+
+    // ── Review counterexamples (8a438b0) ──────────────────────────────
+
+    @Test
+    fun reviewIndependentOlderSameTextTurnCannotConsumeUnacknowledgedLocalInput() {
+        val independentHistory =
+            page.map {
+                it.copy(timestamp = JsonPrimitive(0.1))
+            }
+        val result =
+            reconciled(
+                localTurn(null, terminal = null),
+                independentHistory,
+            )
         assertEquals(
-            "user:original | assistant:stored differently | assistant:local answer",
-            shown(localTurn(null, terminal = incomplete(status = "interrupted")).let(::withoutReceiptRows), stored),
+            true,
+            result.messages.any { it.id == "local-user" },
         )
-        // Nothing to fold here (the bubble is already bound by its ACK row): existing order stands.
         assertEquals(
-            "user:original | assistant:local answer | assistant:stored differently",
-            shown(localTurn(10L, terminal = incomplete(status = "interrupted")), stored),
+            2,
+            result.messages.count {
+                it.role == MessageRole.USER && it.content == "original"
+            },
+        )
+        assertEquals(
+            true,
+            "local-user" in result.responseLedger.pendingInputs,
         )
     }
 
-    private fun withoutReceiptRows(state: ChatUiState) =
-        state.copy(
-            responseLedger =
-                state.responseLedger.update("r") {
-                    it.copy(userRowIds = emptyList(), canonicalRowIds = emptyList())
-                },
+    @Test
+    fun reviewPartialFinalFoldPreservesRetainedCommentaryBeforeFinal() {
+        val commentary =
+            ChatMessage(
+                id = "local-commentary",
+                role = MessageRole.ASSISTANT,
+                content = "commentary",
+                timestamp = 1000L,
+            )
+        val base = localTurn(10L, terminal = incomplete())
+        val state =
+            base.copy(
+                messages = listOf(base.messages[0], commentary, base.messages[1]),
+                responseLedger =
+                    base.responseLedger.update("r") {
+                        it.copy(messageIds = listOf(commentary.id, "local-answer"))
+                    },
+            )
+        val result = reconciled(state)
+        assertEquals(
+            "user:original | assistant:commentary | assistant:local answer",
+            result.messages.joinToString(" | ") { "${it.role.name.lowercase()}:${it.content}" },
         )
+        assertEquals(
+            true,
+            commentary.id in
+                result.responseLedger.responses
+                    .single()
+                    .messageIds,
+        )
+    }
+
+    @Test
+    fun reviewSameBodyWithoutReasoningCannotDropLocalReasoning() {
+        val base = localTurn(10L, terminal = incomplete())
+        val state =
+            base.copy(
+                messages =
+                    base.messages.map {
+                        if (it.id == "local-answer") it.copy(reasoningText = "local reasoning") else it
+                    },
+            )
+        val result = reconciled(state)
+        assertEquals(
+            "local reasoning",
+            result.messages.single { it.id == "local-answer" }.reasoningText,
+        )
+    }
 
     @Test fun runningTurnIsNotFolded() {
         val running = localTurn(10L, terminal = null, active = true, typing = true)
