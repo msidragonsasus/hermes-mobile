@@ -9,6 +9,7 @@ import com.m57.hermescontrol.data.remote.ApiClient
 import com.m57.hermescontrol.data.remote.CleartextPolicy
 import com.m57.hermescontrol.data.remote.HermesApiService
 import com.m57.hermescontrol.data.remote.ServerEndpoint
+import com.m57.hermescontrol.data.ws.GatewayWebSocketProbe
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -37,6 +38,9 @@ class ConnectViewModelTest {
         Dispatchers.setMain(testDispatcher)
         mockkObject(AuthManager)
         mockkObject(ApiClient)
+        mockkObject(GatewayWebSocketProbe)
+        coEvery { GatewayWebSocketProbe.check(any(), any(), any(), any()) } returns true
+        every { AuthManager.setWsAuthParam(any()) } returns Unit
         mockkStatic(android.util.Base64::class)
         mockkStatic(android.net.Uri::class)
 
@@ -81,6 +85,23 @@ class ConnectViewModelTest {
         Dispatchers.resetMain()
         unmockkAll()
     }
+
+    @Test
+    fun httpSuccessDoesNotSaveAnUnreachableGateway() =
+        runTest {
+            coEvery { mockApiService.getStatus() } returns Response.success(StatusResponse())
+            coEvery { GatewayWebSocketProbe.check(any(), "token", "candidate-token", any()) } returns false
+            val vm = ConnectViewModel(mockApp)
+            vm.onTokenChange("candidate-token")
+            vm.connect()
+            advanceUntilIdle()
+
+            assertFalse(vm.uiState.value.connectionSuccess)
+            assertFalse(vm.uiState.value.isConnecting)
+            verify(exactly = 0) { AuthManager.setToken(any()) }
+            verify(exactly = 0) { AuthManager.setBaseUrl(any()) }
+            verify(exactly = 0) { AuthManager.setWsAuthParam(any()) }
+        }
 
     @Test
     fun testInitialLoadingFromAuthManager() {

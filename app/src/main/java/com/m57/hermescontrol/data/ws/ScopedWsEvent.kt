@@ -8,4 +8,5 @@ data class ScopedWsEvent(
     val ordinal: Long,
     val event: WsEvent?,
     val gap: Boolean = false,
+    val gapSessionId: String? = null,
 )

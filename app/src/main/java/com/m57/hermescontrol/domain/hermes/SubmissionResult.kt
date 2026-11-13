@@ -9,6 +9,8 @@ sealed interface SubmissionResult<out T> {
 
     data object NotSent : SubmissionResult<Nothing>
 
+    data object Expired : SubmissionResult<Nothing>
+
     data object Unknown : SubmissionResult<Nothing>
 }
 

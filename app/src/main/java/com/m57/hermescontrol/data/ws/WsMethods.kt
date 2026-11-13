@@ -34,6 +34,12 @@ object WsMethods {
     const val PROMPT_SUBMIT = "prompt.submit"
     const val PROMPT_BTW = "prompt.btw"
     const val CLARIFY_RESPOND = "clarify.respond"
+
+    /** Lock one answer of a batch `clarify` server request; the last lock resolves it. */
+    const val CLARIFY_LOCK = "clarify.lock"
+
+    /** Answer an open server->client request (`srq-…`) as a normal RPC with an ack. */
+    const val REQUEST_ANSWER = "request.answer"
     const val APPROVAL_RESPOND = "approval.respond"
 
     /** Ack that the client rendered a pending approval (desktop parity). */

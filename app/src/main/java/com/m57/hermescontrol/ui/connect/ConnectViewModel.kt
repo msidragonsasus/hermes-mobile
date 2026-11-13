@@ -21,6 +21,7 @@ import com.m57.hermescontrol.data.remote.NetworkResult
 import com.m57.hermescontrol.data.remote.ServerEndpoint
 import com.m57.hermescontrol.data.remote.requiresLocalNetworkPermission
 import com.m57.hermescontrol.data.remote.safeApiCall
+import com.m57.hermescontrol.data.ws.GatewayWebSocketProbe
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -197,6 +198,7 @@ class ConnectViewModel(
 
     fun connect() {
         val state = _uiState.value
+        if (state.isConnecting) return
         if (state.token.isBlank()) {
             _uiState.update { it.copy(errorMessage = app.getString(R.string.connect_error_token_required)) }
             return
@@ -208,7 +210,7 @@ class ConnectViewModel(
             return
         }
 
-        _uiState.update { it.copy(isConnecting = true, errorMessage = null) }
+        _uiState.update { it.copy(isConnecting = true, errorMessage = null, connectionSuccess = false) }
 
         viewModelScope.launch {
             val result =
@@ -217,6 +219,26 @@ class ConnectViewModel(
                 }
             when (result) {
                 is NetworkResult.Success -> {
+                    val ready = GatewayWebSocketProbe.check(endpoint, "token", state.token)
+                    val current = _uiState.value
+                    if (current.baseUrl != state.baseUrl || current.token != state.token ||
+                        current.profileName != state.profileName || current.saveProfile != state.saveProfile ||
+                        current.selectedProfile != state.selectedProfile
+                    ) {
+                        _uiState.update { it.copy(isConnecting = false) }
+                        return@launch
+                    }
+                    if (!ready) {
+                        _uiState.update {
+                            it.copy(
+                                isConnecting = false,
+                                connectionSuccess = false,
+                                errorMessage = app.getString(R.string.connect_error_connection_failed, "WebSocket"),
+                            )
+                        }
+                        return@launch
+                    }
+                    AuthManager.setWsAuthParam("token")
                     // Persist credentials to the selected (Default) profile upon successful verification.
                     AuthManager.setToken(state.token)
                     AuthManager.setBaseUrl(state.baseUrl)

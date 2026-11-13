@@ -13,6 +13,7 @@ data class AttentionDetails(
     val approvalChoices: List<String>? = null,
     val options: List<String> = emptyList(),
     val multiSelect: Boolean = false,
+    val lockedAnswer: String? = null,
 )
 
 sealed interface AttentionSignal {
@@ -26,7 +27,14 @@ sealed interface AttentionSignal {
         val requestId: String,
     ) : AttentionSignal
 
+    data class Resolved(
+        val scope: ConnectionScope,
+        val runtimeId: String,
+        val requestId: String,
+    ) : AttentionSignal
+
     data class Gap(
         val scope: ConnectionScope,
+        val runtimeId: String? = null,
     ) : AttentionSignal
 }

@@ -59,7 +59,14 @@ object EventParser {
 
         return when (eventType) {
             "request.cancel" -> {
-                WsEvent.ServerRequestCancel(payload?.get("id") as? String, sessionId)
+                val id = payload?.get("id") as? String
+                if (payload?.get("method") != "clarify") {
+                    WsEvent.ServerRequestCancel(id, sessionId)
+                } else if (payload["reason"] == "resolved") {
+                    WsEvent.ClarifyResolved(id, sessionId)
+                } else {
+                    WsEvent.ClarifyExpire(id, sessionId)
+                }
             }
 
             "gateway.ready" -> {
@@ -364,6 +371,10 @@ object EventParser {
                 }
             return approval?.takeUnless { it.requestId.isNullOrBlank() } ?: WsEvent.UnsupportedServerRequest(id)
         }
+        if (method == "clarify") {
+            if (id.isBlank() || sessionId.isNullOrBlank()) return WsEvent.UnsupportedServerRequest(id)
+            return parseClarifyServerRequest(id, sessionId, params)
+        }
         val kind = VaultPromptKind.entries.firstOrNull { it.method == method }
         if (kind == null || id.isBlank() || sessionId.isNullOrBlank()) {
             return WsEvent.UnsupportedServerRequest(id)
@@ -377,6 +388,58 @@ object EventParser {
                 site = (params["site"] ?: params["display_name"]) as? String,
                 hint = params["hint"] as? String,
             ),
+        )
+    }
+
+    private fun parseClarifyServerRequest(
+        id: String,
+        sessionId: String,
+        params: Map<*, *>?,
+    ): WsEvent {
+        val questions =
+            (params?.get("questions") as? List<*>).orEmpty().mapNotNull { item ->
+                val map = item as? Map<*, *> ?: return@mapNotNull null
+                val qid = (map["qid"] as? String)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                WsEvent.ClarifyQuestion(
+                    qid = qid,
+                    question = map["question"] as? String ?: "",
+                    choices = (map["choices"] as? List<*>)?.filterIsInstance<String>().orEmpty(),
+                    multiSelect = map["multi_select"] as? Boolean ?: false,
+                )
+            }
+        if (questions.isNotEmpty()) {
+            val rawAnswers = params?.get("answers") as? Map<*, *>
+            val lockedAnswers =
+                buildMap {
+                    questions.forEach { question ->
+                        val answer = rawAnswers?.get(question.qid)
+                        if (answer is String || (answer == null && rawAnswers?.containsKey(question.qid) == true)) {
+                            put(question.qid, answer)
+                        }
+                    }
+                }
+            return WsEvent.ClarifyRequest(
+                text = questions.mapIndexed { index, q -> "${index + 1}. ${q.question}" }.joinToString("\n\n"),
+                options = questions.first().choices,
+                clarifyId = id,
+                sessionId = sessionId,
+                questionId = questions.first().qid,
+                multiSelect = questions.first().multiSelect,
+                questions = questions,
+                lockedAnswers = lockedAnswers,
+            )
+        }
+        val text = params?.get("question") as? String
+        val choices = (params?.get("choices") as? List<*>)?.filterIsInstance<String>().orEmpty()
+        if (text.isNullOrBlank() && choices.isEmpty()) return WsEvent.UnsupportedServerRequest(id)
+        // Single question: no qid on the wire; the answer is the whole request result.
+        return WsEvent.ClarifyRequest(
+            text = text.orEmpty(),
+            options = choices,
+            clarifyId = id,
+            sessionId = sessionId,
+            questionId = null,
+            multiSelect = params?.get("multi_select") as? Boolean ?: false,
         )
     }
 

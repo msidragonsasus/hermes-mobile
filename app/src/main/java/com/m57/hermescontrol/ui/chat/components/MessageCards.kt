@@ -521,6 +521,16 @@ fun ClarifyBubble(
                     )
                 }
 
+                val lockedAnswer = clarifyRequest.lockedAnswers[q.qid]
+                if (lockedAnswer != null) {
+                    Text(
+                        lockedAnswer,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    return@forEachIndexed
+                }
+
                 if (q.multiSelect) {
                     Spacer(Modifier.height(2.dp))
                     Text(

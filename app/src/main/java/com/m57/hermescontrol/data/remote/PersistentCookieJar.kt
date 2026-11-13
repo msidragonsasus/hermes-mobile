@@ -128,8 +128,21 @@ class PersistentCookieJar(
         persist(serverId)
     }
 
-    override fun loadForRequest(url: HttpUrl): List<Cookie> {
-        val serverId = currentServerId.get()
+    internal suspend fun loadForServer(
+        serverId: String,
+        url: HttpUrl,
+    ): List<Cookie> =
+        scopeMutex.withLock {
+            ensureLoaded(serverId)
+            cookiesFor(serverId, url)
+        }
+
+    override fun loadForRequest(url: HttpUrl): List<Cookie> = cookiesFor(currentServerId.get(), url)
+
+    private fun cookiesFor(
+        serverId: String,
+        url: HttpUrl,
+    ): List<Cookie> {
         if (!loadedScopes.contains(serverId)) {
             loadLatches[serverId]?.await(5, TimeUnit.SECONDS)
         }

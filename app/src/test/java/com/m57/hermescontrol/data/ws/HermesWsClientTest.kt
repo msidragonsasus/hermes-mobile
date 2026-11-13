@@ -31,12 +31,14 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
@@ -1423,6 +1425,74 @@ class HermesWsClientTest {
         val field = HermesWsClient::class.java.getDeclaredField("messageQueue").apply { isAccessible = true }
         assertTrue((field.get(HermesWsClient) as java.util.Queue<*>).isEmpty())
     }
+
+    @Test
+    fun clarifySnapshotRestoresLocksAndScopedWritesUseTheServerContract() =
+        runBlocking {
+            every { AuthManager.getSelectedProfileId() } returns null
+            every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            val frames = mutableListOf<String>()
+            every { socket.send(any<String>()) } answers {
+                frames.add(firstArg())
+                true
+            }
+            val received = CompletableDeferred<WsEvent.ClarifyRequest>()
+            val collector =
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    received.complete(
+                        HermesWsClient.scopedEvents.mapNotNull { it.event as? WsEvent.ClarifyRequest }.first(),
+                    )
+                }
+            listener.onMessage(
+                socket,
+                """
+                {"method":"event","params":{"type":"session.info","payload":{"session_id":"chat","open_requests":[
+                {"id":"srq-batch","method":"clarify","params":{"session_id":"chat",
+                "questions":[{"qid":"a","question":"First"},{"qid":"b","question":"Second"}],"answers":{"a":"Blue"}}}
+                ]}}}
+                """.trimIndent(),
+            )
+            val prompt = withTimeout(5000) { received.await() }
+            collector.join()
+            assertEquals("srq-batch", prompt.clarifyId)
+            assertEquals(mapOf("a" to "Blue"), prompt.lockedAnswers)
+
+            val scope = checkNotNull(HermesWsClient.connectionScope.value)
+            val lock =
+                mapOf(
+                    "session_id" to "chat",
+                    "request_id" to "srq-batch",
+                    "question_id" to "b",
+                    "answer" to "Yes",
+                )
+            val answer = mapOf("session_id" to "chat", "id" to "srq-single", "result" to mapOf("answer" to "Yes"))
+            HermesWsClient.send(WsMethods.CLARIFY_LOCK, lock)
+            HermesWsClient.send(WsMethods.REQUEST_ANSWER, answer)
+            assertTrue(frames.isEmpty())
+            assertFalse(HermesWsClient.writeScoped(scope, WsMethods.CLARIFY_LOCK, lock - "session_id").accepted)
+            assertTrue(HermesWsClient.writeScoped(scope, WsMethods.CLARIFY_LOCK, lock).accepted)
+            assertTrue(HermesWsClient.writeScoped(scope, WsMethods.REQUEST_ANSWER, answer).accepted)
+            val params =
+                frames.map {
+                    Json
+                        .parseToJsonElement(it)
+                        .jsonObject
+                        .getValue("params")
+                        .jsonObject
+                }
+            assertEquals(setOf("request_id", "question_id", "answer"), params[0].keys)
+            assertEquals(setOf("id", "result"), params[1].keys)
+            assertEquals(
+                "Yes",
+                params[1]
+                    .getValue("result")
+                    .jsonObject
+                    .getValue("answer")
+                    .jsonPrimitive.content,
+            )
+        }
 
     private fun diagnosticListener(
         socket: WebSocket,
@@ -3078,6 +3148,7 @@ class HermesWsClientTest {
         val serverLatch = CountDownLatch(1)
         val requestLatch = CountDownLatch(1)
         var receivedMethod: String? = null
+        var receivedParams: JsonObject? = null
 
         mockWebServer.enqueue(
             MockResponse().withWebSocketUpgrade(
@@ -3096,6 +3167,7 @@ class HermesWsClientTest {
                     ) {
                         if (text.contains(WsMethods.SESSION_EVENTS_SINCE)) {
                             receivedMethod = WsMethods.SESSION_EVENTS_SINCE
+                            receivedParams = Json.parseToJsonElement(text).jsonObject["params"]?.jsonObject
                             // Extract ID from JSON-RPC request
                             val id = Regex(""""id":"([^"]+)"""").find(text)?.groupValues?.get(1) ?: "1"
                             webSocket.send(
@@ -3118,11 +3190,69 @@ class HermesWsClientTest {
         assertTrue(serverLatch.await(5, TimeUnit.SECONDS))
         assertTrue(requestLatch.await(5, TimeUnit.SECONDS))
         assertEquals(WsMethods.SESSION_EVENTS_SINCE, receivedMethod)
+        assertEquals(
+            Json.parseToJsonElement("""{"session_id":"s1","last_seen":5}""").jsonObject,
+            receivedParams,
+        )
 
         // Wait for replay processing
         Thread.sleep(200)
         assertEquals(6, HermesWsClient.getSeqWatermarks()["s1"])
     }
+
+    @Test
+    fun testTruncatedReplayEmitsOnlyAnOwnerScopedGapAndSkipsPartialHistory() =
+        runBlocking {
+            every { AuthManager.getSelectedProfileId() } returns null
+            every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            val scope = checkNotNull(HermesWsClient.connectionScope.value)
+            HermesWsClient.setSeqWatermark("runtime-a", 5)
+            every { socket.send(any<String>()) } answers {
+                val id =
+                    Json
+                        .parseToJsonElement(firstArg<String>())
+                        .jsonObject
+                        .getValue("id")
+                        .jsonPrimitive.content
+                listener.onMessage(
+                    socket,
+                    """
+                    {"id":"$id","result":{"snapshot_required":true,"latest_seq":9,"replay_epoch":"a",
+                    "events":[{"type":"message.token","session_id":"runtime-a","seq":6,"payload":{"text":"partial"}}]}}
+                    """.trimIndent(),
+                )
+                true
+            }
+            val events = mutableListOf<ScopedWsEvent>()
+            val collector =
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    HermesWsClient.scopedEvents.collect {
+                        events +=
+                            it
+                    }
+                }
+            try {
+                HermesWsClient.fetchReplayForTest()
+                kotlinx.coroutines.yield()
+                assertTrue(events.any { it.gap && it.scope == scope && it.gapSessionId == "runtime-a" })
+                assertFalse(events.any { it.event is WsEvent.MessageToken })
+                assertEquals(9, HermesWsClient.getSeqWatermarks()["runtime-a"])
+                listener.onMessage(
+                    socket,
+                    """
+                    {"method":"event","params":{"type":"session.replay_gap","session_id":"runtime-b",
+                    "payload":{"latest_seq":3,"replay_epoch":"b"}}}
+                    """.trimIndent(),
+                )
+                kotlinx.coroutines.yield()
+                assertTrue(events.any { it.gap && it.scope == scope && it.gapSessionId == "runtime-b" })
+                assertEquals(3, HermesWsClient.getSeqWatermarks()["runtime-b"])
+            } finally {
+                collector.cancel()
+            }
+        }
 
     @Test
     fun testPingMethodConstant() {

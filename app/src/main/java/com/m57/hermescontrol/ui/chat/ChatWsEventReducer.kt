@@ -72,6 +72,7 @@ object ChatWsEventReducer {
                 is WsEvent.ToolOutputRisk -> event.sessionId
                 is WsEvent.ClarifyRequest -> event.sessionId
                 is WsEvent.ClarifyExpire -> event.sessionId
+                is WsEvent.ClarifyResolved -> event.sessionId
                 is WsEvent.ToolProgress -> event.sessionId
                 is WsEvent.ToolGenerating -> event.sessionId
                 is WsEvent.SubagentEvent -> event.sessionId
@@ -207,7 +208,11 @@ object ChatWsEventReducer {
             }
 
             is WsEvent.ClarifyExpire -> {
-                onClarifyExpire(state, streamingState, event)
+                closeClarification(state, streamingState, event.clarifyId)
+            }
+
+            is WsEvent.ClarifyResolved -> {
+                closeClarification(state, streamingState, event.clarifyId)
             }
 
             is WsEvent.ReviewSummary -> {
@@ -942,12 +947,12 @@ object ChatWsEventReducer {
         )
     }
 
-    private fun onClarifyExpire(
+    private fun closeClarification(
         state: ChatUiState,
         streamingState: StreamingState,
-        event: WsEvent.ClarifyExpire,
+        clarifyId: String?,
     ): ReducerResult =
-        if (event.clarifyId == null || state.clarifyRequest?.clarifyId == event.clarifyId) {
+        if (clarifyId == null || state.clarifyRequest?.clarifyId == clarifyId) {
             ReducerResult(
                 state = state.copy(clarifyRequest = null),
                 streamingState = streamingState,

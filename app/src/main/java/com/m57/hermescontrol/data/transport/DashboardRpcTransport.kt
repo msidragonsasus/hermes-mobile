@@ -31,6 +31,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 
+/** Gateway-minted ids of open server->client requests (`srq-<hex>`), never client RPC ids. */
+internal const val SERVER_REQUEST_ID_PREFIX = "srq-"
+
 class DashboardRpcTransport :
     HermesTransport,
     HermesSubmissionTransport,
@@ -73,18 +76,79 @@ class DashboardRpcTransport :
         answer: String,
     ): SubmissionResult<Boolean> {
         if (ref.requestId.isBlank() || ref.questionId?.isBlank() == true) return SubmissionResult.NotSent
-        return execute(
-            ref.scope,
-            WsMethods.CLARIFY_RESPOND,
-            buildMap {
-                put("session_id", ref.session.runtimeId)
-                put("request_id", ref.requestId)
-                put("clarify_id", ref.requestId)
-                ref.questionId?.let { put("question_id", it) }
-                put("answer", answer)
-            },
-        ) { body -> true.takeIf { body.string("status") == "ok" } }
+        val result =
+            if (ref.requestId.startsWith(SERVER_REQUEST_ID_PREFIX)) {
+                respondServerClarification(ref, answer)
+            } else {
+                execute(
+                    ref.scope,
+                    WsMethods.CLARIFY_RESPOND,
+                    buildMap {
+                        put("session_id", ref.session.runtimeId)
+                        put("request_id", ref.requestId)
+                        put("clarify_id", ref.requestId)
+                        ref.questionId?.let { put("question_id", it) }
+                        put("answer", answer)
+                    },
+                    ::clarificationStatus,
+                )
+            }
+        return when (result) {
+            is SubmissionResult.Confirmed -> {
+                if (result.value) SubmissionResult.Confirmed(result.requestId, true) else SubmissionResult.Expired
+            }
+
+            SubmissionResult.NotSent -> {
+                SubmissionResult.NotSent
+            }
+
+            SubmissionResult.Expired -> {
+                SubmissionResult.Expired
+            }
+
+            SubmissionResult.Unknown -> {
+                SubmissionResult.Unknown
+            }
+        }
     }
+
+    private suspend fun respondServerClarification(
+        ref: RequestRef,
+        answer: String,
+    ): SubmissionResult<Boolean> {
+        val questionId = ref.questionId
+        return if (questionId != null) {
+            execute(
+                ref.scope,
+                WsMethods.CLARIFY_LOCK,
+                mapOf(
+                    "session_id" to ref.session.runtimeId,
+                    "request_id" to ref.requestId,
+                    "question_id" to questionId,
+                    "answer" to answer,
+                ),
+                ::clarificationStatus,
+            )
+        } else {
+            execute(
+                ref.scope,
+                WsMethods.REQUEST_ANSWER,
+                mapOf(
+                    "session_id" to ref.session.runtimeId,
+                    "id" to ref.requestId,
+                    "result" to mapOf("answer" to answer),
+                ),
+                ::clarificationStatus,
+            )
+        }
+    }
+
+    private fun clarificationStatus(body: JsonObject): Boolean? =
+        when (body.string("status")) {
+            "ok" -> true
+            "expired" -> false
+            else -> null
+        }
 
     override fun configuredScope(): ConnectionScope? = HermesWsClient.configuredScope()
 
@@ -140,6 +204,7 @@ class DashboardRpcTransport :
             ) {
                 is SubmissionResult.Confirmed -> SubmissionResult.Confirmed(result.requestId, null)
                 SubmissionResult.NotSent -> SubmissionResult.NotSent
+                SubmissionResult.Expired -> SubmissionResult.Expired
                 SubmissionResult.Unknown -> SubmissionResult.Unknown
             }
         } else {
@@ -319,7 +384,15 @@ internal fun normalizeDashboardEvent(envelope: ScopedWsEvent): HermesObservation
             }
 
             else -> {
-                if (envelope.gap) Triple(null, ObservationKind.GAP, ExecutionState.UNKNOWN) else return null
+                if (envelope.gap) {
+                    Triple(
+                        envelope.gapSessionId,
+                        ObservationKind.GAP,
+                        ExecutionState.UNKNOWN,
+                    )
+                } else {
+                    return null
+                }
             }
         }
     val session = sessionId?.takeIf(String::isNotBlank)?.let { SessionRef(it, savedId) }

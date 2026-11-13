@@ -11,6 +11,7 @@ import com.m57.hermescontrol.data.remote.CleartextPolicy
 import com.m57.hermescontrol.data.remote.HermesApiService
 import com.m57.hermescontrol.data.remote.ServerEndpoint
 import com.m57.hermescontrol.data.remote.requiresLocalNetworkPermission
+import com.m57.hermescontrol.data.ws.GatewayWebSocketProbe
 import io.mockk.MockKAnnotations
 import io.mockk.coEvery
 import io.mockk.every
@@ -60,6 +61,9 @@ class ConnectPermissionGateTest {
         MockKAnnotations.init(this)
         mockkObject(AuthManager)
         mockkObject(ApiClient)
+        mockkObject(GatewayWebSocketProbe)
+        coEvery { GatewayWebSocketProbe.check(any(), any(), any(), any()) } returns true
+        every { AuthManager.setWsAuthParam(any()) } returns Unit
         mockkStatic(ContextCompat::class)
 
         mockApiService = mockk()

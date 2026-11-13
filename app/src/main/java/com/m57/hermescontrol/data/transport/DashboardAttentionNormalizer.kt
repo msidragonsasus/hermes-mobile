@@ -7,6 +7,7 @@ import com.m57.hermescontrol.domain.hermes.AttentionDetails
 import com.m57.hermescontrol.domain.hermes.AttentionItem
 import com.m57.hermescontrol.domain.hermes.AttentionKind
 import com.m57.hermescontrol.domain.hermes.AttentionSignal
+import com.m57.hermescontrol.domain.hermes.AttentionStatus
 import com.m57.hermescontrol.domain.hermes.ConnectionScope
 import com.m57.hermescontrol.domain.hermes.RequestRef
 import com.m57.hermescontrol.domain.hermes.SessionRef
@@ -23,20 +24,14 @@ internal fun normalizeDashboardAttention(events: Flow<ScopedWsEvent>): Flow<Atte
             val epoch = (envelope.event as? WsEvent.GatewayReady)?.data?.get("replay_epoch") as? String
             val epochChanged = !epoch.isNullOrBlank() && replayEpoch != null && replayEpoch != epoch
             if (!epoch.isNullOrBlank()) replayEpoch = epoch
-            if (envelope.gap || epochChanged ||
-                (prior != null && (prior.scope != envelope.scope || envelope.ordinal != prior.ordinal + 1))
-            ) {
-                emit(
-                    AttentionSignal.Gap(
-                        if (prior != null &&
-                            prior.scope != envelope.scope
-                        ) {
-                            prior.scope
-                        } else {
-                            envelope.scope
-                        },
-                    ),
-                )
+            val streamGap =
+                epochChanged ||
+                    (prior != null && (prior.scope != envelope.scope || envelope.ordinal != prior.ordinal + 1))
+            if (streamGap) {
+                emit(AttentionSignal.Gap(prior?.scope ?: envelope.scope))
+            }
+            if (envelope.gap && (!streamGap || prior?.scope != envelope.scope)) {
+                emit(AttentionSignal.Gap(envelope.scope, envelope.gapSessionId))
             }
             previous = envelope
             dashboardAttentionSignal(envelope.scope, envelope.event)?.let { emit(it) }
@@ -51,6 +46,11 @@ internal fun dashboardAttentionSignal(
         val runtimeId = event.sessionId?.takeIf(String::isNotBlank) ?: return null
         val requestId = event.clarifyId?.takeIf(String::isNotBlank) ?: return null
         return AttentionSignal.Expired(scope, runtimeId, requestId)
+    }
+    if (event is WsEvent.ClarifyResolved) {
+        val runtimeId = event.sessionId?.takeIf(String::isNotBlank) ?: return null
+        val requestId = event.clarifyId?.takeIf(String::isNotBlank) ?: return null
+        return AttentionSignal.Resolved(scope, runtimeId, requestId)
     }
     val items = dashboardAttentionItems(scope, event)
     return items.takeIf { it.isNotEmpty() }?.let(AttentionSignal::Requested)
@@ -132,7 +132,20 @@ internal fun dashboardAttentionItems(
                         ),
                         AttentionKind.CLARIFICATION,
                         question.question,
-                        details = AttentionDetails(options = question.choices, multiSelect = question.multiSelect),
+                        status =
+                            if (question.qid in
+                                event.lockedAnswers
+                            ) {
+                                AttentionStatus.CONFIRMED
+                            } else {
+                                AttentionStatus.PENDING
+                            },
+                        details =
+                            AttentionDetails(
+                                options = question.choices,
+                                multiSelect = question.multiSelect,
+                                lockedAnswer = event.lockedAnswers[question.qid],
+                            ),
                     )
                 }
             }

@@ -83,6 +83,17 @@ class DashboardAttentionNormalizerTest {
     }
 
     @Test
+    fun explicitGapRetainsTheAffectedRuntime() =
+        runTest {
+            val envelope = ScopedWsEvent(scope, 1, null, gap = true, gapSessionId = "affected")
+            assertEquals(
+                listOf(AttentionSignal.Gap(scope, "affected")),
+                normalizeDashboardAttention(flowOf(envelope)).toList(),
+            )
+            assertEquals("affected", normalizeDashboardEvent(envelope)?.session?.runtimeId)
+        }
+
+    @Test
     fun gapPrecedesRequestAndExplicitTruncationIsNeverDropped() =
         runTest {
             val signals =

@@ -1,10 +1,19 @@
 package com.m57.hermescontrol.ui.authlogin
 
+import android.app.Application
+import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.CookieManager
 import com.m57.hermescontrol.data.remote.OkHttpProvider
 import com.m57.hermescontrol.data.remote.buildFakePersistentCookieJar
+import com.m57.hermescontrol.data.ws.HermesWsClient
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.mockkObject
+import io.mockk.unmockkAll
+import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -54,7 +63,45 @@ class AuthLoginBasicAuthFlowTest {
     fun tearDown() {
         server.shutdown()
         Dispatchers.resetMain()
+        unmockkAll()
     }
+
+    @Test
+    fun passwordAndTicketSuccessDoNotPersistLoginWhenGatewayRejectsTheSocket() =
+        runTest {
+            mockkObject(AuthManager, HermesWsClient)
+            every { AuthManager.getBaseUrl() } returns server.url("/hermes/").toString()
+            every { AuthManager.getConnectionProfiles() } returns emptyList()
+            val vm = AuthLoginViewModel(mockk<Application>(relaxed = true))
+            server.enqueue(MockResponse().setBody("""{"auth_required":true,"auth_providers":["basic"]}"""))
+            server.enqueue(
+                MockResponse()
+                    .setHeader("Set-Cookie", "hermes_session_at=candidate; Path=/hermes; HttpOnly")
+                    .setBody("""{"ok":true}"""),
+            )
+            server.enqueue(MockResponse().setBody("""{"ticket":"one-use"}"""))
+            server.enqueue(MockResponse().setResponseCode(403))
+
+            vm.probe()
+            assertEquals(DashboardAuthMode.BASIC_AUTH, vm.uiState.first { !it.probing }.authMode)
+            vm.onUsernameChange("test")
+            vm.onPasswordChange("test")
+            vm.connect()
+            val state = vm.uiState.first { !it.isLoading }
+            assertTrue(!state.connectionSuccess)
+            assertEquals(null, CookieManager.getSessionCookie())
+            verify(exactly = 0) { AuthManager.setBaseUrl(any()) }
+            verify(exactly = 0) { AuthManager.setToken(any()) }
+            verify(exactly = 0) { HermesWsClient.connect() }
+            assertEquals("/hermes/api/status", server.takeRequest().path)
+            assertEquals("/hermes/auth/password-login", server.takeRequest().path)
+            val ticketRequest = server.takeRequest()
+            assertEquals("/hermes/api/auth/ws-ticket", ticketRequest.path)
+            assertEquals("hermes_session_at=candidate", ticketRequest.getHeader("Cookie"))
+            val socketRequest = server.takeRequest()
+            assertEquals("/hermes/api/ws?ticket=one-use", socketRequest.path)
+            assertEquals(null, socketRequest.getHeader("Cookie"))
+        }
 
     @Test
     fun `password-login Set-Cookie flows into ws-ticket on the shared client`() =

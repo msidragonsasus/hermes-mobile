@@ -105,10 +105,43 @@ class DashboardSubmissionTest {
                 )
             }
             reply("""{"status":"expired"}""")
-            assertEquals(SubmissionResult.Unknown, transport.respondClarification(ref, "synthetic answer"))
+            assertEquals(SubmissionResult.Expired, transport.respondClarification(ref, "synthetic answer"))
             reply("""{"status":"ok"}""")
             every { HermesWsClient.matchesCurrentScope(scope) } returns false
             assertEquals(SubmissionResult.Unknown, transport.respondClarification(ref, "synthetic answer"))
+        }
+
+    @Test
+    fun serverClarificationUsesBatchLockOrSingleAnswerAndReportsExpiry() =
+        runTest {
+            val batch = RequestRef(scope, session, "srq-batch", "q2")
+            val single = RequestRef(scope, session, "srq-single")
+            reply("""{"status":"ok","remaining":["q1"]}""")
+            assertEquals(SubmissionResult.Confirmed("rpc", true), transport.respondClarification(batch, "Blue"))
+            verify(exactly = 1) {
+                HermesWsClient.writeScoped(
+                    scope,
+                    WsMethods.CLARIFY_LOCK,
+                    mapOf(
+                        "session_id" to "runtime",
+                        "request_id" to "srq-batch",
+                        "question_id" to "q2",
+                        "answer" to "Blue",
+                    ),
+                    any(),
+                )
+            }
+            reply("""{"status":"expired"}""")
+            assertEquals(SubmissionResult.Expired, transport.respondClarification(batch, "Blue"))
+            assertEquals(SubmissionResult.Expired, transport.respondClarification(single, "Blue"))
+            verify(exactly = 1) {
+                HermesWsClient.writeScoped(
+                    scope,
+                    WsMethods.REQUEST_ANSWER,
+                    mapOf("session_id" to "runtime", "id" to "srq-single", "result" to mapOf("answer" to "Blue")),
+                    any(),
+                )
+            }
         }
 
     @Test

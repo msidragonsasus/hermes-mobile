@@ -1,5 +1,7 @@
 package com.m57.hermescontrol.ui.chat
 
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -107,11 +109,28 @@ class NativeFlowTest {
         ).forEach { assertTrue(it, parse(it).rejected) }
     }
 
-    @Test fun rowsWiderThanFourAreRejected() {
+    @Test fun wideLevelsWrapAndKeepEveryEdge() {
         val five = (1..5).map { node("c$it") }
-        assertTrue(parse(flow(listOf(node("top")) + five, (1..5).map { edge("top", "c$it") })).rejected)
-        val four = (1..4).map { node("c$it") }
-        assertFalse(parse(flow(listOf(node("top")) + four, (1..4).map { edge("top", "c$it") })).rejected)
+        val fanout = parse(flow(listOf(node("top")) + five, (1..5).map { edge("top", "c$it") }))
+        assertFalse(fanout.rejected)
+        val spec = fanout.components.single() as FlowSpec
+        assertEquals(listOf(listOf(0), listOf(1, 2, 3, 4), listOf(5)), spec.rows)
+        assertEquals(5, spec.edges.size)
+
+        val parallel = parse(flow((1..16).map { node("c$it") }, emptyList()))
+        val parallelSpec = parallel.components.single() as FlowSpec
+        assertEquals((0..15).chunked(4), parallelSpec.rows)
+    }
+
+    @Test fun skipRowArrowUsesGutterOutsideTheIntermediateBox() {
+        val box = Rect(0f, 60f, 110f, 100f)
+        val points = flowRoutePoints(Offset(30f, 30f), Offset(90f, 125f), 45f, 115f, 112f)
+        assertEquals(Offset(115f, 45f), points[2])
+        assertEquals(Offset(115f, 112f), points[3])
+        points.zipWithNext().forEach { (start, end) ->
+            val overlapsVertically = maxOf(start.y, end.y) > box.top && minOf(start.y, end.y) < box.bottom
+            assertFalse(overlapsVertically && minOf(start.x, end.x) < box.right)
+        }
     }
 
     @Test fun descriptionNamesEveryArrow() {

@@ -2820,6 +2820,41 @@ class ChatViewModelTest {
         }
 
     @Test
+    fun testClarifyReplayUpdatesExistingCardAndResolvedClearsPendingQuestion() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            val request =
+                WsEvent.ClarifyRequest(
+                    "Choose",
+                    null,
+                    "srq-1",
+                    "session-123",
+                    questions = listOf(WsEvent.ClarifyQuestion("q0", "First"), WsEvent.ClarifyQuestion("q1", "Second")),
+                )
+            val info = observeClarify(vm, request)
+            mockScopedEvents.emit(
+                ScopedWsEvent(fakeSubmission.scope, 2, request.copy(lockedAnswers = mapOf("q0" to "Blue"))),
+            )
+            runCurrent()
+            val restored = checkNotNull(vm.uiState.value.clarifyRequest)
+            assertEquals(AttentionStatus.CONFIRMED, restored.questionStates["q0"])
+            assertEquals("Blue", restored.lockedAnswers["q0"])
+            assertFalse(restored.canRespond("q0"))
+            assertTrue(restored.canRespond("q1"))
+
+            mockScopedEvents.emit(
+                ScopedWsEvent(fakeSubmission.scope, 3, WsEvent.ClarifyResolved("srq-1", "session-123")),
+            )
+            runCurrent()
+            assertNull(vm.uiState.value.clarifyRequest)
+            val cards =
+                vm.uiState.value.messages
+                    .mapNotNull { it.clarifyInfo }
+                    .filter { it.ref == info.ref }
+            assertEquals(AttentionStatus.CONFIRMED, cards.single().questionStates["q1"])
+        }
+
+    @Test
     fun testClarifySeparateExplicitQuestionIdsAndNotSentRetryRequireNewTap() =
         runTest {
             val (vm, _) = createViewModelWithSession()
@@ -3524,6 +3559,61 @@ class ChatViewModelTest {
 
             assertEquals("session-b", viewModel.uiState.value.currentSessionId)
             assertEquals("runtime-b", ActiveSessionHolder.activeSessionId.value)
+        }
+
+    @Test
+    fun testReplayGapResyncsOnlyMatchingChatAndFetchesFreshHistoryAfterResume() =
+        runTest {
+            val (vm, _) = createViewModelWithSession()
+            stubEmptySessionRests("stored-gap")
+            every { HermesWsClient.send(WsMethods.SESSION_RESUME, any(), any()) } answers {
+                arg<((String) -> Unit)?>(2)?.invoke("initial-resume")
+                "initial-resume"
+            }
+            vm.switchSession("stored-gap")
+            advanceUntilIdle()
+            mockEventsFlow.emit(
+                WsEvent.RpcResult("initial-resume", mapOf("session_id" to "runtime-gap", "resumed" to "stored-gap")),
+            )
+            advanceUntilIdle()
+
+            val scope = fakeSubmission.scope
+            val snapshot = CompletableDeferred<Any?>()
+            coEvery { HermesWsClient.resumeAfterReplayGap(scope, "stored-gap") } coAnswers { snapshot.await() }
+            val history =
+                com.m57.hermescontrol.data.model.SessionMessagesResponse(
+                    total = 1,
+                    messages =
+                        listOf(
+                            com.m57.hermescontrol.data.model.SessionMessage(
+                                role = "assistant",
+                                content = kotlinx.serialization.json.JsonPrimitive("Recovered history"),
+                            ),
+                        ),
+                )
+            coEvery { ApiClient.hermesApi.getSessionMessages("stored-gap", any(), any(), any(), any()) } returns
+                retrofit2.Response.success(history)
+            mockScopedEvents.emit(ScopedWsEvent(scope, 1, null, gap = true, gapSessionId = "other"))
+            mockScopedEvents.emit(ScopedWsEvent(scope.copy(generation = 999), 2, null, true, "runtime-gap"))
+            runCurrent()
+            coVerify(exactly = 0) { HermesWsClient.resumeAfterReplayGap(any(), any()) }
+
+            repeat(2) { mockScopedEvents.emit(ScopedWsEvent(scope, 3L + it, null, true, "runtime-gap")) }
+            runCurrent()
+            coVerify(exactly = 1) { HermesWsClient.resumeAfterReplayGap(scope, "stored-gap") }
+            assertFalse(
+                vm.uiState.value.messages
+                    .any { it.content == "Recovered history" },
+            )
+            snapshot.complete(mapOf("session_id" to "runtime-gap", "resumed" to "stored-gap", "running" to true))
+            advanceUntilIdle()
+
+            assertTrue(
+                vm.uiState.value.messages
+                    .any { it.content == "Recovered history" },
+            )
+            assertTrue(vm.uiState.value.isAgentTyping)
+            assertEquals("stored-gap", vm.uiState.value.currentSessionId)
         }
 
     @Test

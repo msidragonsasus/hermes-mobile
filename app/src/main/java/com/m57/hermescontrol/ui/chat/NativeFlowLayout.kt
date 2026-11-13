@@ -2,8 +2,8 @@ package com.m57.hermescontrol.ui.chat
 
 /**
  * Rows for the "flow" component: each node sits one row below its deepest parent (longest path),
- * so arrows always point down. Rejects unknown ids, self or duplicate edges, cycles and rows wider
- * than a phone can show. Within a row, nodes follow their parents' order to keep arrows uncrossed.
+ * so arrows always point down. Rejects unknown ids, self or duplicate edges and cycles.
+ * Nodes at the same depth are ordered by their parents and wrapped to fit the card.
  */
 internal object NativeFlowLayout {
     const val MAX_NODES = 16
@@ -46,7 +46,6 @@ internal object NativeFlowLayout {
         }
         require(seen == n) { "cycle" }
         val rows = (0..depth.max()).map { d -> (0 until n).filter { depth[it] == d } }.toMutableList()
-        require(rows.all { it.size <= MAX_PER_ROW }) { "row too wide" }
         for (r in 1 until rows.size) {
             val above = rows[r - 1]
             val row = rows[r]
@@ -59,7 +58,7 @@ internal object NativeFlowLayout {
                         if (xs.isEmpty()) (i + 0.5) / row.size else xs.average().plus(0.5) / above.size
                     }.map { it.value }
         }
-        return rows
+        return rows.flatMap { it.chunked(MAX_PER_ROW) }
     }
 }
 

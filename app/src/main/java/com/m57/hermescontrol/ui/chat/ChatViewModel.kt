@@ -20,6 +20,7 @@ import com.m57.hermescontrol.data.model.ProfileInfo
 import com.m57.hermescontrol.data.model.parseContextBreakdown
 import com.m57.hermescontrol.data.model.parseUsageSnapshot
 import com.m57.hermescontrol.data.remote.ApiClient
+import com.m57.hermescontrol.data.remote.HermesApiService
 import com.m57.hermescontrol.data.remote.NetworkResult
 import com.m57.hermescontrol.data.remote.OkHttpProvider
 import com.m57.hermescontrol.data.remote.safeApiCall
@@ -453,6 +454,7 @@ data class ClarifyUi(
     val ref: RequestRef? = null,
     val questionStates: Map<String, com.m57.hermescontrol.domain.hermes.AttentionStatus> = emptyMap(),
     val responseEnabled: Boolean = false,
+    val lockedAnswers: Map<String, String> = emptyMap(),
 ) {
     fun canRespond(qid: String): Boolean =
         responseEnabled && questionStates[qid] == com.m57.hermescontrol.domain.hermes.AttentionStatus.PENDING
@@ -564,6 +566,7 @@ class ChatViewModel(
         val sessionId: String? = null,
         val scope: ConnectionScope? = null,
         val streamVersion: Long = -1L,
+        val resync: Boolean = false,
     )
 
     private val sessionRequestById = ConcurrentHashMap<String, SessionRequest>()
@@ -612,6 +615,8 @@ class ChatViewModel(
     private val pendingReasoningSelections = ConcurrentHashMap<String, ReasoningSelection>()
     private var resumeRequestSequence = 0L
     private var activeResumeRequestSequence = 0L
+    private var replayResyncJob: Job? = null
+    private var replayResyncOwner: Pair<ConnectionScope, String>? = null
     private var hydrationRequestSequence = 0L
     private var activeHydrationRequestSequence = 0L
     private var resumedGeneration = -1L
@@ -829,6 +834,7 @@ class ChatViewModel(
             wsClient.scopedEvents.collect { observation ->
                 val event = observation.event
                 if (observation.scope != submissionTransport.configuredScope()) return@collect
+                observation.gapSessionId?.let { resyncAfterReplayGap(observation.scope, it) }
                 when (event) {
                     is WsEvent.VaultRequest -> {
                         val request = event.request
@@ -872,7 +878,11 @@ class ChatViewModel(
                     }
 
                     is WsEvent.ClarifyExpire -> {
-                        expireClarification(event, observation.scope)
+                        settleClarification(event.sessionId, event.clarifyId, observation.scope, resolved = false)
+                    }
+
+                    is WsEvent.ClarifyResolved -> {
+                        settleClarification(event.sessionId, event.clarifyId, observation.scope, resolved = true)
                     }
 
                     is WsEvent.SessionInfo -> {
@@ -932,6 +942,8 @@ class ChatViewModel(
                     // fire with a stale id and 4001 "session not found";
                     // handleGatewayReady rebinds it on the re-resume.
                     queueExecutionIdle = false
+                    replayResyncJob?.cancel()
+                    replayResyncOwner = null
                     runtimeSessionId = null
                     activeResumeRequestSequence = ++resumeRequestSequence
                     releasePendingInitialPrompt()
@@ -1099,7 +1111,11 @@ class ChatViewModel(
             }
         if (!isCurrentSession(transitionSessionId)) return
         // Actionable questions must retain the socket observation's original identity.
-        if (event is WsEvent.ClarifyRequest || event is WsEvent.ClarifyExpire) return
+        if (event is WsEvent.ClarifyRequest || event is WsEvent.ClarifyExpire ||
+            event is WsEvent.ClarifyResolved
+        ) {
+            return
+        }
         val segmentFrame = event is WsEvent.MessageInterim || event is WsEvent.MessageSegmentEnd
         if (event is WsEvent.MessageStart || event is WsEvent.MessageToken ||
             event is WsEvent.ThinkingDelta || event is WsEvent.ReasoningDelta ||
@@ -1523,82 +1539,7 @@ class ChatViewModel(
             }
 
             WsMethods.SESSION_RESUME -> {
-                val resultMap = result as? Map<String, Any?>
-                val runtimeId = (resultMap?.get("session_id") as? String)?.takeIf { it.isNotBlank() }
-                val storedId = request?.sessionId ?: _uiState.value.currentSessionId
-                val resumedId = resultMap?.get("resumed") as? String
-                if (runtimeId == null || storedId == null || (resumedId != null && resumedId != storedId)) {
-                    releasePendingInitialPrompt()
-                    storedId?.let {
-                        handleResumeFailure(
-                            it,
-                            request?.generation ?: sessionGeneration,
-                            "Invalid resume acknowledgement",
-                        )
-                    }
-                    return
-                }
-                runtimeSessionId = runtimeId
-                sessionScope = request?.scope
-                reconcileResumedExecution(resultMap, request)
-                // Resume succeeded — the gateway confirmed the DB row.
-                sessionHasServerPresence = true
-                val sessionId =
-                    request?.sessionId
-                        ?: (resultMap?.get("resumed") as? String)
-                        ?: _uiState.value.currentSessionId
-
-                // Parse session info from backend — model, provider, reasoning_effort
-                val infoMap = resultMap?.get("info") as? Map<String, Any?>
-                val model = infoMap?.get("model") as? String
-                val provider = infoMap?.get("provider") as? String
-                val reasoningEffort = infoMap?.get("reasoning_effort") as? String
-                val terminalBackend = infoMap?.get("terminal_backend") as? String
-
-                // B8 (Jun 20 2026, kanban t_session_resume): do NOT reload
-                // cached messages here — switchSession() already did so before
-                // the WS round-trip. Calling loadCachedMessages() here would
-                // overwrite any message the user sent between switchSession() and
-                // the server ack, making the chat appear to go blank.
-                _uiState.update {
-                    it.copy(
-                        isLoading = false,
-                        errorMessage = null,
-                        currentSessionId = sessionId,
-                        currentSessionModel =
-                            if (model != null && provider != null) {
-                                "$provider/$model"
-                            } else {
-                                model ?: it.currentSessionModel
-                            },
-                        reasoningLevel =
-                            if (reasoningEffort.isNullOrEmpty()) {
-                                null
-                            } else {
-                                reasoningEffort
-                            },
-                        terminalBackend = terminalBackend ?: it.terminalBackend,
-                    )
-                }
-                syncCurrentModelCapabilities()
-                // Mirror the active runtime session id app-wide (issue #532).
-                ActiveSessionHolder.setScoped(runtimeSessionId ?: sessionId, sessionId, sessionScope)
-                request?.scope?.let { wsClient.restoreVaultPrompts(it, resultMap) }
-                addSystemMessage("Session resumed")
-                fetchContextUsage()
-                val generation = request?.generation ?: sessionGeneration
-                resumedGeneration = generation
-                finishResumeWhenHydrated(generation)
-                drainPendingPrompts(storedId, runtimeId)
-                // Reconnect replay: resume payload can carry `pending_approval`
-                // (server `_session_info_payload`); surface it, then ask for
-                // the full queue in case more are parked.
-                val pendingApproval = resultMap?.get("pending_approval") as? Map<*, *>
-                if (pendingApproval != null && request?.scope != null) {
-                    handleApprovalRequest(parseApprovalMap(pendingApproval, runtimeSessionId), request.scope)
-                }
-                val activeSessionId = runtimeSessionId ?: sessionId
-                if (activeSessionId != null) replayPendingApproval(activeSessionId)
+                applySessionResume(result, request)
             }
 
             WsMethods.SESSION_INTERRUPT -> {
@@ -1725,6 +1666,96 @@ class ChatViewModel(
                 addAssistantMessage(output)
             }
         }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun applySessionResume(
+        result: Any?,
+        request: SessionRequest?,
+    ) {
+        val resultMap = result as? Map<String, Any?>
+        val runtimeId = (resultMap?.get("session_id") as? String)?.takeIf { it.isNotBlank() }
+        val storedId = request?.sessionId ?: _uiState.value.currentSessionId
+        val resumedId = resultMap?.get("resumed") as? String
+        val snapshotStoredId = resultMap?.get("stored_session_id") as? String
+        if (runtimeId == null || storedId == null || (resumedId != null && resumedId != storedId) ||
+            (request?.resync == true && snapshotStoredId != null && snapshotStoredId != storedId)
+        ) {
+            releasePendingInitialPrompt()
+            storedId?.let {
+                handleResumeFailure(
+                    it,
+                    request?.generation ?: sessionGeneration,
+                    "Invalid resume acknowledgement",
+                    resyncScope = request?.scope?.takeIf { request.resync },
+                )
+            }
+            return
+        }
+        runtimeSessionId = runtimeId
+        sessionScope = request?.scope
+        reconcileResumedExecution(resultMap, request)
+        // Resume succeeded — the gateway confirmed the DB row.
+        sessionHasServerPresence = true
+        val sessionId =
+            request?.sessionId
+                ?: (resultMap?.get("resumed") as? String)
+                ?: _uiState.value.currentSessionId
+
+        // Parse session info from backend — model, provider, reasoning_effort
+        val infoMap = resultMap?.get("info") as? Map<String, Any?>
+        val model = infoMap?.get("model") as? String
+        val provider = infoMap?.get("provider") as? String
+        val reasoningEffort = infoMap?.get("reasoning_effort") as? String
+        val terminalBackend = infoMap?.get("terminal_backend") as? String
+
+        // B8 (Jun 20 2026, kanban t_session_resume): do NOT reload
+        // cached messages here — switchSession() already did so before
+        // the WS round-trip. Calling loadCachedMessages() here would
+        // overwrite any message the user sent between switchSession() and
+        // the server ack, making the chat appear to go blank.
+        _uiState.update {
+            it.copy(
+                isLoading = false,
+                errorMessage = null,
+                currentSessionId = sessionId,
+                currentSessionModel =
+                    if (model != null && provider != null) {
+                        "$provider/$model"
+                    } else {
+                        model ?: it.currentSessionModel
+                    },
+                reasoningLevel =
+                    if (reasoningEffort.isNullOrEmpty()) {
+                        null
+                    } else {
+                        reasoningEffort
+                    },
+                terminalBackend = terminalBackend ?: it.terminalBackend,
+            )
+        }
+        syncCurrentModelCapabilities()
+        // Mirror the active runtime session id app-wide (issue #532).
+        ActiveSessionHolder.setScoped(runtimeSessionId ?: sessionId, sessionId, sessionScope)
+        request?.scope?.let {
+            if (request.resync) wsClient.adoptReplaySnapshot(it, runtimeId, resultMap)
+            wsClient.restoreOpenPrompts(it, resultMap)
+        }
+        if (request?.resync != true) addSystemMessage("Session resumed")
+        fetchContextUsage()
+        val generation = request?.generation ?: sessionGeneration
+        resumedGeneration = generation
+        finishResumeWhenHydrated(generation)
+        if (request?.resync != true) drainPendingPrompts(storedId, runtimeId)
+        // Reconnect replay: resume payload can carry `pending_approval`
+        // (server `_session_info_payload`); surface it, then ask for
+        // the full queue in case more are parked.
+        val pendingApproval = resultMap?.get("pending_approval") as? Map<*, *>
+        if (pendingApproval != null && request?.scope != null) {
+            handleApprovalRequest(parseApprovalMap(pendingApproval, runtimeSessionId), request.scope)
+        }
+        val activeSessionId = runtimeSessionId ?: sessionId
+        if (activeSessionId != null) replayPendingApproval(activeSessionId)
     }
 
     private fun handleRpcError(
@@ -2321,7 +2352,7 @@ class ChatViewModel(
                             return@launch
                         }
 
-                        SubmissionResult.Unknown -> {
+                        SubmissionResult.Expired, SubmissionResult.Unknown -> {
                             restoreTypingState(wasStreaming, dispatchGeneration, streamVersion)
                             return@launch
                         }
@@ -2385,7 +2416,7 @@ class ChatViewModel(
                         }
                     }
 
-                    SubmissionResult.Unknown -> {
+                    SubmissionResult.Expired, SubmissionResult.Unknown -> {
                         restoreTypingState(wasStreaming, dispatchGeneration, streamVersion)
                     }
                 }
@@ -2567,15 +2598,20 @@ class ChatViewModel(
             return
         }
         val status = result["status"] as? String
+        val snapshotInfo = result["info"] as? Map<*, *>
+        val canonicalSettled =
+            request.resync && !running && (result["prompts"] as? List<*>)?.isEmpty() == true &&
+                snapshotInfo?.get("desktop_protocol") == "hermes-gateway-v1"
+        val isIdle = !running && status == "idle" && result["hydrating"] != true
         queueTurnObserved = running
-        queueExecutionIdle = !running && status == "idle" && result["hydrating"] != true
+        queueExecutionIdle = isIdle
         if (running) {
             hasObservedActiveResponse = true
             // A running resume proves the turn was admitted.
             admissionUnproven = false
             openTurnLifecycle(awaitsAdmission = false)
             _uiState.update { it.copy(isAgentTyping = true, responseStatusUnknown = false) }
-        } else if (status == "idle" && result["hydrating"] != true) {
+        } else if (isIdle || canonicalSettled) {
             hasObservedActiveResponse = false
             sealStreamingMessageIfAny()
             streamingController.resetStreaming()
@@ -3889,9 +3925,11 @@ class ChatViewModel(
     private fun loadSessionMessages(
         sessionId: String,
         generation: Long,
+        resyncScope: ConnectionScope? = null,
     ) {
         val requestSequence = ++hydrationRequestSequence
         activeHydrationRequestSequence = requestSequence
+        val recoveryApi = resyncScope?.let { ApiClient.hermesApi }
         viewModelScope.launch {
             // Initial page: ask for the NEWEST page directly (order=latest —
             // offset is measured back from the newest message, page returned
@@ -3901,23 +3939,49 @@ class ChatViewModel(
             // Legacy backends without the `order` param ignore it and echo no
             // `pagination` — detect that and fall back to the count-based
             // anchor so nothing regresses.
-            val latestResult = fetchMessagePage(sessionId, 0, MESSAGE_PAGE_SIZE, order = "latest")
-            if (!isCurrentHydration(sessionId, generation, requestSequence)) return@launch
+            val latestResult =
+                fetchMessagePage(
+                    sessionId,
+                    0,
+                    MESSAGE_PAGE_SIZE,
+                    order = "latest",
+                    api = recoveryApi,
+                    profile = resyncScope?.serverProfileId,
+                )
+            if (!isCurrentHydration(sessionId, generation, requestSequence, resyncScope)) return@launch
             val (result, requestedOffset) =
                 if (latestResult is NetworkResult.Success && latestResult.data.pagination?.order == "latest") {
                     latestPaging = true
                     latestResult to 0
                 } else if (latestResult is NetworkResult.Success) {
                     latestPaging = false
-                    val messageCount = fetchServerMessageCount(sessionId, generation, requestSequence)
-                    if (!isCurrentHydration(sessionId, generation, requestSequence)) return@launch
+                    val messageCount =
+                        if (recoveryApi != null) {
+                            latestResult.data.total ?: withContext(ioDispatcher) {
+                                val detail =
+                                    safeApiCall {
+                                        recoveryApi.getSessionDetail(sessionId, resyncScope.serverProfileId)
+                                    }
+                                (detail as? NetworkResult.Success)?.data?.message_count
+                                    ?: latestResult.data.messages.size
+                            }
+                        } else {
+                            fetchServerMessageCount(sessionId, generation, requestSequence)
+                        }
+                    if (!isCurrentHydration(sessionId, generation, requestSequence, resyncScope)) return@launch
                     val offset = (messageCount - MESSAGE_PAGE_SIZE).coerceAtLeast(0)
-                    fetchMessagePage(sessionId, offset, MESSAGE_PAGE_SIZE) to offset
+                    fetchMessagePage(
+                        sessionId,
+                        offset,
+                        MESSAGE_PAGE_SIZE,
+                        api = recoveryApi,
+                        profile = resyncScope?.serverProfileId,
+                    ) to offset
                 } else {
                     latestPaging = false
                     latestResult to 0
                 }
-            if (!isCurrentHydration(sessionId, generation, requestSequence)) return@launch
+            if (!isCurrentHydration(sessionId, generation, requestSequence, resyncScope)) return@launch
             when (result) {
                 is NetworkResult.Success -> {
                     // REST 200 — the gateway has the row for this session.
@@ -3935,9 +3999,17 @@ class ChatViewModel(
                     withContext(ioDispatcher) {
                         repo.persistMessages(chatMessages, sessionId)
                     }
-                    if (!isCurrentHydration(sessionId, generation, requestSequence)) return@launch
+                    if (!isCurrentHydration(sessionId, generation, requestSequence, resyncScope)) return@launch
                     _uiState.update { state ->
-                        if (!isCurrentHydration(sessionId, generation, requestSequence)) return@update state
+                        if (!isCurrentHydration(
+                                sessionId,
+                                generation,
+                                requestSequence,
+                                resyncScope,
+                            )
+                        ) {
+                            return@update state
+                        }
                         // Merge, don't replace: a reload mid-turn must not
                         // drop live WS bubbles (running tool call, streaming
                         // answer) the server hasn't persisted yet. Issue #771.
@@ -3975,7 +4047,15 @@ class ChatViewModel(
                         // It is NOT a fatal error: keep the session open with empty transcript, clear loading,
                         // and mark hydrated cleanly.
                         _uiState.update {
-                            if (!isCurrentHydration(sessionId, generation, requestSequence)) return@update it
+                            if (!isCurrentHydration(
+                                    sessionId,
+                                    generation,
+                                    requestSequence,
+                                    resyncScope,
+                                )
+                            ) {
+                                return@update it
+                            }
                             it.copy(
                                 isLoading = false,
                                 isLoadingOlder = false,
@@ -3988,7 +4068,7 @@ class ChatViewModel(
                     }
                     if (hydratedGeneration == generation) hydratedGeneration = -1L
                     _uiState.update {
-                        if (!isCurrentHydration(sessionId, generation, requestSequence)) return@update it
+                        if (!isCurrentHydration(sessionId, generation, requestSequence, resyncScope)) return@update it
                         it.copy(
                             isLoading = false,
                             isLoadingOlder = false,
@@ -4002,6 +4082,7 @@ class ChatViewModel(
                         sessionId,
                         generation,
                         "Failed to load messages: ${result.error.message}",
+                        resyncScope = resyncScope,
                     )
                 }
             }
@@ -4040,6 +4121,8 @@ class ChatViewModel(
         title: String,
         isLoading: Boolean,
     ): Long {
+        replayResyncJob?.cancel()
+        replayResyncOwner = null
         subagentSnapshotJob?.cancel()
         subagentSnapshotOwner = null
         subagentSnapshotFailures = 0
@@ -4108,6 +4191,54 @@ class ChatViewModel(
         return generation
     }
 
+    private fun resyncAfterReplayGap(
+        scope: ConnectionScope,
+        runtimeId: String,
+    ) {
+        val sessionId = _uiState.value.currentSessionId ?: return
+        if (!sessionHasServerPresence || !isCurrentSession(runtimeId) || !submissionTransport.isReady(scope)) return
+        val owner = scope to sessionId
+        if (replayResyncOwner == owner && replayResyncJob?.isActive == true) return
+        replayResyncJob?.cancel()
+        cancelResumeRetry()
+        resyncSession(scope, sessionId, sessionGeneration)
+    }
+
+    private fun resyncSession(
+        scope: ConnectionScope,
+        sessionId: String,
+        generation: Long,
+    ) {
+        if (!isCurrentSessionRequest(sessionId, generation) || !submissionTransport.isReady(scope)) return
+        val sequence = ++resumeRequestSequence
+        activeResumeRequestSequence = sequence
+        activeHydrationRequestSequence = ++hydrationRequestSequence
+        resumedGeneration = -1L
+        hydratedGeneration = -1L
+        queueExecutionIdle = false
+        val request =
+            SessionRequest(generation, sequence, sessionId, scope, streamObservationVersion.get(), resync = true)
+        replayResyncOwner = scope to sessionId
+        replayResyncJob =
+            viewModelScope.launch {
+                val result =
+                    try {
+                        wsClient.resumeAfterReplayGap(scope, sessionId)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        if (!isStaleSessionRequest(request)) {
+                            handleResumeFailure(sessionId, generation, "Session resynchronization failed", scope)
+                        }
+                        return@launch
+                    }
+                if (isStaleSessionRequest(request)) return@launch
+                val body = (result as? kotlinx.serialization.json.JsonElement)?.toAny() ?: result
+                applySessionResume(body, request)
+                if (resumedGeneration == generation) loadSessionMessages(sessionId, generation, resyncScope = scope)
+            }
+    }
+
     private fun resumeSession(
         sessionId: String,
         generation: Long,
@@ -4115,6 +4246,8 @@ class ChatViewModel(
         queueExecutionIdle = false
         val requestSequence = ++resumeRequestSequence
         val streamVersion = streamObservationVersion.get()
+        replayResyncJob?.cancel()
+        replayResyncOwner = null
         activeResumeRequestSequence = requestSequence
         val profile = AuthManager.activeProfileId.value
         val params =
@@ -4233,6 +4366,7 @@ class ChatViewModel(
         sessionId: String,
         generation: Long,
         errorMessage: String,
+        resyncScope: ConnectionScope? = null,
     ) {
         // Only handle if still on this session.
         if (!isCurrentSessionRequest(sessionId, generation)) return
@@ -4246,7 +4380,7 @@ class ChatViewModel(
 
         // A definitive "session not found" (4007 RPC / 404 REST) is permanent:
         // no backoff will fix it — recover with a fresh chat right away.
-        if (isDefinitiveSessionGone(errorMessage)) {
+        if (resyncScope == null && isDefinitiveSessionGone(errorMessage)) {
             recoverGoneSession(sessionId)
             return
         }
@@ -4289,7 +4423,11 @@ class ChatViewModel(
                 delay(delayMs)
                 // Re-check liveness at fire time: the user may have switched
                 // sessions or the gateway may have reconnected meanwhile.
-                if (!isCurrentSessionRequest(sessionId, generation)) return@launch
+                if (!isCurrentSessionRequest(sessionId, generation) ||
+                    (resyncScope != null && !submissionTransport.isReady(resyncScope))
+                ) {
+                    return@launch
+                }
 
                 _uiState.update { it.copy(isResumeRetrying = false) }
                 if (_uiState.value.messages.isEmpty()) {
@@ -4297,7 +4435,11 @@ class ChatViewModel(
                 }
                 // Retry the full resume: rebind the runtime via WS + refresh
                 // the transcript via REST. Both are idempotent.
-                resumeSession(sessionId, generation)
+                if (resyncScope == null) {
+                    resumeSession(sessionId, generation)
+                } else {
+                    resyncSession(resyncScope, sessionId, generation)
+                }
             }
     }
 
@@ -4755,14 +4897,17 @@ class ChatViewModel(
         offset: Int,
         limit: Int,
         order: String? = null,
+        api: HermesApiService? = null,
+        profile: String? = null,
     ) = withContext(ioDispatcher) {
         safeApiCall {
-            ApiClient.hermesApi.getSessionMessages(
+            (api ?: ApiClient.hermesApi).getSessionMessages(
                 sessionId = sessionId,
                 limit = limit,
                 offset = offset,
                 includeCompacted = true,
                 order = order,
+                profile = profile,
             )
         }
     }
@@ -4836,12 +4981,12 @@ class ChatViewModel(
                 questions = event.questions.map { ClarifyQuestionUi(it.qid, it.question, it.choices, it.multiSelect) },
                 ref = ref,
             )
-        if (ref != null && _uiState.value.messages.any { it.clarifyInfo?.ref == ref }) {
-            refreshAttentionStates()
-            return
-        }
         if (ref != null) {
             dashboardAttentionItems(scope, event).forEach(attentionRepository::observe)
+            if (_uiState.value.messages.any { it.clarifyInfo?.ref == ref }) {
+                refreshAttentionStates()
+                return
+            }
         }
         var added = false
         _uiState.update { state ->
@@ -4867,17 +5012,15 @@ class ChatViewModel(
         refreshAttentionStates()
     }
 
-    private fun expireClarification(
-        event: WsEvent.ClarifyExpire,
+    private fun settleClarification(
+        sessionId: String?,
+        clarifyId: String?,
         scope: ConnectionScope,
+        resolved: Boolean,
     ) {
-        val runtimeId = event.sessionId?.takeIf { it.isNotBlank() } ?: return
-        val requestId = event.clarifyId?.takeIf { it.isNotBlank() } ?: return
-        attentionRepository.items.value
-            .filter {
-                it.kind == AttentionKind.CLARIFICATION && it.ref.scope == scope &&
-                    it.ref.session.runtimeId == runtimeId && it.ref.requestId == requestId
-            }.forEach { attentionRepository.expire(it.ref) }
+        val runtimeId = sessionId?.takeIf(String::isNotBlank) ?: return
+        val requestId = clarifyId?.takeIf(String::isNotBlank) ?: return
+        attentionRepository.settleClarification(scope, runtimeId, requestId, resolved)
     }
 
     fun clearError() {
@@ -4948,23 +5091,28 @@ class ChatViewModel(
 
     private fun refreshClarification(info: ClarifyUi): ClarifyUi {
         val ref = info.ref
+        val items = attentionRepository.items.value
+        val questions =
+            info.resolvedQuestions.associate { question ->
+                val questionRef =
+                    ref?.copy(
+                        questionId = if (info.questions.isEmpty()) info.questionId else question.qid,
+                    )
+                question.qid to items.firstOrNull { it.ref == questionRef }
+            }
         return info.copy(
             responseEnabled =
                 ref != null && ref.scope == submissionTransport.configuredScope() &&
                     submissionTransport.isReady(ref.scope),
             questionStates =
-                info.resolvedQuestions.associate { question ->
-                    val questionRef =
-                        ref?.copy(
-                            questionId = if (info.questions.isEmpty()) info.questionId else question.qid,
-                        )
-                    question.qid to (
-                        attentionRepository.items.value
-                            .firstOrNull { it.ref == questionRef }
-                            ?.status
-                            ?: com.m57.hermescontrol.domain.hermes.AttentionStatus.UNKNOWN
-                    )
+                questions.mapValues { (_, item) ->
+                    item?.status ?: com.m57.hermescontrol.domain.hermes.AttentionStatus.UNKNOWN
                 },
+            lockedAnswers =
+                questions
+                    .mapNotNull { (qid, item) ->
+                        item?.details?.lockedAnswer?.let { qid to it }
+                    }.toMap(),
         )
     }
 
@@ -5438,7 +5586,10 @@ class ChatViewModel(
         sessionId: String,
         generation: Long,
         requestSequence: Long,
-    ): Boolean = requestSequence == activeHydrationRequestSequence && isCurrentSessionRequest(sessionId, generation)
+        scope: ConnectionScope? = null,
+    ): Boolean =
+        requestSequence == activeHydrationRequestSequence && isCurrentSessionRequest(sessionId, generation) &&
+            (scope == null || submissionTransport.isReady(scope))
 
     private fun isStaleSessionRequest(id: String): Boolean =
         sessionRequestById[id]?.let(::isStaleSessionRequest) == true

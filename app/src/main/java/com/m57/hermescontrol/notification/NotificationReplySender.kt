@@ -79,7 +79,7 @@ class NotificationReplySender(
                         outcome = ReplyOutcome.DRAFT
                     }
 
-                    SubmissionResult.Unknown -> {
+                    SubmissionResult.Expired, SubmissionResult.Unknown -> {
                         Unit
                     }
                 }

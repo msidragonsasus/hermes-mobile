@@ -21,6 +21,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -164,6 +165,47 @@ class NativeUiGalleryTest {
             compose.onNodeWithTag(tag).performScrollTo()
             capture("after-send/$theme-$name-disabled")
         }
+    }
+
+    @Test fun flowWrapsAndRoutesLabeledEdgesAtLargeText() {
+        val nodes = (listOf("Hermes") + (1..5).map { "Worker $it" } + "Result")
+        val edges =
+            (1..5).map { index ->
+                """{"from":"n0","to":"n$index","label":"委任された作業の確認項目$index"}"""
+            } +
+                listOf(
+                    """{"from":"n5","to":"n6"}""",
+                    """{"from":"n0","to":"n6","label":"結果を直接報告"}""",
+                )
+        val nodeJson = nodes.mapIndexed { index, label -> """{"id":"n$index","label":"$label"}""" }
+        val fixture =
+            """{"v":1,"id":"regression","type":"flow","title":"役割分担","nodes":$nodeJson,"edges":$edges}"""
+        compose.setContent {
+            HermesControlTheme(themePreference = ThemePreference.DARK) {
+                val density = LocalDensity.current
+                CompositionLocalProvider(LocalDensity provides Density(density.density, 1.5f)) {
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .systemBarsPadding()
+                            .verticalScroll(scroll)
+                            .padding(12.dp),
+                    ) {
+                        MarkdownText(
+                            "```hermes-ui-v2\n$fixture\n```",
+                            MaterialTheme.colorScheme.onSurface,
+                            isStreaming = false,
+                            nativeUiIdentity = "flow-regression",
+                        )
+                    }
+                }
+            }
+        }
+        compose.onNodeWithTag("regression-flow").assertExists()
+        nodes.forEach { compose.onNodeWithText(it).assertExists() }
+        capture("after-flow/large-text-top")
+        compose.onNodeWithText("Result").performScrollTo()
+        capture("after-flow/large-text-bottom")
     }
 
     @Test fun svgDark() = svgDiagram(dark = true)

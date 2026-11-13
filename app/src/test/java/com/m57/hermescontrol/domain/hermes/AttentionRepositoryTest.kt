@@ -109,6 +109,72 @@ class AttentionRepositoryTest {
         }
 
     @Test
+    fun resolvedBeforeAckConfirmsAllQuestionsWithoutChangingOtherRequests() =
+        runTest {
+            val first = ref.copy(questionId = "q0")
+            val second = ref.copy(questionId = "q1")
+            val other = first.copy(session = SessionRef("other"))
+            listOf(first, second, other).forEach {
+                repository.observe(AttentionItem(it, AttentionKind.CLARIFICATION, "Question"))
+            }
+            val ack = CompletableDeferred<SubmissionResult<Boolean>>()
+            val job = launch { repository.respond(first, scope, true, 0) { ack.await() } }
+            runCurrent()
+            assertEquals(AttentionStatus.SUBMITTING, status(first))
+            repository.settleClarification(scope, "runtime", "request", resolved = true)
+            ack.complete(SubmissionResult.Expired)
+            job.join()
+            assertEquals(AttentionStatus.CONFIRMED, status(first))
+            assertEquals(AttentionStatus.CONFIRMED, status(second))
+            assertEquals(AttentionStatus.PENDING, status(other))
+        }
+
+    @Test
+    fun expiryAckExpiresUnansweredQuestionsAndPreservesLockedAnswers() =
+        runTest {
+            val locked = ref.copy(questionId = "q0")
+            val sent = ref.copy(questionId = "q1")
+            val unanswered = ref.copy(questionId = "q2")
+            listOf(locked, sent, unanswered).forEach {
+                repository.observe(AttentionItem(it, AttentionKind.CLARIFICATION, "Question"))
+            }
+            repository.respond(locked, scope, true, 0) { SubmissionResult.Confirmed("rpc", true) }
+            repository.respond(sent, scope, true, 0) { SubmissionResult.Expired }
+            assertEquals(AttentionStatus.CONFIRMED, status(locked))
+            assertEquals(AttentionStatus.EXPIRED, status(sent))
+            assertEquals(AttentionStatus.EXPIRED, status(unanswered))
+        }
+
+    @Test
+    fun replayedLocksConfirmFreshAndPreviouslyObservedQuestions() =
+        runTest {
+            val first = ref.copy(questionId = "q0")
+            val second = ref.copy(questionId = "q1")
+            val item = AttentionItem(first, AttentionKind.CLARIFICATION, "Question", details = AttentionDetails())
+            repository.observe(item)
+            repository.respond(first, scope, true, 0) { SubmissionResult.Unknown }
+            val replay =
+                item.copy(
+                    status = AttentionStatus.CONFIRMED,
+                    details = AttentionDetails(lockedAnswer = "Blue"),
+                )
+            repository.observe(replay)
+            repository.observe(replay.copy(ref = second))
+            repository.observe(item)
+            for (question in listOf(first, second)) {
+                assertEquals(AttentionStatus.CONFIRMED, status(question))
+                assertEquals(
+                    "Blue",
+                    repository.items.value
+                        .single { it.ref == question }
+                        .details
+                        ?.lockedAnswer,
+                )
+                repository.respond(question, scope, true, 0) { error("Locked answer must never be sent again") }
+            }
+        }
+
+    @Test
     fun zeroResolvedAndTimeoutStayUnknownEvenAfterReplay() =
         runTest {
             for ((index, result) in listOf(

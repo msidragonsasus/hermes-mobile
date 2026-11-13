@@ -46,9 +46,16 @@ class AttentionRepository {
             // A response whose outcome is unknown must never become sendable through replay.
             val refreshed =
                 existing.copy(
-                    details = existing.details ?: item.details,
+                    details =
+                        if (item.status == AttentionStatus.CONFIRMED) {
+                            item.details ?: existing.details
+                        } else {
+                            existing.details ?: item.details
+                        },
                     status =
-                        if (existing.status == AttentionStatus.UNKNOWN && !wasAttempted(existing.ref) &&
+                        if (item.status == AttentionStatus.CONFIRMED) {
+                            AttentionStatus.CONFIRMED
+                        } else if (existing.status == AttentionStatus.UNKNOWN && !wasAttempted(existing.ref) &&
                             mutableItems.value.none {
                                 sameRequest(it.ref, existing.ref) &&
                                     it.status in setOf(AttentionStatus.CONFIRMED, AttentionStatus.EXPIRED)
@@ -74,7 +81,8 @@ class AttentionRepository {
             previousAttempt?.status?.let {
                 if (it == AttentionStatus.SUBMITTING) AttentionStatus.UNKNOWN else it
             }
-        val pending = item.copy(status = inheritedStatus ?: AttentionStatus.PENDING)
+        val pending =
+            if (item.status == AttentionStatus.CONFIRMED) item else item.copy(status = inheritedStatus ?: item.status)
         mutableItems.value = mutableItems.value + pending
         return pending
     }
@@ -87,10 +95,35 @@ class AttentionRepository {
     }
 
     @Synchronized
-    fun markScopeUnknown(scope: ConnectionScope) {
+    fun settleClarification(
+        scope: ConnectionScope,
+        runtimeId: String,
+        requestId: String,
+        resolved: Boolean,
+    ) {
+        mutableItems.value =
+            mutableItems.value.map { item ->
+                val ref = item.ref
+                if (item.kind == AttentionKind.CLARIFICATION && ref.scope == scope &&
+                    ref.session.runtimeId == runtimeId && ref.requestId == requestId &&
+                    item.status != AttentionStatus.CONFIRMED
+                ) {
+                    item.copy(status = if (resolved) AttentionStatus.CONFIRMED else AttentionStatus.EXPIRED)
+                } else {
+                    item
+                }
+            }
+    }
+
+    @Synchronized
+    fun markScopeUnknown(
+        scope: ConnectionScope,
+        runtimeId: String? = null,
+    ) {
         mutableItems.value =
             mutableItems.value.map { item ->
                 if (item.ref.scope == scope &&
+                    (runtimeId == null || item.ref.session.runtimeId == runtimeId) &&
                     item.status in setOf(AttentionStatus.PENDING, AttentionStatus.SUBMITTING)
                 ) {
                     item.copy(status = AttentionStatus.UNKNOWN)
@@ -139,6 +172,11 @@ class AttentionRepository {
                     SubmissionResult.NotSent -> {
                         notSent = true
                         AttentionStatus.PENDING
+                    }
+
+                    SubmissionResult.Expired -> {
+                        settleClarification(ref.scope, ref.session.runtimeId, ref.requestId, resolved = false)
+                        AttentionStatus.EXPIRED
                     }
 
                     SubmissionResult.Unknown -> {

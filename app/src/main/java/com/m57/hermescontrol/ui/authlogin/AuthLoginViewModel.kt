@@ -7,16 +7,22 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.config.ConnectionProfile
+import com.m57.hermescontrol.data.config.resolveBaseUrl
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.ApiClient
 import com.m57.hermescontrol.data.remote.AuthPayloads
 import com.m57.hermescontrol.data.remote.CleartextPolicy
+import com.m57.hermescontrol.data.remote.CookieManager
 import com.m57.hermescontrol.data.remote.OkHttpProvider
 import com.m57.hermescontrol.data.remote.ServerEndpoint
 import com.m57.hermescontrol.data.remote.await
 import com.m57.hermescontrol.data.remote.safeApiCall
+import com.m57.hermescontrol.data.ws.GatewayWebSocketProbe
 import com.m57.hermescontrol.data.ws.HermesWsClient
+import com.m57.hermescontrol.data.ws.WsTicketResponse
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,6 +32,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.Cookie
+import okhttp3.CookieJar
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -93,11 +101,46 @@ class AuthLoginViewModel(
         _uiState.update { it.copy(loggedInProfiles = loggedIn) }
     }
 
+    private var connectionJob: Job? = null
+
     fun useExistingProfile(profileId: String) {
-        AuthManager.setSelectedProfileId(profileId)
-        ApiClient.rebuild()
-        HermesWsClient.connect()
-        _uiState.update { it.copy(connectionSuccess = true) }
+        if (_uiState.value.isLoading) return
+        val profile = _uiState.value.loggedInProfiles.firstOrNull { it.id == profileId } ?: return
+        val token = AuthManager.getProfileToken(profileId)?.takeIf(String::isNotBlank) ?: return
+        val endpoint =
+            runCatching { ServerEndpoint.parseForBuild(profile.resolveBaseUrl(AuthManager.getBaseUrl())) }
+                .getOrNull() ?: return
+        _uiState.update { it.copy(isLoading = true, errorMessage = null, connectionSuccess = false) }
+        connectionJob =
+            viewModelScope.launch {
+                val gated =
+                    withContext(Dispatchers.IO) {
+                        val cookies = CookieManager.cookiesForProfile(profileId, endpoint)
+                        if (cookies.isEmpty()) return@withContext false
+                        val ticket = mintTicket(endpoint, isolatedProbeClient(), cookies)
+                        ticket != null && GatewayWebSocketProbe.check(endpoint, "ticket", ticket)
+                    }
+                if (!gated && !GatewayWebSocketProbe.check(endpoint, "token", token)) {
+                    connectionFailed()
+                    return@launch
+                }
+                AuthManager.setSelectedProfileId(profileId)
+                AuthManager.syncCookieStoreForProfile(profileId)
+                AuthManager.setWsAuthParam(if (gated) "ticket" else "token")
+                ApiClient.rebuild()
+                HermesWsClient.connect()
+                _uiState.update { it.copy(isLoading = false, connectionSuccess = true) }
+            }
+    }
+
+    private fun connectionFailed() {
+        _uiState.update {
+            it.copy(
+                isLoading = false,
+                connectionSuccess = false,
+                errorMessage = app.getString(R.string.connect_error_connection_failed, "WebSocket"),
+            )
+        }
     }
 
     companion object {
@@ -118,6 +161,7 @@ class AuthLoginViewModel(
 
     /** Reset ephemeral connection state (called when screen leaves composition). */
     fun clearConnectionState() {
+        connectionJob?.cancel()
         _uiState.update { it.copy(connectionSuccess = false, errorMessage = null, isLoading = false) }
     }
 
@@ -281,8 +325,8 @@ class AuthLoginViewModel(
      * Result of a successful connect attempt.
      */
     private data class ConnectResult(
-        /** WS credential: session token (loopback) or WS ticket (gated). */
         val wsCredential: String,
+        val cookies: List<Cookie> = emptyList(),
     )
 
     /**
@@ -290,66 +334,77 @@ class AuthLoginViewModel(
      */
     fun connect() {
         val state = _uiState.value
+        if (state.isLoading || state.authMode == null) return
         val endpoint =
             runCatching { ServerEndpoint.parseForBuild(state.baseUrl) }.getOrNull()
                 ?: return
 
-        _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+        _uiState.update { it.copy(isLoading = true, errorMessage = null, connectionSuccess = false) }
 
-        viewModelScope.launch {
-            val result =
-                withContext(Dispatchers.IO) {
-                    when (state.authMode) {
-                        DashboardAuthMode.TOKEN_ONLY -> {
-                            val token = connectTokenOnly(endpoint, state.token)
-                            if (token != null) ConnectResult(wsCredential = token) else null
-                        }
-
-                        DashboardAuthMode.BASIC_AUTH -> {
-                            connectBasicAuth(endpoint, state.username, state.password)
-                        }
-
-                        DashboardAuthMode.ALL -> {
-                            connectBasicAuth(endpoint, state.username, state.password)
-                        }
-
-                        DashboardAuthMode.OAUTH -> {
-                            // TODO(issue #639): implement OAuth browser flow + WS ticket minting.
-                            _uiState.update {
-                                it.copy(
-                                    isLoading = false,
-                                    errorMessage = app.getString(R.string.auth_login_error_oauth_unsupported),
-                                )
+        connectionJob =
+            viewModelScope.launch {
+                val result =
+                    withContext(Dispatchers.IO) {
+                        when (state.authMode) {
+                            DashboardAuthMode.TOKEN_ONLY -> {
+                                val token = connectTokenOnly(endpoint, state.token)
+                                if (token != null) ConnectResult(wsCredential = token) else null
                             }
-                            null
-                        }
 
-                        null -> {
-                            null
+                            DashboardAuthMode.BASIC_AUTH -> {
+                                connectBasicAuth(endpoint, state.username, state.password)
+                            }
+
+                            DashboardAuthMode.ALL -> {
+                                connectBasicAuth(endpoint, state.username, state.password)
+                            }
+
+                            DashboardAuthMode.OAUTH -> {
+                                // TODO(issue #639): implement OAuth browser flow + WS ticket minting.
+                                _uiState.update {
+                                    it.copy(
+                                        isLoading = false,
+                                        errorMessage = app.getString(R.string.auth_login_error_oauth_unsupported),
+                                    )
+                                }
+                                null
+                            }
                         }
                     }
-                }
 
-            if (result != null) {
-                AuthManager.setBaseUrl(state.baseUrl)
-                AuthManager.setToken(result.wsCredential)
-                if (state.authMode == DashboardAuthMode.TOKEN_ONLY) {
-                    // Loopback mode — no session cookie; ensure any stale one
-                    // is cleared so the jar only sends the Bearer token.
-                    AuthManager.setSessionCookie(null)
-                    AuthManager.setWsAuthParam("token")
-                } else {
-                    // Gated (BASIC_AUTH / ALL): the session cookie was captured
-                    // automatically by the shared CookieJar during the login
-                    // call (issue #470), so we keep it and switch the WS auth
-                    // param to the ticket minted above.
-                    AuthManager.setWsAuthParam("ticket")
+                if (result != null) {
+                    val parameter = if (state.authMode == DashboardAuthMode.TOKEN_ONLY) "token" else "ticket"
+                    val ready = GatewayWebSocketProbe.check(endpoint, parameter, result.wsCredential)
+                    val current = _uiState.value
+                    if (current.baseUrl != state.baseUrl || current.authMode != state.authMode ||
+                        current.token != state.token || current.username != state.username ||
+                        current.password != state.password
+                    ) {
+                        _uiState.update { it.copy(isLoading = false) }
+                        return@launch
+                    }
+                    if (!ready) {
+                        connectionFailed()
+                        return@launch
+                    }
+                    AuthManager.setBaseUrl(state.baseUrl)
+                    if (state.authMode == DashboardAuthMode.TOKEN_ONLY) {
+                        // Loopback mode — no session cookie; ensure any stale one
+                        // is cleared so the jar only sends the Bearer token.
+                        AuthManager.setSessionCookie(null)
+                        AuthManager.setWsAuthParam("token")
+                    } else {
+                        AuthManager.syncCookieStoreForProfile(AuthManager.getSelectedProfileId())
+                        CookieManager.cookieJar.saveFromResponse(endpoint.baseUrl, result.cookies)
+                        // The probe consumed its ticket. The live socket will mint a fresh one from these cookies.
+                        AuthManager.setWsAuthParam("ticket")
+                    }
+                    AuthManager.setToken(result.wsCredential)
+                    ApiClient.rebuild()
+                    HermesWsClient.connect()
+                    _uiState.update { it.copy(isLoading = false, connectionSuccess = true) }
                 }
-                ApiClient.rebuild()
-                HermesWsClient.connect()
-                _uiState.update { it.copy(isLoading = false, connectionSuccess = true) }
             }
-        }
     }
 
     /**
@@ -427,77 +482,81 @@ class AuthLoginViewModel(
 
         val jsonBody = AuthPayloads.passwordLogin(username, password)
 
+        val loginClient = isolatedProbeClient()
         try {
-            // Step 1: Authenticate via the password login endpoint to get a session cookie.
-            // IMPORTANT: use the SHARED OkHttpProvider.probe client (it carries the
-            // persistent CookieManager.cookieJar). Do NOT build a fresh client here —
-            // a separate client would not share the jar, so the Set-Cookie from this
-            // login would never reach the ws-ticket request below and auth would fail.
+            val loginUrl = endpoint.resolve("auth/password-login")
             val loginReq =
                 Request
                     .Builder()
-                    .url(endpoint.resolve("auth/password-login").toString())
+                    .url(loginUrl)
                     .header("Content-Type", "application/json")
                     .post(jsonBody.toRequestBody())
                     .build()
-            val loginResp = OkHttpProvider.probe.newCall(loginReq).await()
-
-            if (!loginResp.isSuccessful) {
-                val msg =
-                    when (loginResp.code) {
-                        401 -> app.getString(R.string.connect_error_401)
-                        403 -> app.getString(R.string.connect_error_403)
-                        else -> app.getString(R.string.connect_error_http_code, loginResp.code)
+            val cookies =
+                loginClient.newCall(loginReq).await().use { response ->
+                    if (!response.isSuccessful) {
+                        val msg =
+                            when (response.code) {
+                                401 -> app.getString(R.string.connect_error_401)
+                                403 -> app.getString(R.string.connect_error_403)
+                                else -> app.getString(R.string.connect_error_http_code, response.code)
+                            }
+                        _uiState.update { it.copy(isLoading = false, errorMessage = msg) }
+                        return null
                     }
-                _uiState.update { it.copy(isLoading = false, errorMessage = msg) }
-                return null
-            }
-            // The session cookie is now captured in the shared CookieManager.cookieJar
-            // (issue #470). The ws-ticket request below uses the same jar, so the
-            // authenticated session carries over automatically.
-
-            // Step 3: Mint a WebSocket ticket using the session cookie
-            val ticketReq =
-                Request
-                    .Builder()
-                    .url(endpoint.resolve("api/auth/ws-ticket").toString())
-                    .post("{}".toRequestBody())
-                    .build()
-            val ticketResp = OkHttpProvider.probe.newCall(ticketReq).await()
-
-            if (!ticketResp.isSuccessful) {
-                _uiState.update {
-                    it.copy(
-                        isLoading = false,
-                        errorMessage = app.getString(R.string.connect_error_http_code, ticketResp.code),
-                    )
+                    Cookie.parseAll(loginUrl, response.headers)
                 }
+            val ticket = mintTicket(endpoint, loginClient, cookies)
+            if (ticket == null) {
+                connectionFailed()
                 return null
             }
-
-            val ticketBody = ticketResp.body.string()
-            val ticketMatch = Regex(""""ticket":"([^"]+)"""").find(ticketBody)
-            val ticket = ticketMatch?.groupValues?.getOrNull(1)
-
-            if (ticket.isNullOrBlank()) {
-                _uiState.update {
-                    it.copy(
-                        isLoading = false,
-                        errorMessage = "Failed to obtain WebSocket ticket",
-                    )
-                }
-                return null
-            }
-
-            return ConnectResult(wsCredential = ticket)
-        } catch (e: Exception) {
-            _uiState.update {
-                it.copy(
-                    isLoading = false,
-                    errorMessage = app.getString(R.string.connect_error_connection_failed, e.message ?: ""),
-                )
-            }
+            return ConnectResult(ticket, cookies)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            connectionFailed()
             return null
+        }
+    }
+
+    private fun isolatedProbeClient(): OkHttpClient =
+        probeClient
+            .newBuilder()
+            .cookieJar(
+                CookieJar.NO_COOKIES,
+            ).followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+
+    private suspend fun mintTicket(
+        endpoint: ServerEndpoint,
+        client: OkHttpClient,
+        cookies: List<Cookie>,
+    ): String? {
+        val url = endpoint.resolve("api/auth/ws-ticket")
+        val header = cookies.filter { it.matches(url) }.joinToString("; ") { "${it.name}=${it.value}" }
+        if (header.isEmpty()) return null
+        val request =
+            Request
+                .Builder()
+                .url(url)
+                .header("Cookie", header)
+                .post("{}".toRequestBody())
+                .build()
+        return try {
+            client.newCall(request).await().use { response ->
+                if (!response.isSuccessful) return null
+                OkHttpProvider.json
+                    .decodeFromString<WsTicketResponse>(
+                        response.body.string(),
+                    ).ticket
+                    .takeIf { it.isNotBlank() }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
         }
     }
 }

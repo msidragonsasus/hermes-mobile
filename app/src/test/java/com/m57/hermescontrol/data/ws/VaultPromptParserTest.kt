@@ -75,4 +75,82 @@ class VaultPromptParserTest {
             ) is WsEvent.UnsupportedServerRequest,
         )
     }
+
+    @Test
+    fun singleClarifyServerRequestBecomesQuestionCard() {
+        val rpc =
+            OkHttpProvider.json.decodeFromString<JsonRpcResponse>(
+                """{"jsonrpc":"2.0","id":"srq-q1","method":"clarify","params":{"session_id":"chat","question":"どちらにしますか?","choices":["A","B"]}}""",
+            )
+        val event = EventParser.parse(rpc) as WsEvent.ClarifyRequest
+        assertEquals("srq-q1", event.clarifyId)
+        assertEquals("chat", event.sessionId)
+        assertEquals("どちらにしますか?", event.text)
+        assertEquals(listOf("A", "B"), event.options)
+        assertEquals(null, event.questionId)
+        assertTrue(event.questions.isEmpty())
+    }
+
+    @Test
+    fun batchClarifyServerRequestKeepsQuestionIds() {
+        val event =
+            EventParser.parseServerRequest(
+                "srq-q2",
+                "clarify",
+                mapOf(
+                    "session_id" to "chat",
+                    "answers" to mapOf("a" to "x", "unknown" to "ignored"),
+                    "questions" to
+                        listOf(
+                            mapOf("qid" to "a", "question" to "一つ目", "choices" to listOf("x"), "multi_select" to false),
+                            mapOf(
+                                "qid" to "b",
+                                "question" to "二つ目",
+                                "choices" to listOf("y", "z"),
+                                "multi_select" to true,
+                            ),
+                        ),
+                ),
+            ) as WsEvent.ClarifyRequest
+        assertEquals(listOf("a", "b"), event.questions.map { it.qid })
+        assertEquals(mapOf("a" to "x"), event.lockedAnswers)
+        assertTrue(event.questions[1].multiSelect)
+        assertEquals("srq-q2", event.clarifyId)
+    }
+
+    @Test
+    fun clarifyServerRequestWithoutSessionOrQuestionIsRejected() {
+        assertTrue(
+            EventParser.parseServerRequest("srq-q3", "clarify", mapOf("question" to "x")) is
+                WsEvent.UnsupportedServerRequest,
+        )
+        assertTrue(
+            EventParser.parseServerRequest("srq-q3", "clarify", mapOf("session_id" to "chat")) is
+                WsEvent.UnsupportedServerRequest,
+        )
+    }
+
+    @Test
+    fun resolvedClarifyRequestIsDistinctFromExpiry() {
+        val event =
+            EventParser.parseParams(
+                mapOf(
+                    "type" to "request.cancel",
+                    "session_id" to "chat",
+                    "payload" to mapOf("id" to "srq-q1", "method" to "clarify", "reason" to "resolved"),
+                ),
+            )
+        assertEquals(WsEvent.ClarifyResolved("srq-q1", "chat"), event)
+    }
+
+    @Test
+    fun cancelledClarifyRequestExpiresTheCard() {
+        val rpc =
+            OkHttpProvider.json.decodeFromString<JsonRpcResponse>(
+                """{"jsonrpc":"2.0","method":"event","params":{"type":"request.cancel","session_id":"chat","payload":{"id":"srq-q1","method":"clarify","reason":"timeout"}}}""",
+            )
+        val event = EventParser.parse(rpc) as WsEvent.ClarifyExpire
+        assertEquals("srq-q1", event.clarifyId)
+        assertEquals("chat", event.sessionId)
+    }
 }

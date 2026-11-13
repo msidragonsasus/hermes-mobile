@@ -139,6 +139,7 @@ object HermesWsClient {
 
     // ── Sequence tracking & replay on reconnect (issue #1016) ─────────────
     private val lastSeenSeq = ConcurrentHashMap<String, Int>()
+    private val sessionReplayEpochs = ConcurrentHashMap<String, String>()
 
     @Volatile
     private var replayEpoch: String? = null
@@ -268,6 +269,7 @@ object HermesWsClient {
         scope: ConnectionScope?,
         event: WsEvent? = null,
         gap: Boolean = false,
+        gapSessionId: String? = null,
     ) {
         if (scope == null || !isCurrentGeneration(scope.generation)) return
         when (event) {
@@ -282,14 +284,14 @@ object HermesWsClient {
 
             else -> {}
         }
-        _scopedEvents.tryEmit(ScopedWsEvent(scope, observationOrdinal.incrementAndGet(), event, gap))
+        _scopedEvents.tryEmit(ScopedWsEvent(scope, observationOrdinal.incrementAndGet(), event, gap, gapSessionId))
         if (event is WsEvent.SessionInfo) {
-            restoreVaultPrompts(scope, event.data)
+            restoreOpenPrompts(scope, event.data)
         }
     }
 
-    /** Resume and event replay carry these outside the event ring. Restore metadata only. */
-    internal fun restoreVaultPrompts(
+    /** Restore open prompts and accepted clarify locks from resume and replay snapshots. */
+    internal fun restoreOpenPrompts(
         scope: ConnectionScope,
         payload: Map<*, *>?,
     ) {
@@ -298,7 +300,7 @@ object HermesWsClient {
             val id = frame["id"] as? String ?: return@forEach
             val method = frame["method"] as? String ?: return@forEach
             val restored = EventParser.parseServerRequest(id, method, frame["params"] as? Map<*, *>)
-            if (restored is WsEvent.VaultRequest) emitScoped(scope, restored)
+            if (restored is WsEvent.VaultRequest || restored is WsEvent.ClarifyRequest) emitScoped(scope, restored)
         }
     }
 
@@ -408,6 +410,7 @@ object HermesWsClient {
                     if (!epoch.isNullOrEmpty()) {
                         if (replayEpoch != null && replayEpoch != epoch) {
                             lastSeenSeq.clear()
+                            sessionReplayEpochs.clear()
                         }
                         replayEpoch = epoch
                     }
@@ -713,6 +716,7 @@ object HermesWsClient {
                 pendingPromptSubmits.clear()
                 pendingReply = false
                 lastSeenSeq.clear()
+                sessionReplayEpochs.clear()
                 replayHold.clear()
                 replayEpoch = null
                 replayJob?.cancel()
@@ -824,6 +828,17 @@ object HermesWsClient {
         }
         return requestFixedScope(scope, method, params, 15_000L)
     }
+
+    internal suspend fun resumeAfterReplayGap(
+        scope: ConnectionScope,
+        savedSessionId: String,
+    ): Any? =
+        requestFixedScope(
+            scope,
+            WsMethods.SESSION_RESUME,
+            mapOf("session_id" to savedSessionId, "omit_messages" to true),
+            REQUEST_TIMEOUT_MS,
+        ).await()
 
     private fun requestFixedScope(
         scope: ConnectionScope,
@@ -937,6 +952,8 @@ object HermesWsClient {
                         WsMethods.APPROVAL_RECEIVED,
                         WsMethods.APPROVAL_PENDING,
                         WsMethods.CLARIFY_RESPOND,
+                        WsMethods.CLARIFY_LOCK,
+                        WsMethods.REQUEST_ANSWER,
                     )
             val sessionId = params["session_id"] as? String
             val exactResponse =
@@ -948,6 +965,15 @@ object HermesWsClient {
 
                     WsMethods.APPROVAL_RECEIVED, WsMethods.CLARIFY_RESPOND -> {
                         !(params["request_id"] as? String).isNullOrBlank()
+                    }
+
+                    WsMethods.CLARIFY_LOCK -> {
+                        !(params["request_id"] as? String).isNullOrBlank() &&
+                            !(params["question_id"] as? String).isNullOrBlank()
+                    }
+
+                    WsMethods.REQUEST_ANSWER -> {
+                        !(params["id"] as? String).isNullOrBlank() && params["result"] is Map<*, *>
                     }
 
                     else -> {
@@ -965,6 +991,8 @@ object HermesWsClient {
             val fixedParams =
                 params.toMutableMap().apply {
                     remove("profile")
+                    // These contracts reject unknown keys; session_id above only scopes the write.
+                    if (method == WsMethods.CLARIFY_LOCK || method == WsMethods.REQUEST_ANSWER) remove("session_id")
                     scope.serverProfileId?.let { put("profile", it) }
                 }
             val id = requestId.incrementAndGet().toString()
@@ -1253,9 +1281,10 @@ object HermesWsClient {
             }
             onSent?.invoke(id)
             if (method == WsMethods.APPROVAL_RESPOND || method == WsMethods.APPROVAL_RECEIVED ||
-                method == WsMethods.CLARIFY_RESPOND
+                method == WsMethods.CLARIFY_RESPOND || method == WsMethods.CLARIFY_LOCK ||
+                method == WsMethods.REQUEST_ANSWER
             ) {
-                // Approval writes require an original RequestRef through writeScoped.
+                // Answers require the original RequestRef through writeScoped.
                 rejectNotSent(id, replyPendingBeforeSend)
                 return@synchronized
             }
@@ -1437,7 +1466,7 @@ object HermesWsClient {
 
     private suspend fun fetchReplay() {
         if (replayInFlight || lastSeenSeq.isEmpty()) return
-        val scope = _connectionScope.value
+        val scope = _connectionScope.value ?: return
         replayInFlight = true
         val sessionsToReplay = lastSeenSeq.keys().toList()
         for (sid in sessionsToReplay) {
@@ -1447,13 +1476,19 @@ object HermesWsClient {
             for (sid in sessionsToReplay) {
                 val lastSeen = lastSeenSeq[sid] ?: continue
                 try {
-                    val deferred =
-                        request(
+                    val result =
+                        requestFixedScope(
+                            scope = scope,
                             method = WsMethods.SESSION_EVENTS_SINCE,
-                            params = mapOf("session_id" to sid, "last_seen" to lastSeen, "since_seq" to lastSeen),
+                            params =
+                                buildMap {
+                                    put("session_id", sid)
+                                    put("last_seen", lastSeen)
+                                    sessionReplayEpochs[sid]?.let { put("replay_epoch", it) }
+                                },
                             timeoutMs = 10_000L,
-                        )
-                    val result = deferred.await()
+                        ).await()
+                    if (!matchesCurrentScope(scope)) return
 
                     @Suppress("UNCHECKED_CAST")
                     val resultMap =
@@ -1463,17 +1498,23 @@ object HermesWsClient {
                             else -> null
                         }
                     if (resultMap != null) {
-                        if (resultMap["truncated"] == true) emitScoped(scope, gap = true)
                         val epoch = resultMap["epoch"] as? String
-                        if (!epoch.isNullOrEmpty()) {
-                            if (replayEpoch != null && replayEpoch != epoch) {
-                                emitScoped(scope, gap = true)
-                                replayEpoch = epoch
-                                lastSeenSeq.clear()
-                                continue
+                        val latest = (resultMap["latest_seq"] as? Number)?.toInt()
+                        val sessionEpoch = resultMap["replay_epoch"] as? String
+                        val previousSessionEpoch = sessionEpoch?.let { sessionReplayEpochs.put(sid, it) }
+                        val epochChanged =
+                            if (sessionEpoch != null) {
+                                previousSessionEpoch != null && previousSessionEpoch != sessionEpoch
+                            } else {
+                                epoch != null && replayEpoch != null && epoch != replayEpoch
                             }
-                            replayEpoch = epoch
+                        val requiresSnapshot =
+                            resultMap["truncated"] == true || resultMap["snapshot_required"] == true || epochChanged
+                        if (requiresSnapshot) {
+                            reportReplayGap(scope, sid, latest)
+                            continue
                         }
+                        if (sessionEpoch == null && !epoch.isNullOrEmpty()) replayEpoch = epoch
                         val eventsList = (resultMap["events"] as? List<*>)?.filterIsInstance<Map<String, Any?>>()
                         if (eventsList != null) {
                             for (eventMap in eventsList) {
@@ -1489,12 +1530,10 @@ object HermesWsClient {
                                     if (parsedEvent is WsEvent.MessageComplete) {
                                         parsedEvent.copy(
                                             storedSessionId =
-                                                scope?.let {
-                                                    ActiveSessionHolder.resolveStoredSessionId(
-                                                        it,
-                                                        parsedEvent.sessionId,
-                                                    )
-                                                },
+                                                ActiveSessionHolder.resolveStoredSessionId(
+                                                    scope,
+                                                    parsedEvent.sessionId,
+                                                ),
                                         )
                                     } else {
                                         parsedEvent
@@ -1503,17 +1542,20 @@ object HermesWsClient {
                                 emitScoped(scope, finalEvent)
                             }
                         }
-                        scope?.let { restoreVaultPrompts(it, resultMap) }
+                        restoreOpenPrompts(scope, resultMap)
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
-                    emitScoped(scope, gap = true)
+                    if (!matchesCurrentScope(scope)) return
+                    reportReplayGap(scope, sid, null)
                     Log.w(TAG, "Replay failed: ${e.javaClass.simpleName}")
                 }
             }
         } finally {
             for (sid in sessionsToReplay) {
                 val held = replayHold.remove(sid)
-                if (held != null) {
+                if (held != null && matchesCurrentScope(scope)) {
                     synchronized(held) {
                         for ((heldSeq, heldEvent) in held) {
                             if (heldSeq != null) {
@@ -1531,6 +1573,34 @@ object HermesWsClient {
         }
     }
 
+    internal fun adoptReplaySnapshot(
+        scope: ConnectionScope,
+        runtimeId: String,
+        snapshot: Map<*, *>,
+    ) {
+        val sequence = (snapshot["last_sequence"] as? Number)?.toInt()?.takeIf { it >= 0 } ?: return
+        val epoch = (snapshot["replay_epoch"] as? String)?.takeIf(String::isNotBlank) ?: return
+        synchronized(outboundLock) {
+            if (!matchesCurrentScope(scope)) return
+            val previous = sessionReplayEpochs.put(runtimeId, epoch)
+            if (previous != null && previous != epoch) {
+                lastSeenSeq[runtimeId] = sequence
+            } else {
+                lastSeenSeq.merge(runtimeId, sequence, ::maxOf)
+            }
+        }
+    }
+
+    private fun reportReplayGap(
+        scope: ConnectionScope,
+        sessionId: String,
+        latest: Int?,
+    ) {
+        if (!matchesCurrentScope(scope)) return
+        if (latest != null && latest >= 0) lastSeenSeq[sessionId] = latest
+        emitScoped(scope, gap = true, gapSessionId = sessionId)
+    }
+
     @VisibleForTesting
     internal fun getSeqWatermarks(): Map<String, Int> = HashMap(lastSeenSeq)
 
@@ -1545,6 +1615,7 @@ object HermesWsClient {
     @VisibleForTesting
     internal fun clearSeqWatermarks() {
         lastSeenSeq.clear()
+        sessionReplayEpochs.clear()
         replayHold.clear()
         replayEpoch = null
         replayInFlight = false
@@ -1742,7 +1813,9 @@ object HermesWsClient {
                     val rpc = OkHttpProvider.json.decodeFromString<JsonRpcResponse>(text)
                     if (rpc.id != null && rpc.method != null) {
                         val request = EventParser.parse(rpc)
-                        if (request is WsEvent.VaultRequest || request is WsEvent.ApprovalRequest) {
+                        if (request is WsEvent.VaultRequest || request is WsEvent.ApprovalRequest ||
+                            request is WsEvent.ClarifyRequest
+                        ) {
                             // Approvals stay open on the server until approval.respond settles them.
                             emitScoped(scope, request)
                         } else {
@@ -1791,9 +1864,17 @@ object HermesWsClient {
                         val sid =
                             (params?.get("session_id") as? String)
                                 ?: ((params?.get("payload") as? Map<*, *>)?.get("session_id") as? String)
+                        if (params?.get("type") == "session.replay_gap" && !sid.isNullOrBlank()) {
+                            val payload = params["payload"] as? Map<*, *>
+                            (payload?.get("replay_epoch") as? String)?.let { sessionReplayEpochs[sid] = it }
+                            reportReplayGap(scope, sid, (payload?.get("latest_seq") as? Number)?.toInt())
+                            return
+                        }
                         val seq = (params?.get("seq") as? Number)?.toInt()
-
                         if (!sid.isNullOrBlank() && seq != null) {
+                            val epoch = params["replay_epoch"] as? String
+                            val previous = epoch?.let { sessionReplayEpochs.put(sid, it) }
+                            if (previous != null && previous != epoch) reportReplayGap(scope, sid, seq - 1)
                             val prev = lastSeenSeq[sid] ?: 0
                             if (seq <= prev) {
                                 return

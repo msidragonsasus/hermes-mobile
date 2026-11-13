@@ -56,6 +56,11 @@ object CookieManager {
         j.useStore(serverId)
     }
 
+    internal suspend fun cookiesForProfile(
+        profileId: String,
+        endpoint: ServerEndpoint,
+    ): List<Cookie> = jar?.loadForServer(profileId, endpoint.resolve("api/auth/ws-ticket")).orEmpty()
+
     /** Read the current dashboard access-cookie value (or null). */
     fun getSessionCookie(): String? = jar?.getSessionCookieValue()
 

@@ -19,7 +19,7 @@ class AttentionCoordinator(
             source.attentionSignals.collect { signal ->
                 when (signal) {
                     is AttentionSignal.Gap -> {
-                        repository.markScopeUnknown(signal.scope)
+                        repository.markScopeUnknown(signal.scope, signal.runtimeId)
                     }
 
                     is AttentionSignal.Requested -> {
@@ -30,11 +30,21 @@ class AttentionCoordinator(
                     }
 
                     is AttentionSignal.Expired -> {
-                        repository.items.value
-                            .filter {
-                                it.ref.scope == signal.scope && it.ref.session.runtimeId == signal.runtimeId &&
-                                    it.ref.requestId == signal.requestId && it.kind == AttentionKind.CLARIFICATION
-                            }.forEach { repository.expire(it.ref) }
+                        repository.settleClarification(
+                            signal.scope,
+                            signal.runtimeId,
+                            signal.requestId,
+                            resolved = false,
+                        )
+                    }
+
+                    is AttentionSignal.Resolved -> {
+                        repository.settleClarification(
+                            signal.scope,
+                            signal.runtimeId,
+                            signal.requestId,
+                            resolved = true,
+                        )
                     }
                 }
             }

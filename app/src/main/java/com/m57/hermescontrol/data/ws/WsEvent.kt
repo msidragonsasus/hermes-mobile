@@ -179,6 +179,12 @@ sealed class WsEvent {
         val questionId: String? = null,
         val multiSelect: Boolean = false,
         val questions: List<ClarifyQuestion> = emptyList(),
+        val lockedAnswers: Map<String, String?> = emptyMap(),
+    ) : WsEvent()
+
+    data class ClarifyResolved(
+        val clarifyId: String?,
+        val sessionId: String?,
     ) : WsEvent()
 
     data class ClarifyExpire(
