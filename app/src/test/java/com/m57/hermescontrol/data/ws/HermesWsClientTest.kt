@@ -307,6 +307,13 @@ class HermesWsClientTest {
 
     @Test
     fun nonGatedSocketRefreshUsesFreshTokenBeforeOpening() {
+        // Refresh is invoked for an admitted opening, never after an intentional disconnect.
+        (
+            HermesWsClient::class.java
+                .getDeclaredField("intentionalClose")
+                .apply { isAccessible = true }
+                .get(HermesWsClient) as java.util.concurrent.atomic.AtomicBoolean
+        ).set(false)
         val generation =
             (
                 HermesWsClient::class.java
@@ -1605,11 +1612,16 @@ class HermesWsClientTest {
         every { AuthManager.getSelectedProfileId() } returns null
         every { AuthManager.activeProfileId } returns MutableStateFlow(null)
         listener.onMessage(socket, """{"method":"event","params":{"type":"gateway.ready"}}""")
+        val readyFrames = sent.map { Json.parseToJsonElement(it).jsonObject }
+        assertEquals(2, readyFrames.size)
+        assertEquals(
+            setOf("client.capabilities", "gateway.capabilities"),
+            readyFrames.map { it["method"]?.jsonPrimitive?.content }.toSet(),
+        )
         assertEquals(
             "client.capabilities",
-            Json
-                .parseToJsonElement(sent.single())
-                .jsonObject["method"]
+            readyFrames
+                .single { it["method"]?.jsonPrimitive?.content == "client.capabilities" }["method"]
                 ?.jsonPrimitive
                 ?.content,
         )
@@ -3396,6 +3408,7 @@ class HermesWsClientTest {
                         code: Int,
                         reason: String,
                     ) {
+                        super.onClosing(webSocket, code, reason)
                         closedLatch.countDown()
                     }
                 },
