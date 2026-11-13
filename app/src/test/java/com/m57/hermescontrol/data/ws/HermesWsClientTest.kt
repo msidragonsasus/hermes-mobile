@@ -1656,7 +1656,17 @@ class HermesWsClientTest {
             """{"method":"event","params":{"type":"request.cancel","session_id":"chat","payload":{"id":"cancelled"}}}""",
         )
         assertFalse(HermesWsClient.respondToVaultPrompt(scope, "cancelled", "123456"))
-        assertEquals(2, sent.size)
+        assertEquals(readyFrames.size + 1, sent.size)
+        assertEquals(
+            1,
+            sent.count {
+                Json
+                    .parseToJsonElement(it)
+                    .jsonObject["id"]
+                    ?.jsonPrimitive
+                    ?.content == "srq-test"
+            },
+        )
         HermesWsClient.disconnect()
         assertFalse(HermesWsClient.respondToVaultPrompt(scope, "srq-test", value))
         assertFalse(logs.joinToString("\n").contains("SYNTHETIC_PRIVATE"))
