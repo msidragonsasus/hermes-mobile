@@ -38,12 +38,45 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.theme.LocalSpacing
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
-/** A frozen plain-text copy of the terminal buffer and where the user pressed. */
+/**
+ * A frozen plain-text copy of the terminal buffer, where the user pressed ([offset]) and where
+ * the visible top row started ([top]). [word] selects the pressed word; otherwise only a caret.
+ */
 internal data class TerminalSelection(
     val text: String,
     val offset: Int,
+    val top: Int = offset,
+    val word: Boolean = true,
 )
+
+/** Parses `hermesTerminal.snapshot()`; offsets outside the text are clamped. */
+internal fun parseTerminalSnapshot(
+    json: String,
+    word: Boolean,
+): TerminalSelection? =
+    runCatching {
+        val value = Json.parseToJsonElement(json).jsonObject
+        val text = value.getValue("text").jsonPrimitive.content
+        TerminalSelection(
+            text = text,
+            offset =
+                value
+                    .getValue("offset")
+                    .jsonPrimitive.int
+                    .coerceIn(0, text.length),
+            top =
+                value
+                    .getValue("top")
+                    .jsonPrimitive.int
+                    .coerceIn(0, text.length),
+            word = word,
+        )
+    }.getOrNull()
 
 /** The non-space run around [offset], or an empty range there when it falls on space. */
 internal fun terminalWordRange(
@@ -51,6 +84,7 @@ internal fun terminalWordRange(
     offset: Int,
 ): TextRange {
     val at = offset.coerceIn(0, text.length)
+
     fun word(i: Int) = i in text.indices && !text[i].isWhitespace()
     val anchor =
         when {
@@ -82,18 +116,36 @@ internal fun TerminalSelectionPane(
     val colors = MaterialTheme.colorScheme
     val textSize = with(LocalDensity.current) { fontSize.dp.toSp() }
     var value by remember(selection) {
-        mutableStateOf(TextFieldValue(selection.text, terminalWordRange(selection.text, selection.offset)))
+        val range =
+            if (selection.word) {
+                terminalWordRange(
+                    selection.text,
+                    selection.offset,
+                )
+            } else {
+                TextRange(selection.offset)
+            }
+        mutableStateOf(TextFieldValue(selection.text, range))
     }
     var layout by remember(selection) { mutableStateOf<TextLayoutResult?>(null) }
     var viewport by remember { mutableIntStateOf(0) }
     val scroll = rememberScrollState()
     val focus = remember { FocusRequester() }
+    // Room below the last line for Android's drag handles.
+    val handleRoom = with(LocalDensity.current) { 32.dp.roundToPx() }
     BackHandler(onBack = onDone)
     LaunchedEffect(selection, layout != null, viewport > 0) {
         val result = layout ?: return@LaunchedEffect
         if (viewport == 0) return@LaunchedEffect
-        val line = result.getLineForOffset(value.selection.start.coerceIn(0, selection.text.length))
-        scroll.scrollTo((result.getLineTop(line).toInt() - viewport / 2).coerceAtLeast(0))
+        // Open where the live terminal was: its visible top row stays on top, unless the
+        // pressed line would fall outside, never jumping to the tail.
+        val topLine = result.getLineForOffset(selection.top.coerceIn(0, selection.text.length))
+        val pressedLine = result.getLineForOffset(value.selection.start.coerceIn(0, selection.text.length))
+        val pressedTop = result.getLineTop(pressedLine).toInt()
+        val target =
+            result.getLineTop(topLine).toInt().takeIf { pressedTop - it in 0 until viewport - handleRoom }
+                ?: (pressedTop - viewport / 2)
+        scroll.scrollTo(target.coerceAtLeast(0))
         runCatching { focus.requestFocus() }
     }
     Column(modifier.background(colors.surface).testTag("terminal_selection")) {
@@ -133,7 +185,8 @@ internal fun TerminalSelectionPane(
                 modifier =
                     Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = spacing.sm, vertical = spacing.xs)
+                        // Same inset as the live terminal; extra bottom room keeps end handles draggable.
+                        .padding(start = spacing.md, end = spacing.md, top = spacing.sm, bottom = spacing.sm + 32.dp)
                         .focusRequester(focus)
                         .testTag("terminal_selection_text"),
             )

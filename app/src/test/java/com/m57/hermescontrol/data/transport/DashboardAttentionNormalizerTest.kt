@@ -39,6 +39,23 @@ class DashboardAttentionNormalizerTest {
     }
 
     @Test
+    fun decodedApprovalChoicesAreSanitizedBeforeExposure() {
+        val offered = listOf("once", "session", "always", "deny", "unknown")
+        val cases =
+            listOf(
+                approval.copy(choices = null) to listOf("once", "deny"),
+                approval.copy(choices = emptyList()) to emptyList(),
+                approval.copy(choices = listOf("unknown")) to emptyList(),
+                approval.copy(choices = offered, allowPermanent = false) to listOf("once", "session", "deny"),
+                approval.copy(choices = offered, smartDenied = true) to listOf("once", "deny"),
+                approval.copy(choices = listOf("session", "always"), smartDenied = true) to emptyList(),
+            )
+        for ((event, expected) in cases) {
+            assertEquals(expected, dashboardAttentionItems(scope, event).single().details?.approvalChoices)
+        }
+    }
+
+    @Test
     fun batchMapsEveryExactQuestionAndRejectsDuplicateOrBlankIdentifiers() {
         val event =
             WsEvent.ClarifyRequest(

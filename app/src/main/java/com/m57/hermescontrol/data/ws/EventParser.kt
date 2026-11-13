@@ -1,6 +1,7 @@
 package com.m57.hermescontrol.data.ws
 
 import android.util.Log
+import com.m57.hermescontrol.domain.hermes.allowedApprovalChoices
 import com.m57.hermescontrol.ui.chat.extractTodosFromMap
 
 /**
@@ -74,8 +75,20 @@ object EventParser {
             }
 
             "message.token", "message.delta" -> {
-                val token = payload?.get("text") as? String ?: ""
-                WsEvent.MessageToken(token, sessionId)
+                val text = payload?.get("text")
+                if (eventType == "message.delta" && payload?.containsKey("text") == true && text == null) {
+                    WsEvent.MessageSegmentEnd(sessionId)
+                } else {
+                    WsEvent.MessageToken(text as? String ?: "", sessionId)
+                }
+            }
+
+            "message.interim" -> {
+                WsEvent.MessageInterim(
+                    text = payload?.get("text") as? String ?: "",
+                    alreadyStreamed = payload?.get("already_streamed") as? Boolean ?: false,
+                    sessionId = sessionId,
+                )
             }
 
             "thinking.delta" -> {
@@ -247,7 +260,7 @@ object EventParser {
                 val message =
                     payload?.get("message") as? String
                         ?: payload?.get("error") as? String
-                WsEvent.GatewayError(message)
+                WsEvent.GatewayError(message, sessionId)
             }
 
             "background.complete" -> {
@@ -341,7 +354,14 @@ object EventParser {
         // Hermes Agent v0.22+ sends exec approvals as an `approval` server request. Show the normal card;
         // the answer goes through `approval.respond` with request_id, and the server then withdraws this frame.
         if (method == "approval") {
-            val approval = if (id.isBlank() || sessionId.isNullOrBlank()) null else parseApprovalRequest(params, sessionId)
+            val approval =
+                if (id.isBlank() ||
+                    sessionId.isNullOrBlank()
+                ) {
+                    null
+                } else {
+                    parseApprovalRequest(params, sessionId)
+                }
             return approval?.takeUnless { it.requestId.isNullOrBlank() } ?: WsEvent.UnsupportedServerRequest(id)
         }
         val kind = VaultPromptKind.entries.firstOrNull { it.method == method }
@@ -382,22 +402,10 @@ object EventParser {
         val allowPermanent = payload?.get("allow_permanent") as? Boolean
         val allowSession = payload?.get("allow_session") as? Boolean
         val smartDenied = payload?.get("smart_denied") as? Boolean
-        // Backend default (server.py `_approval_request_payload`):
-        // smart-denied → once/deny only; else once + session? + always? + deny.
+        // Flags restrict an explicit advertisement; missing choices never infer broader permission.
         val choices =
-            rawChoices ?: run {
-                if (smartDenied == true) {
-                    listOf("once", "deny")
-                } else {
-                    buildList {
-                        add("once")
-                        if (allowSession != false) {
-                            add("session")
-                            if (allowPermanent != false) add("always")
-                        }
-                        add("deny")
-                    }
-                }
+            allowedApprovalChoices(rawChoices, allowPermanent, smartDenied).filter { choice ->
+                allowSession != false || choice == "once" || choice == "deny"
             }
         return WsEvent.ApprovalRequest(
             command,

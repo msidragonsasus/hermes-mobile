@@ -3,7 +3,7 @@ package com.m57.hermescontrol.career
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
-/** Browsing is independent of the exact registered URL that alone may receive credentials. */
+/** Browsing is independent of credential authorization for registered scope or the session's first landing. */
 internal class CareerBrowserPolicy private constructor(
     val loginUrl: HttpUrl,
 ) {
@@ -54,6 +54,13 @@ internal class CareerBrowserPolicy private constructor(
         return loginUrl.queryParameterNames.all { url.queryParameterValues(it) == loginUrl.queryParameterValues(it) }
     }
 
+    /** The registered scope, or this session's first landing document; both need a native document token. */
+    fun allowsDocumentFill(
+        value: String?,
+        documentToken: String?,
+        landing: CareerBrowserLanding?,
+    ): Boolean = documentToken != null && (allowsFill(value) || landing?.isDocument(value, documentToken) == true)
+
     companion object {
         private val authSegment =
             Regex(
@@ -79,6 +86,17 @@ internal class CareerBrowserPolicy private constructor(
             parse(value)?.let {
                 CareerBrowserPolicy(it.newBuilder().fragment(null).build())
             }
+
+        /** A browsable public HTTPS document without fragment or encoded path tricks. */
+        internal fun documentUrl(value: String?): HttpUrl? {
+            val url = parseBrowsing(value) ?: return null
+            if (';' in url.encodedPath || "//" in url.encodedPath ||
+                Regex("%2f|%5c|%25|%3b", RegexOption.IGNORE_CASE).containsMatchIn(url.encodedPath)
+            ) {
+                return null
+            }
+            return url.newBuilder().fragment(null).build()
+        }
 
         private fun parseBrowsing(value: String?): HttpUrl? {
             val url = parse(value, strictLoginTarget = false) ?: return null
@@ -122,6 +140,112 @@ internal class CareerBrowserPolicy private constructor(
             }
             return url
         }
+    }
+}
+
+/**
+ * The document the registered URL actually opened, after its server redirects. It receives the registered
+ * company's credentials although its URL differs; the server request stays bound to the registered URL.
+ */
+internal class CareerBrowserLanding private constructor(
+    val url: HttpUrl,
+    val token: String,
+) {
+    fun isDocument(
+        value: String?,
+        documentToken: String?,
+    ): Boolean = documentToken == token && CareerBrowserPolicy.documentUrl(value) == url
+
+    companion object {
+        fun create(
+            value: String?,
+            token: String,
+        ): CareerBrowserLanding? {
+            if (token.isBlank()) return null
+            return CareerBrowserPolicy.documentUrl(value)?.let { CareerBrowserLanding(it, token) }
+        }
+    }
+}
+
+/**
+ * Follows only the root session's initial load and the server redirects it is answered with. Any other
+ * main-frame request (link, form, script redirect, back/forward, reload) ends the chain for good.
+ */
+internal class CareerBrowserLandingChain {
+    private var begun = false
+    private var awaiting: HttpUrl? = null
+    private var latest = 0L
+    private var chained = 0L
+    private var chainedUrl: HttpUrl? = null
+
+    @get:Synchronized
+    var landing: CareerBrowserLanding? = null
+        private set
+
+    @Synchronized
+    fun begin(url: String) {
+        if (begun) return
+        begun = true
+        awaiting = CareerBrowserPolicy.documentUrl(url)
+    }
+
+    /** Called for every main-frame request; returns its sequence number. */
+    @Synchronized
+    fun request(
+        url: String,
+        method: String,
+    ): Long {
+        val expected = awaiting
+        awaiting = null
+        latest++
+        val continued = expected != null && method == "GET" && CareerBrowserPolicy.documentUrl(url) == expected
+        chained = if (continued) latest else 0
+        chainedUrl = if (continued) expected else null
+        return latest
+    }
+
+    @Synchronized
+    fun continues(request: Long): Boolean = request != 0L && request == chained && request == latest
+
+    /** A redirect continues the chain only if no other main-frame request superseded it. */
+    @Synchronized
+    fun redirect(
+        request: Long,
+        next: String?,
+    ): Boolean {
+        if (!continues(request)) return false
+        chained = 0
+        chainedUrl = null
+        awaiting = CareerBrowserPolicy.documentUrl(next)
+        return awaiting != null
+    }
+
+    /** The chain's served document becomes the one landing; nothing later can be granted. */
+    @Synchronized
+    fun grant(
+        request: Long,
+        url: String?,
+        token: String,
+    ): CareerBrowserLanding? {
+        if (!continues(request)) return null
+        val expected = chainedUrl
+        chained = 0
+        chainedUrl = null
+        if (CareerBrowserPolicy.documentUrl(url) != expected) return null
+        return CareerBrowserLanding.create(url, token)?.also { landing = it }
+    }
+
+    @Synchronized
+    fun documentStarted() {
+        landing = null
+    }
+
+    @Synchronized
+    fun end() {
+        awaiting = null
+        chained = 0
+        chainedUrl = null
+        landing = null
     }
 }
 

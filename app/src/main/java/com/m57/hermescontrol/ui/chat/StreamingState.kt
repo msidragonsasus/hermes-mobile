@@ -18,4 +18,15 @@ data class StreamingState(
      * every fresh StreamingState (message.start / interrupt / session switch).
      */
     val sealedOrphanIds: List<String> = emptyList(),
+    /**
+     * True while reply text is the latest turn activity. Thinking, reasoning,
+     * segment boundaries and tool frames clear it; the 「思考中」 indicator stays
+     * hidden while it is set because the growing text already shows progress.
+     */
+    val isWritingText: Boolean = false,
+    /**
+     * Set by message.complete/done (or an acknowledged interrupt / idle status)
+     * until the next message.start, so late frames cannot revive a finished turn.
+     */
+    val turnEnded: Boolean = false,
 )

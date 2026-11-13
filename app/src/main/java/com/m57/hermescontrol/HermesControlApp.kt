@@ -21,6 +21,7 @@ import com.m57.hermescontrol.ui.analytics.AnalyticsPreloader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class HermesControlApp :
     Application(),
@@ -53,7 +54,16 @@ class HermesControlApp :
             attentionCoordinator.start(observationScope)
             AnalyticsPreloader.preload(this)
             // Issue #890: retain the existing update notice after storage validation.
-            UpdateNoticeManager.checkOnLaunch()
+            UpdateNoticeManager.checkOnLaunch(
+                inspector =
+                    com.m57.hermescontrol.data.update
+                        .PackageManagerApkInspector(this),
+            )
+            // Drop update results bound to a previous connection even when no updater screen is open.
+            observationScope.launch {
+                com.m57.hermescontrol.data.update.UpdateConnectionWatcher
+                    .watch()
+            }
         }
     }
 

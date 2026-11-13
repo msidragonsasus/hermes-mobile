@@ -46,9 +46,8 @@ class AttentionCoordinator(
         ref: RequestRef,
         choice: String,
     ) {
-        if (choice !in setOf("once", "deny")) return
         val item = repository.items.value.firstOrNull { it.ref == ref && it.kind == AttentionKind.APPROVAL } ?: return
-        if (item.details?.approvalChoices?.let { choice !in it } == true) return
+        if (choice !in allowedApprovalChoices(item.details?.approvalChoices)) return
         repository.respond(ref, connection.configuredScope(), isReady(ref), now()) {
             transport.respondApproval(ref, choice)
         }

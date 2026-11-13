@@ -257,6 +257,8 @@ fun ChatScreen(
         scrollController.observeUserScrollPosition()
     }
 
+    val thinkingIndicatorVisible = showsThinkingIndicator(state, streamingState)
+
     // Drive follow + unseen tracking from a stable tail-content key covering
     // messages, streaming, thinking, subagent cards, and clarify prompts
     // (issue #682). Replaces the old item-count heuristic that ignored the
@@ -264,7 +266,7 @@ fun ChatScreen(
     LaunchedEffect(
         state.messages,
         streamingState.streamingMessage,
-        streamingState.isThinking,
+        thinkingIndicatorVisible,
         state.subagentIndicators,
         state.todos,
         state.clarifyRequest,
@@ -274,7 +276,7 @@ fun ChatScreen(
                 tailContentKey(
                     messages = state.messages,
                     streamingMessage = streamingState.streamingMessage,
-                    isThinking = streamingState.isThinking,
+                    isThinking = thinkingIndicatorVisible,
                     subagentIndicators = state.subagentIndicators,
                     clarifyRequest = state.clarifyRequest,
                 ),
@@ -634,8 +636,17 @@ fun ChatScreen(
 
             if (AppUpdateCache.isDialogVisible) {
                 val context = androidx.compose.ui.platform.LocalContext.current
+                // The view model's state, not the cache: download progress, verification and
+                // cancel must be visible here, and its stale-connection guard applies.
+                val updateDialogState by appUpdateViewModel.state.collectAsStateWithLifecycle()
+                val updateSourceInfo by appUpdateViewModel.sourceInfo.collectAsStateWithLifecycle()
                 AppUpdateDialog(
-                    state = updateNotice,
+                    state = updateDialogState,
+                    sourceLabel =
+                        com.m57.hermescontrol.ui.common.updateSourceLabel(
+                            updateSourceInfo.source,
+                            updateSourceInfo.serverLabel,
+                        ),
                     onDismiss = { AppUpdateCache.hideDialog() },
                     onStartUpdate = { appUpdateViewModel.startUpdate() },
                     onCancelDownload = { appUpdateViewModel.cancelDownload() },
@@ -749,7 +760,10 @@ fun ChatScreen(
                     }
                 // Turn headers name the agent you are talking to, with its bot avatar.
                 val botsViewModel: com.m57.hermescontrol.ui.bots.BotsViewModel =
-                    viewModel { com.m57.hermescontrol.ui.bots.BotsViewModel() }
+                    viewModel {
+                        com.m57.hermescontrol.ui.bots
+                            .BotsViewModel()
+                    }
                 val botsState by botsViewModel.uiState.collectAsStateWithLifecycle()
                 val activeAgent = botsState.profiles.firstOrNull { it.name == botsState.activeProfileName }
                 val agentIdentity =
@@ -791,6 +805,7 @@ fun ChatScreen(
                         savingAttachmentPath = pendingSavePath ?: state.savingAttachmentPath,
                         openingAttachmentPath = state.openingAttachmentPath,
                         onImageClick = { viewingImage = it },
+                        showThinkingIndicator = thinkingIndicatorVisible,
                     )
                 }
 

@@ -52,26 +52,8 @@ internal object HostMediaExtractor {
             .trim()
     }
 
-    /** Expand ~/ and verify the path is absolute. Null if not an absolute path. */
-    internal fun normalizePath(raw: String): String? {
-        val trimmed =
-            raw
-                .trim()
-                .removeSurrounding("`")
-                .removeSurrounding("\"")
-                .removeSurrounding("'")
-        val expanded =
-            if (trimmed.startsWith("~")) {
-                val home = System.getenv("HOME") ?: return null
-                home + trimmed.removePrefix("~")
-            } else {
-                trimmed
-            }
-        if (!expanded.startsWith("/") &&
-            !Regex("^[A-Za-z]:[/\\\\]").containsMatchIn(expanded)
-        ) {
-            return null
-        }
-        return expanded
-    }
+    /** Preserve the gateway's ~/ anchor; never expand it using the phone's HOME. */
+    internal fun normalizePath(raw: String): String? =
+        com.m57.hermescontrol.data.remote.GatewayFileClient
+            .normalizePath(raw)
 }

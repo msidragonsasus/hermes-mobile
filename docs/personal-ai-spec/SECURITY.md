@@ -93,7 +93,10 @@ interface MiniAppPolicyEnforcer {
 - exact permission
 
 固定server/profile/session/request IDにだけ返答し、解決ACK前に完了扱いしない。
-v1はonce/denyのみでsession/always許可は禁止。既存serverの恒久許可も別途確認する。
+Desktop相当の承認操作として、サーバーがそのrequestに明示したonce/session/always/denyだけを表示・送信する。
+choices未提供の旧形式はonce/denyだけとし、不正・空のchoicesから許可を補完しない。
+smart_denied、allow_session=false、allow_permanent=falseによる制限を維持し、未知の選択肢を許可へ変換しない。
+セッション中・恒久の許可は範囲を説明した本人の明示操作のみで、既定選択・自動承認・全要求への一括適用を行わない。
 Android承認UIだけで全Hermes toolの外部writeを制御できるとは限らないため、
 server側policy/実行経路が確認できるまで未検証の任意writeを有効化しない。
 

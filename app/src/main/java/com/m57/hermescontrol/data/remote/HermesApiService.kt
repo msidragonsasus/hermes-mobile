@@ -201,6 +201,14 @@ interface HermesApiService {
         @Body request: com.m57.hermescontrol.home.TodayCompletion,
     ): com.m57.hermescontrol.home.TodayPlan
 
+    /** Persists 対象外 (false) / やることに追加 (true) by task ID; returns the whole plan. */
+    @PUT("api/plugins/today_home/tasks/{id}/interest")
+    suspend fun setTodayInterest(
+        @Query("profile") profile: String,
+        @Path("id") id: String,
+        @Body request: com.m57.hermescontrol.home.TodayInterest,
+    ): com.m57.hermescontrol.home.TodayPlan
+
     @PATCH("api/plugins/group_chat/conversations/{id}")
     suspend fun renameGroupConversation(
         @Path("id") id: String,

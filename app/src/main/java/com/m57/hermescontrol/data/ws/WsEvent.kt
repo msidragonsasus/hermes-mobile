@@ -81,6 +81,21 @@ sealed class WsEvent {
         val sessionId: String?,
     ) : WsEvent()
 
+    /**
+     * `message.interim`: interim commentary sealed as its own segment while the
+     * turn continues. [alreadyStreamed] means the same text arrived as deltas.
+     */
+    data class MessageInterim(
+        val text: String,
+        val alreadyStreamed: Boolean,
+        val sessionId: String?,
+    ) : WsEvent()
+
+    /** `message.delta` with `text: null`: the current reply segment ended; the turn continues. */
+    data class MessageSegmentEnd(
+        val sessionId: String?,
+    ) : WsEvent()
+
     // ── Tool execution ───────────────────────────────────────────────────
 
     data class ToolStart(
@@ -327,6 +342,7 @@ sealed class WsEvent {
      */
     data class GatewayError(
         val message: String?,
+        val sessionId: String? = null,
     ) : WsEvent()
 
     // ── Gateway change events ───────────────────────────────────────────

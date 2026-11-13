@@ -10,9 +10,22 @@ agent tool, Relay, extra public port, or external terminal service.
 - Send commits the edited text. The Enter toggle controls whether to append Enter.
   With it off, text is delivered without submitting it; the separate Enter key submits.
 - Enter, Tab, Esc, Ctrl+C/D/Z/L and arrows are explicit buttons.
-- Secret input masks the editor and uses the password keyboard. It does **not**
-  change the remote program's echo settings: enter codes/passwords at the program's
-  own prompt. Input/output stays in volatile memory; this App has no history DB.
+- There is no secret-input mode. Frequently used strings and passwords are saved by the
+  user on the phone (「保存した入力」), per exact server + profile, in the app's
+  AndroidKeyStore-backed encrypted preferences. They are excluded from backup and device
+  transfer and never sent to the server except when the user sends the editor text.
+  Tapping one only inserts it into the editor; sending stays explicit. Password entries
+  are listed by label, masked in the editor (reveal is optional in the entry editor), and
+  an inserted password is cleared when the app goes to the background or the session or
+  connection changes. Unreadable saved data fails closed and is not overwritten.
+  Input/output stays in volatile memory; this App has no command or output history.
+- keiya: the shell logs in through local `ssh keiya@127.0.0.1`. Save keiya's password once
+  (「keiyaのパスワードを保存」), then at the SSH password prompt tap 「keiyaのパスワード」 and send.
+  It is never sent automatically. Reopening a running session from the list avoids a new login.
+- Touch: one-finger drag scrolls the output (with fling); long-press opens native text
+  selection at the pressed word, keeping the visible position. While older output is shown,
+  new output does not move the view, and page / 「最新へ」 controls appear. Arrow keys
+  remain explicit shell keys and are never used for scrolling.
 - Output supports ANSI/TUI rendering, scrollback, font size, text selection and
   explicit HTTPS link opening in the system browser. Clipboard writes are manual.
 - Sessions survive leaving the screen and can be selected again. Idle sessions
@@ -30,8 +43,8 @@ agent tool, Relay, extra public port, or external terminal service.
 
 Use the Claude login shortcut, review `claude auth login`, then send. Open the
 printed HTTPS authorization URL using the output menu and complete the browser
-login yourself. If Claude asks for a code, enable secret input and send the code
-to that terminal prompt. Do not paste it into AI chat. CLI installation, account
+login yourself. If Claude asks for a code, type or paste it into the editor and send
+it to that terminal prompt. Do not paste it into AI chat. CLI installation, account
 entitlement and authentication remain owned by the server's service account;
 this plugin does not install Claude, purchase access or select an API billing key.
 

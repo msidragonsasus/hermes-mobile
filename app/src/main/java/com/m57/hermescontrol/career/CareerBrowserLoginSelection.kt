@@ -41,6 +41,50 @@ internal class CareerBrowserLoginSnapshot(
         return CareerBrowserLoginSelection(login, password, signature)
     }
 
+    /** Compatibility for a missing optional locator, never a substitute for credential authorization. */
+    fun legacySelection(): CareerBrowserLoginSelection? {
+        if (fields.size !in 2..64 || signature != fields.toString()) return null
+        val nodes = fields.map { it as? JsonObject ?: return null }
+        val pass = nodes.singleOrNull { it["type"] == JsonPrimitive("password") } ?: return null
+        val form = (pass["form"] as? JsonPrimitive)?.intOrNull?.takeIf { it >= 0 } ?: return null
+        val texts =
+            nodes.filter {
+                it["form"] == JsonPrimitive(form) &&
+                    (it["type"] as? JsonPrimitive)?.contentOrNull in setOf("text", "email", "tel")
+            }
+        val login = texts.singleOrNull() ?: return null
+        if (listOf(login, pass).any { it["occupied"] != JsonPrimitive(false) }) return null
+        val loginAutocomplete = (login["autocomplete"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        val passAutocomplete = (pass["autocomplete"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        if (loginAutocomplete in setOf("one-time-code", "new-password", "current-password") ||
+            passAutocomplete in setOf("one-time-code", "new-password")
+        ) {
+            return null
+        }
+
+        fun metadata(node: JsonObject): String =
+            listOf("name", "id", "labelHints").joinToString(" ") { node[it]?.toString().orEmpty() }
+        if (Regex(
+                "password|passwd|captcha|one.?time|otp|verification|verifycode|search|companyid|tenant|パスワード|認証コード|確認コード|検索",
+                RegexOption.IGNORE_CASE,
+            ).containsMatchIn(metadata(login)) ||
+            Regex(
+                "newpassword|confirmpassword|repeatpassword|resetpassword|captcha|one.?time|otp|認証コード|確認コード|再設定|再入力|変更",
+                RegexOption.IGNORE_CASE,
+            ).containsMatchIn(metadata(pass))
+        ) {
+            return null
+        }
+        val loginIndex = (login["index"] as? JsonPrimitive)?.intOrNull ?: return null
+        val passwordIndex = (pass["index"] as? JsonPrimitive)?.intOrNull ?: return null
+        return selection(
+            buildJsonObject {
+                put("login_index", loginIndex)
+                put("password_index", passwordIndex)
+            },
+        )
+    }
+
     companion object {
         fun parse(result: String): CareerBrowserLoginSnapshot? =
             runCatching {

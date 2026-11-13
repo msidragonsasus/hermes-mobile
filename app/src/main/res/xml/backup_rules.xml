@@ -6,6 +6,8 @@
    See https://developer.android.com/about/versions/12/backup-restore
 -->
 <full-backup-content>
+    <!-- Terminal saved inputs and passwords: Keystore-bound, phone-local only. -->
+    <exclude domain="sharedpref" path="hermes_terminal_snippets.xml"/>
     <!--
    <include domain="sharedpref" path="."/>
    <exclude domain="sharedpref" path="device.xml"/>

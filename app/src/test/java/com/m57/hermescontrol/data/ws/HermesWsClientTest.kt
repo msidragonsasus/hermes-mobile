@@ -13,6 +13,7 @@ import com.m57.hermescontrol.data.session.ActiveSessionHolder
 import com.m57.hermescontrol.data.transport.DashboardRpcTransport
 import com.m57.hermescontrol.domain.hermes.ConnectionScope
 import com.m57.hermescontrol.domain.hermes.PromptAcceptance
+import com.m57.hermescontrol.domain.hermes.RequestRef
 import com.m57.hermescontrol.domain.hermes.SessionRef
 import com.m57.hermescontrol.domain.hermes.SubmissionResult
 import com.m57.hermescontrol.util.captureDiagnosticLogs
@@ -932,22 +933,242 @@ class HermesWsClientTest {
     }
 
     @Test
-    fun testScopedAttentionRejectsBroadOrMissingIdentityBeforeWire() {
+    fun testScopedAttentionKnownChoicesReachWireAndMatchReverseAcks() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val (scope, listener) = scopedWriteFixture(socket)
+            val frames = mutableListOf<kotlinx.serialization.json.JsonObject>()
+            every { socket.send(any<String>()) } answers {
+                frames.add(Json.parseToJsonElement(firstArg<String>()).jsonObject)
+                true
+            }
+            val choices = listOf("once", "session", "always", "deny")
+            val submissions =
+                choices.map { choice ->
+                    HermesWsClient
+                        .writeScoped(
+                            scope,
+                            WsMethods.APPROVAL_RESPOND,
+                            mapOf(
+                                "session_id" to "runtime-$choice",
+                                "request_id" to "approval-$choice",
+                                "choice" to choice,
+                                "all" to false,
+                            ),
+                        ).also { assertTrue("Known choice $choice must reach the socket", it.accepted) }
+                }
+            assertEquals(choices.size, frames.size)
+            assertEquals(choices.size, submissions.map { it.requestId }.toSet().size)
+            frames.zip(choices).forEach { (frame, choice) ->
+                assertEquals(WsMethods.APPROVAL_RESPOND, frame["method"]!!.jsonPrimitive.content)
+                assertEquals(
+                    buildJsonObject {
+                        put("session_id", "runtime-$choice")
+                        put("request_id", "approval-$choice")
+                        put("choice", choice)
+                        put("all", false)
+                        put("profile", "profile-a")
+                    },
+                    frame["params"],
+                )
+            }
+            submissions.indices.reversed().forEach { index ->
+                assertFalse(submissions[index].response.isCompleted)
+                listener.onMessage(
+                    socket,
+                    """{"jsonrpc":"2.0","id":"${submissions[index].requestId}","result":{"resolved":1}}""",
+                )
+                assertEquals(
+                    buildJsonObject { put("resolved", 1) },
+                    withTimeout(5000) { submissions[index].response.await() },
+                )
+                submissions.take(index).forEach { assertFalse(it.response.isCompleted) }
+            }
+            listener.onOpen(socket, mockk(relaxed = true))
+            verify(exactly = 4) { socket.send(any<String>()) }
+            assertEquals(0, mockWebServer.requestCount)
+        }
+
+    @Test
+    fun testScopedAttentionBroaderTransportChoicesWaitForMatchingAck() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val (scope, listener) = scopedWriteFixture(socket)
+            val frames = mutableListOf<kotlinx.serialization.json.JsonObject>()
+            every { socket.send(any<String>()) } answers {
+                frames.add(Json.parseToJsonElement(firstArg<String>()).jsonObject)
+                true
+            }
+            val transport = DashboardRpcTransport()
+            val choices = listOf("session", "always")
+            val results =
+                choices.map { choice ->
+                    async(start = CoroutineStart.UNDISPATCHED) {
+                        transport.respondApproval(
+                            RequestRef(scope, SessionRef("runtime-$choice", "saved-$choice"), "approval-$choice"),
+                            choice,
+                        )
+                    }
+                }
+            assertEquals("Both broader responses must execute the real scoped write", 2, frames.size)
+            results.forEach { assertFalse(it.isCompleted) }
+            frames.zip(choices).forEach { (frame, choice) ->
+                assertEquals(WsMethods.APPROVAL_RESPOND, frame["method"]!!.jsonPrimitive.content)
+                assertEquals(
+                    buildJsonObject {
+                        put("session_id", "runtime-$choice")
+                        put("request_id", "approval-$choice")
+                        put("choice", choice)
+                        put("all", false)
+                        put("profile", "profile-a")
+                    },
+                    frame["params"],
+                )
+            }
+            frames.indices.reversed().forEach { index ->
+                val id = frames[index]["id"]!!.jsonPrimitive.content
+                listener.onMessage(socket, """{"jsonrpc":"2.0","id":"$id","result":{"resolved":1}}""")
+                assertEquals(
+                    SubmissionResult.Confirmed(id, true),
+                    withTimeout(5000) { results[index].await() },
+                )
+                results.take(index).forEach { assertFalse(it.isCompleted) }
+            }
+            listener.onOpen(socket, mockk(relaxed = true))
+            verify(exactly = 2) { socket.send(any<String>()) }
+            assertEquals(0, mockWebServer.requestCount)
+        }
+
+    @Test
+    fun testScopedAttentionBroaderStaleAckStaysUnknownWithoutReplay() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val (scope, listener) = scopedWriteFixture(socket)
+            val activeProfile = MutableStateFlow(scope.serverProfileId)
+            every { AuthManager.activeProfileId } returns activeProfile
+            val frames = mutableListOf<kotlinx.serialization.json.JsonObject>()
+            every { socket.send(any<String>()) } answers {
+                frames.add(Json.parseToJsonElement(firstArg<String>()).jsonObject)
+                true
+            }
+            val transport = DashboardRpcTransport()
+            val results =
+                listOf("session", "always").map { choice ->
+                    async(start = CoroutineStart.UNDISPATCHED) {
+                        transport.respondApproval(RequestRef(scope, SessionRef("runtime"), "approval-$choice"), choice)
+                    }
+                }
+            assertEquals(2, frames.size)
+            activeProfile.value = "other"
+            frames.reversed().forEach { frame ->
+                listener.onMessage(socket, """{"jsonrpc":"2.0","id":${frame["id"]},"result":{"resolved":1}}""")
+            }
+            results.forEach { assertEquals(SubmissionResult.Unknown, withTimeout(5000) { it.await() }) }
+            activeProfile.value = scope.serverProfileId
+            listener.onOpen(socket, mockk(relaxed = true))
+            verify(exactly = 2) { socket.send(any<String>()) }
+            assertEquals(0, mockWebServer.requestCount)
+        }
+
+    @Test
+    fun testScopedAttentionBroaderRejectedOrUnacknowledgedWritesNeverReplay() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val (scope, listener) = scopedWriteFixture(socket)
+            val params = mapOf("session_id" to "runtime", "request_id" to "approval", "all" to false)
+            for (choice in listOf("session", "always")) {
+                every { socket.send(any<String>()) } returns false
+                val rejected =
+                    HermesWsClient.writeScoped(
+                        scope,
+                        WsMethods.APPROVAL_RESPOND,
+                        params + ("choice" to choice),
+                    )
+                assertFalse(rejected.accepted)
+                assertTrue(rejected.response.isCancelled)
+                every { socket.send(any<String>()) } returns true
+                val unacknowledged =
+                    HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, params + ("choice" to choice), 1)
+                assertTrue(unacknowledged.accepted)
+                try {
+                    withTimeout(5000) { unacknowledged.response.await() }
+                    org.junit.Assert.fail("Missing approval ACK must not succeed")
+                } catch (e: HermesWsClient.HermesRpcException) {
+                    assertEquals(-1, e.code)
+                }
+                listener.onMessage(
+                    socket,
+                    """{"jsonrpc":"2.0","id":"${unacknowledged.requestId}","result":{"resolved":1}}""",
+                )
+                assertTrue(unacknowledged.response.isCancelled)
+            }
+            listener.onOpen(socket, mockk(relaxed = true))
+            verify(exactly = 4) { socket.send(any<String>()) }
+            assertEquals(0, mockWebServer.requestCount)
+        }
+
+    @Test
+    fun testScopedAttentionRejectsInvalidGrammarOrMissingIdentityBeforeWire() {
         val socket = mockk<WebSocket>(relaxed = true)
         val (scope, listener) = scopedWriteFixture(socket)
         val params: Map<String, Any> =
             mapOf("session_id" to "runtime", "request_id" to "approval", "choice" to "once", "all" to false)
-        for (choice in listOf("session", "always", "approve", "unexpected")) {
+        for (choice in listOf("approve", "unexpected", "SESSION", "Always", " session", "always ", "", "\tdeny")) {
             assertFalse(
                 HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, params + ("choice" to choice)).accepted,
             )
         }
-        assertFalse(HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, params + ("all" to true)).accepted)
-        for (method in listOf(WsMethods.APPROVAL_RESPOND, WsMethods.APPROVAL_RECEIVED, WsMethods.CLARIFY_RESPOND)) {
-            assertFalse(HermesWsClient.writeScoped(scope, method, params - "request_id").accepted)
-            assertFalse(HermesWsClient.writeScoped(scope.copy(generation = -1), method, params).accepted)
-            assertFalse(HermesWsClient.writeScoped(scope.copy(serverProfileId = "other"), method, params).accepted)
+        assertFalse(HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, params - "choice").accepted)
+        assertFalse(HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, params + ("choice" to 1)).accepted)
+        for (choice in listOf("once", "session", "always", "deny")) {
+            val approval = params + ("choice" to choice)
+            assertFalse(
+                HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, approval + ("all" to true)).accepted,
+            )
+            assertFalse(
+                HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, approval + ("all" to "false")).accepted,
+            )
+            assertFalse(HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, approval - "all").accepted)
+            assertFalse(
+                HermesWsClient
+                    .writeScoped(
+                        scope,
+                        WsMethods.APPROVAL_RESPOND,
+                        approval + ("profile" to "other"),
+                    ).accepted,
+            )
+            for (method in listOf(WsMethods.APPROVAL_RESPOND, WsMethods.APPROVAL_RECEIVED, WsMethods.CLARIFY_RESPOND)) {
+                for (key in listOf("request_id", "session_id")) {
+                    assertFalse(HermesWsClient.writeScoped(scope, method, approval - key).accepted)
+                    assertFalse(HermesWsClient.writeScoped(scope, method, approval + (key to " ")).accepted)
+                }
+                for (candidate in listOf(
+                    scope.copy(generation = -1),
+                    scope.copy(serverProfileId = "other"),
+                    scope.copy(connectionProfileId = "other"),
+                    scope.copy(serverIdentity = "other"),
+                    scope.copy(processId = "other"),
+                )) {
+                    assertFalse(HermesWsClient.writeScoped(candidate, method, approval).accepted)
+                }
+            }
         }
+        val connected =
+            HermesWsClient::class.java
+                .getDeclaredField("connected")
+                .apply { isAccessible = true }
+                .get(HermesWsClient) as java.util.concurrent.atomic.AtomicBoolean
+        connected.set(false)
+        assertFalse(
+            HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, params + ("choice" to "session")).accepted,
+        )
+        connected.set(true)
+        val socketField = HermesWsClient::class.java.getDeclaredField("webSocket").apply { isAccessible = true }
+        socketField.set(HermesWsClient, null)
+        assertFalse(
+            HermesWsClient.writeScoped(scope, WsMethods.APPROVAL_RESPOND, params + ("choice" to "always")).accepted,
+        )
+        socketField.set(HermesWsClient, socket)
         for (choice in listOf("once", "deny", "session", "always")) {
             HermesWsClient.send(WsMethods.APPROVAL_RESPOND, params + ("choice" to choice))
         }

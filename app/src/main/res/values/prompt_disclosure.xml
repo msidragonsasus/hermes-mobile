@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="prompt_disclosure_show_more">Show more</string>
+    <string name="prompt_disclosure_show_less">Show less</string>
+    <string name="prompt_disclosure_state_collapsed">Collapsed</string>
+    <string name="prompt_disclosure_state_expanded">Expanded</string>
+</resources>

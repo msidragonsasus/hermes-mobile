@@ -28,6 +28,21 @@ object AppUpdateCache {
     var isDialogVisible by mutableStateOf(false)
         private set
 
+    /**
+     * Process-wide stale guard: every candidate records the generation it was
+     * checked in; [invalidate] (connection/source change, logout) bumps it so
+     * older results and in-flight downloads can never be installed.
+     */
+    private val _generation = MutableStateFlow(0L)
+    val generationFlow: StateFlow<Long> = _generation.asStateFlow()
+    val generation: Long get() = _generation.value
+
+    fun invalidate() {
+        synchronized(this) { _generation.value = _generation.value + 1 }
+        isDialogVisible = false
+        _state.value = AppUpdateState.Idle
+    }
+
     fun update(state: AppUpdateState) {
         _state.value = state
     }

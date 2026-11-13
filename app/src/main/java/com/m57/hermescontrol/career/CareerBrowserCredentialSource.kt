@@ -180,8 +180,10 @@ internal class CareerBrowserCredentialSource(
                 payload(companyId, version, policy) +
                     mapOf("request_id" to JsonPrimitive(requestId), "fields" to snapshot.fields),
             )
+        var locatorEndpointMissing = false
         val selected =
             request("browser-login-locate", body) { response ->
+                locatorEndpointMissing = response.code in setOf(404, 405, 501)
                 val value = readJson(response) ?: return@request null
                 if (!matches(value, companyId, version, policy) || value.string("request_id") != requestId ||
                     value.keys !=
@@ -200,7 +202,17 @@ internal class CareerBrowserCredentialSource(
                 snapshot.selection(value)
             }
         currentCoroutineContext().ensureActive()
-        return selected?.takeIf { documentCurrent() && validScope() && session == AuthManager.getSessionCookie() }
+        if (!documentCurrent() || !validScope() || session != AuthManager.getSessionCookie()) return null
+        if (selected != null) return selected
+        // Older servers expose credential grants but not the optional model locator. A unique,
+        // empty local pair can still pass the unchanged document/form guards before any fill.
+        if (locatorEndpointMissing && lastFailure == CareerBrowserCredentialFailure.UNSUPPORTED_ENDPOINT) {
+            snapshot.legacySelection()?.let {
+                lastFailure = null
+                return it
+            }
+        }
+        return null
     }
 
     /** Read the registered username only; never request the password-bearing autofill endpoint. */

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from datetime import datetime, timedelta
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -24,15 +25,17 @@ class PlanTests(unittest.TestCase):
         self.settings = dict(email="test@example.org", manaba_url="https://university.example/ct/home", enabled=True)
         self.store.configure(self.settings)
 
-    def inputs(self, gmail="updated", manaba="updated"):
+    def inputs(self, gmail="updated", manaba="updated") -> list[dict[str, Any]]:
         return [dict(id=identity, label=identity, state=state, checked_at=self.current.isoformat(),
                      day=self.current.date().isoformat(), records=[dict(id=identity + ":one", source=identity,
-                         url="https://example.org/" + identity, title="元情報", text="課題は2026-10-23 17:00まで、未提出",
+                         url="https://example.org/" + identity, title="元情報", text="本人の必須個人課題。2026-10-23 17:00まで、未提出",
                          checked_at=self.current.isoformat(), retrieved_in_current_run=True)]
                      if state in {"updated", "partial"} else []) for identity, state in [("gmail", gmail), ("manaba", manaba)]]
 
-    def answer(self, sources=("gmail", "manaba")):
-        return dict(tasks=[dict(source_id=s + ":one", title="課題を提出する", reason="今日が締切", deadline="2026-10-23", priority=1) for s in sources])
+    def answer(self, sources=("gmail", "manaba")) -> dict[str, Any]:
+        return dict(tasks=[dict(source_id=s + ":one", title="課題を提出する", reason="今日が締切", deadline="2026-10-23", priority=1,
+                                eligibility=dict(kind="coursework", source_id=s + ":one", quote="本人の必須個人課題。",
+                                                 user_intent="confirmed", action_status="pending", deadline_policy="remains_actionable")) for s in sources])
 
     def publish(self, request="one", inputs=None, answer=None):
         self.assertTrue(self.store.begin(request))
@@ -77,6 +80,7 @@ class PlanTests(unittest.TestCase):
         inputs[0]["records"][0]["id"] = "gmail:new-message"
         changed = self.answer(("gmail",))
         changed["tasks"][0].update(source_id="gmail:new-message", title="ESを確認して提出する", task_key="company/program/entry")
+        changed["tasks"][0]['eligibility']['source_id'] = "gmail:new-message"
         self.publish("new-message", inputs, changed)
         self.assertEqual(task["id"], self.store.snapshot()["tasks"][0]["id"])
         self.assertTrue(self.store.snapshot()["tasks"][0]["done"])
@@ -211,7 +215,7 @@ class PlanTests(unittest.TestCase):
         self.assertEqual("original receipt", event["evidence"]["text"])
         self.current += timedelta(hours=1)
         self.store.begin("reappeared")
-        record = dict(inputs[0]["records"][0], text="changed source content")
+        record = dict(inputs[0]["records"][0], text="本人の必須個人課題。changed source content")
         self.store.cache_source("reappeared", "gmail", [record], "checked")
         self.store.finish("reappeared", self.store.cached_inputs("reappeared"), self.answer(("gmail",)))
         self.assertEqual(1, len(self.store.snapshot()["tasks"]))
@@ -282,9 +286,11 @@ class ApiTests(unittest.TestCase):
     def test_accepted_agent_can_cache_evidence_and_publish_a_plan(self):
         def model(profile, store, run):
             store.cache_source(run, "gmail", [dict(id="gmail:evidence", source="gmail", title="応募締切",
-                url="https://example.org", text="明日まで")], "updated")
+                url="https://example.org", text="申込受付済み。明日までにESを完成してください。")], "updated")
             return {"tasks": [dict(task_key="company/entry", source_id="gmail:evidence", title="ESを仕上げる",
-                reason="明日の締切に備えて今日見直す", deadline=None, priority=2)]}
+                reason="明日の締切に備えて今日見直す", deadline=None, priority=2,
+                eligibility=dict(kind="user_application", source_id="gmail:evidence", quote="申込受付済み。",
+                                 user_intent="confirmed", action_status="pending", deadline_policy="closes"))]}
         app = FastAPI()
         app.state.auth_required = True
         @app.middleware("http")

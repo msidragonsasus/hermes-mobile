@@ -240,6 +240,38 @@
     <string name="settings_about_update_allow_sources">Allow installs from this source</string>
     <string name="settings_about_update_open_settings">Open settings</string>
     <string name="settings_about_update_retry">Retry</string>
+    <string name="settings_about_update_source">Update source</string>
+    <string name="settings_about_update_source_server">Connected server</string>
+    <string name="settings_about_update_source_server_at">Connected server · %1$s</string>
+    <string name="settings_about_update_source_upstream">Public upstream (GitHub)</string>
+    <string name="settings_about_update_source_server_desc">Releases published on this server, signed with this app\'s key. Downloaded over the signed-in connection.</string>
+    <string name="settings_about_update_source_upstream_desc">Hy4ri/hermes-mobile releases. Installed only if signed with the same key as this app.</string>
+    <string name="settings_about_update_verifying">Verifying…</string>
+    <string name="settings_about_update_installer_opened">Confirm v%1$s in the system installer</string>
+    <string name="settings_about_update_open_installer">Open installer again</string>
+    <string name="update_error_not_connected">Sign in to a server to check for updates</string>
+    <string name="update_error_login_required">Dashboard sign-in required for server updates</string>
+    <string name="update_error_server_missing">This server does not offer app updates</string>
+    <string name="update_error_server_disabled">App updates are not configured on this server</string>
+    <string name="update_error_no_release">No release published yet</string>
+    <string name="update_error_no_apk">Release has no APK asset</string>
+    <string name="update_error_no_digest">Release has no SHA-256 digest; not installable</string>
+    <string name="update_error_invalid_metadata">Update information is invalid</string>
+    <string name="update_error_network">Network error — check your connection</string>
+    <string name="update_error_redirect">The server redirected the request; refused</string>
+    <string name="update_error_wrong_app">The update is for a different app</string>
+    <string name="update_error_identity_unavailable">Couldn\'t read this app\'s signing certificate</string>
+    <string name="update_error_signer_mismatch">Signed with a different key; not installed</string>
+    <string name="update_error_rotation">Signing key rotation is not supported</string>
+    <string name="update_error_unsigned">The downloaded APK is not signed</string>
+    <string name="update_error_integrity">The downloaded file failed integrity checks</string>
+    <string name="update_error_unreadable">The downloaded file is not a readable APK</string>
+    <string name="update_error_version_mismatch">The APK version does not match the release</string>
+    <string name="update_error_not_newer">The APK is not newer than the installed app</string>
+    <string name="update_error_connection_changed">The connection changed; check again</string>
+    <string name="update_error_download">Download failed — tap to retry</string>
+    <string name="update_error_installer">Couldn\'t open the installer</string>
+    <string name="update_error_check">Couldn\'t check for updates</string>
 
     <!-- Settings list summaries (drill-down) -->
     <string name="settings_summary_profiles">%1$d saved</string>
@@ -1322,6 +1354,7 @@
     <string name="chat_turn_answer">Answer</string>
     <string name="chat_turn_activity_reasoning">Thinking</string>
     <string name="chat_turn_activity_separator">" · "</string>
+    <string name="chat_thinking_indicator">Thinking</string>
     <plurals name="chat_turn_activity_tools">
         <item quantity="one">%1$d tool</item>
         <item quantity="other">%1$d tools</item>

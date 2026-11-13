@@ -147,12 +147,14 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         ctx = types.SimpleNamespace(register_tool=lambda **value: handlers.update({value['name']: value['handler']}))
         with patch.dict(sys.modules, {'hermes_constants': constants}):
             register_tools(ctx)
-        record = dict(id='gmail:one', source='gmail', title='締切', url='https://example.org', text='明日まで')
+        record = dict(id='gmail:one', source='gmail', title='締切', url='https://example.org', text='申込受付済み。明日の面接に備えてください。')
         class EvidenceGateway(GatewayDouble):
             @property
             def answer(self):
                 return {'tasks': [dict(task_key='company/entry', source_id='gmail:one', title='ESを見直す',
-                                      reason='明日の締切に備える', priority=2, deadline=None)]}
+                                      reason='明日の締切に備える', priority=2, deadline=None,
+                                      eligibility=dict(kind='user_application', source_id='gmail:one', quote=record['text'],
+                                                       user_intent='confirmed', action_status='pending', deadline_policy='closes'))]}
         gateway = EvidenceGateway(self.store)
         gateway.handler = lambda: self.assertNotIn('error', json.loads(handlers['today_mail_read'](
             {'message_id': 'abc'}, session_id='stored')))

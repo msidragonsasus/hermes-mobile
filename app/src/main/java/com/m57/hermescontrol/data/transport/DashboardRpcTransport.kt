@@ -9,6 +9,7 @@ import com.m57.hermescontrol.data.ws.WsMethods
 import com.m57.hermescontrol.domain.hermes.ConnectionScope
 import com.m57.hermescontrol.domain.hermes.ExecutionState
 import com.m57.hermescontrol.domain.hermes.HermesObservation
+import com.m57.hermescontrol.domain.hermes.KNOWN_APPROVAL_CHOICES
 import com.m57.hermescontrol.domain.hermes.LinkState
 import com.m57.hermescontrol.domain.hermes.ObservationKind
 import com.m57.hermescontrol.domain.hermes.PromptAcceptance
@@ -41,7 +42,7 @@ class DashboardRpcTransport :
         ref: RequestRef,
         choice: String,
     ): SubmissionResult<Boolean> {
-        if (choice !in setOf("once", "deny") || ref.requestId.isBlank() || ref.questionId != null) {
+        if (choice !in KNOWN_APPROVAL_CHOICES || ref.requestId.isBlank() || ref.questionId != null) {
             return SubmissionResult.NotSent
         }
         return execute(

@@ -12,13 +12,20 @@ const login = 'dummy-user';
 const password = 'dummy-password';
 const operation = source.match(/val operation =\s*"""([\s\S]*?)"""\.trimIndent\(\)/)[1];
 const template = source.match(/return """([\s\S]*?)"""\.trimIndent\(\)/)[1];
+// Mirrors CareerBrowserPolicy.tenantPrefix for the Kotlin-provided fillPrefix value.
+function prefixOf(address) {
+  const segments = new URL(address).pathname.split('/').filter(Boolean);
+  const auth = segments.map(p => /^(?:login|logon|sign-?in|auth|authenticate|authentication|sessions?)(?:\.(?:php|aspx?|jsp|html?))?$/i.test(p)).lastIndexOf(true);
+  const parts = auth >= 0 ? segments.slice(0, auth) : /^index\.(?:php|aspx?|jsp|html?)$/i.test(segments[segments.length - 1] || '') ? segments.slice(0, -1) : segments;
+  return '/' + parts.map(p => p + '/').join('');
+}
 function script(fill, options = {}) {
-  const values = { target, token, login, password, step: 'combined', allowPasswordOnly: false, legacyAction: null, e2rSiteId: null, selected: null, candidatesOnly: false, ...options };
+  const values = { target, token, login, password, step: 'combined', allowPasswordOnly: false, legacyAction: null, e2rSiteId: null, fillPrefix: options.legacyAction || options.e2rSiteId ? null : prefixOf(options.target || target), landingUrl: null, selected: null, candidatesOnly: false, ...options };
   if (values.step === 'identifier') values.password = '';
   if (values.step === 'password') { values.login = ''; values.allowPasswordOnly = true; }
   if (values.step === 'password_with_identifier') values.allowPasswordOnly = true;
   const op = fill ? operation.replace(/\$(login|password|expectedStage)\b/g, (_, key) => key === 'expectedStage' ? values.step : JSON.stringify(values[key])) : "return stage === 'password_with_identifier' ? 'ready_password_with_id' : stage === 'identifier' ? 'ready_id' : stage === 'password' ? 'ready_password' : 'ready';";
-  return template.replace(/\$(target|token|operation|allowPasswordOnly|legacyAction|e2rSiteId|selected|candidatesOnly)\b/g, (_, key) => key === 'operation' ? op : JSON.stringify(values[key]));
+  return template.replace(/\$(target|token|operation|allowPasswordOnly|legacyAction|e2rSiteId|fillPrefix|landingUrl|selected|candidatesOnly)\b/g, (_, key) => key === 'operation' ? op : JSON.stringify(values[key]));
 }
 const standard = '<form method="post"><input name="username"><input type="password"><button>Login</button></form>';
 if (process.argv.includes('--syntax-only')) {
@@ -142,7 +149,7 @@ const { chromium } = require('playwright');
     }
     await check('password continuation hidden original ID', passOnly.replace('<input ', '<input name="username" type="hidden" value="dummy-user"><input '), 'filled_password', { step: 'password' });
     await check('password continuation different identifier form', passOnly + '<form method="post"><input name="username"></form>', 'ambiguous', { step: 'password' });
-    await check('password continuation different URL', passOnly, 'blocked', { step: 'password', url: target.replace('login?', 'password?') });
+    await check('password continuation different URL', passOnly, 'blocked', { step: 'password', url: target.replace('/company/login?', '/other/password?') });
     await check('password continuation new token', passOnly, 'blocked', { step: 'password', header: 'another-document' });
     await check('identifier foreign action', idOnly.replace('method="post"', 'method="post" action="https://evil.example.test/"'), 'unsafe_action', { step: 'identifier' });
     await check('identifier GET form', idOnly.replace('method="post"', 'method="get"'), 'unsafe_action', { step: 'identifier' });
@@ -182,6 +189,72 @@ const { chromium } = require('playwright');
     await page.evaluate(() => history.replaceState({}, '', '?year=2027'));
     assert.equal(await page.evaluate(script(true)), 'blocked', 'SPA navigation between probe and fill');
     count++;
+    // First landing: the registered URL's server redirect reached another host/path/query.
+    const landingUrl = 'https://login.idp.example.test/tenant/sign-in?client=company&state=synthetic-state';
+    const landed = { url: landingUrl, landingUrl };
+    const landingForm = standard.replace('method="post"', 'method="post" action="/tenant/sign-in/check?client=company"');
+    await check('later document at an unregistered URL stays blocked', landingForm, 'blocked', { url: landingUrl });
+    await check('first landing after redirect fills', landingForm, 'filled', landed);
+    assert.equal(await page.locator('[name=username]').inputValue(), login);
+    assert.equal(await page.locator('[type=password]').inputValue(), password);
+    await load(landingForm, token, landingUrl);
+    assert.equal(await page.evaluate(script(false, landed)), 'ready', 'first landing readiness');
+    assert.equal(script(false, landed).includes(password), false, 'landing readiness has no credentials');
+    await check('first landing posting back to itself', standard, 'filled', landed);
+    await check('first landing ID step', idOnly.replace('method="post"', 'method="post" action="/tenant/sign-in/next"'), 'filled_id', { ...landed, step: 'identifier' });
+    await check('first landing replaced document token', landingForm, 'blocked', { ...landed, header: 'replacement-document' });
+    await check('first landing missing document token', landingForm, 'blocked', { ...landed, header: '' });
+    await check('landing grant does not cover another landing-host path', landingForm, 'blocked', { ...landed, url: landingUrl.replace('/sign-in', '/home') });
+    await check('landing grant does not cover another query', landingForm, 'blocked', { ...landed, url: landingUrl.replace('synthetic-state', 'other-state') });
+    // Input-only on the granted landing: its form action, method and target are not fill blockers.
+    for (const [name, markup] of [
+      ['foreign-origin action', standard.replace('method="post"', 'method="post" action="https://auth.other.example.test/collect"')],
+      ['other path action', standard.replace('method="post"', 'method="post" action="/other/sign-in/check"')],
+      ['different query action', standard.replace('method="post"', 'method="post" action="/tenant/sign-in/check?client=other"')],
+      ['encoded path action', standard.replace('method="post"', 'method="post" action="/tenant/..%2Fother/sign-in"')],
+      ['GET form', landingForm.replace('method="post"', 'method="get"')],
+      ['new-window target', landingForm.replace('method="post"', 'method="post" target="_blank"')],
+      ['button formaction/formmethod/formtarget', landingForm.replace('<button>', '<button formaction="https://auth.other.example.test/" formmethod="get" formtarget="_blank">')],
+    ]) {
+      await check('landing ' + name, markup, 'filled', landed);
+      assert.equal(await page.locator('[name=username]').inputValue(), login, name + ': identifier');
+      assert.equal(await page.locator('[type=password]').inputValue(), password, name + ': password');
+      await check('no-grant ' + name + ' stays blocked', markup, 'blocked', { url: landingUrl });
+    }
+    await check('registered page foreign action still refused', standard.replace('method="post"', 'method="post" action="https://auth.other.example.test/collect"'), 'unsafe_action');
+    await check('registered page GET still refused', standard.replace('method="post"', 'method="get"'), 'unsafe_action');
+    await check('registered page _blank still refused', standard.replace('method="post"', 'method="post" target="_blank"'), 'unsafe_action');
+    // Remaining landing guards: empty fields, signup/OTP and ambiguity still stop input.
+    await check('landing occupied identifier', landingForm.replace('name="username"', 'name="username" value="already-entered"'), 'occupied', landed);
+    await check('landing new-password form', landingForm.replace('type="password"', 'type="password" autocomplete="new-password"'), 'unsupported', landed);
+    await check('landing registration form', landingForm.replace('<button>Login</button>', '<button>Login</button><button>Sign up</button>'), 'unsupported', landed);
+    await check('landing two passwords', landingForm.replace('</form>', '<input type="password"></form>'), 'ambiguous', landed);
+    await check('landing two identifiers', landingForm.replace('</form>', '<input name="email"></form>'), 'ambiguous', landed);
+    await load(landingForm, token, landingUrl);
+    assert.equal(await page.evaluate(script(false, landed)), 'ready');
+    await page.evaluate(() => { const f = document.querySelector('form'); f.action = 'https://auth.other.example.test/collect'; f.method = 'get'; f.target = '_blank'; });
+    assert.equal(await page.evaluate(script(true, landed)), 'filled', 'action/method/target change alone does not stop landing input');
+    assert.deepEqual(await page.evaluate(() => window.events), [], 'landing input dispatches nothing');
+    await load(landingForm, token, landingUrl);
+    assert.equal(await page.evaluate(script(false, landed)), 'ready');
+    await page.evaluate(() => document.querySelector('form').remove());
+    assert.equal(await page.evaluate(script(true, landed)), 'pending', 'removed form after readiness receives nothing');
+    await load(landingForm.replace('name="username"', 'name="UserAccount" id="UserAccount"'), token, landingUrl);
+    const landingSnapshot = JSON.parse(await page.evaluate(script(false, { ...landed, candidatesOnly: true })));
+    const landingSelected = { loginIndex: 0, passwordIndex: 1, signature: landingSnapshot.signature };
+    assert.equal(await page.evaluate(script(false, { ...landed, selected: landingSelected })), 'ready');
+    await page.evaluate(() => document.querySelector('[name=UserAccount]').name = 'captcha');
+    assert.equal(await page.evaluate(script(true, { ...landed, selected: landingSelected })), 'changed', 'landing selection stays bound to its structural signature');
+    assert.equal(await page.locator('[type=password]').inputValue(), '');
+    await check('landing selection on another document', landingForm, 'blocked', { ...landed, selected: landingSelected, header: 'replacement-document' });
+    await load(landingForm, token, landingUrl);
+    assert.equal(await page.evaluate(script(false, landed)), 'ready');
+    await page.evaluate(() => history.replaceState({}, '', '/tenant/account'));
+    assert.equal(await page.evaluate(script(true, landed)), 'blocked', 'landing SPA navigation between probe and fill');
+    assert.equal(await page.locator('[type=password]').inputValue(), '');
+    await load('<iframe src="' + landingUrl + '"></iframe>', token, landingUrl);
+    assert.equal(await page.frames()[1].evaluate(script(true, landed)), 'blocked', 'landing frame blocked');
+    count += 4;
     await load('<iframe src="' + target + '"></iframe>');
     assert.equal(await page.frames()[1].evaluate(script(true)), 'blocked', 'same-origin frame blocked');
     count++;

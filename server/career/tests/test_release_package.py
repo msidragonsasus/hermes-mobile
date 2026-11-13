@@ -22,6 +22,13 @@ class PackageTests(unittest.TestCase):
                          "server/career/app_runtime/mypage_handler.py", "server/career/tools/app_release.py",
                          "server/career/tests/test_mobile_sdui.py", "docs/phase3/IMPLEMENTATION.md"} <= names)
 
+    def test_real_release_contains_explicit_editor_activation_and_lifecycle(self):
+        career = Path(__file__).resolve().parents[1]
+        names = set(json.loads((career / 'tools/release_files.json').read_text(encoding='utf-8'))['files'])
+        self.assertTrue({'server/career/career_core/mobile_activation.py',
+                         'server/career/tests/test_mobile_activation.py',
+                         'docs/phase3/SERVER_ACTIVATION.md'} <= names)
+
     def test_real_release_contains_mail_and_settings_dependencies(self):
         career = Path(__file__).resolve().parents[1]
         names = set(json.loads((career / "tools/release_files.json").read_text(encoding="utf-8"))["files"])

@@ -41,6 +41,11 @@ class WorkspaceTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        # Connection-list code resolves the active home independently of the
+        # injected WorkspaceApi; never let this fixture read the host registry.
+        active_home = patch.dict('os.environ', {'HERMES_HOME': str(self.root)})
+        active_home.start()
+        self.addCleanup(active_home.stop)
 
     def workspace(self, name="first", scopes=None):
         home = self.root / name

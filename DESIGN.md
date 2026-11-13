@@ -198,6 +198,15 @@ existing code. A Material import or a rounded rectangle does not prove complianc
   [Connected service screens](#connected-service-screens). This is the only
   place where a section sits in a group.
 
+- 2026-10-28: the server terminal has **no secret-input mode or button**. Saved
+  strings and passwords are inserted from 「保存した入力」; masking follows an inserted
+  password, not a toggle. Terminal text keeps a real inset from the edges.
+- 2026-10-29: while a chat turn still works, the conversation tail shows the fixed
+  label 「思考中」 (`ThinkingIndicator`) whose letters carry a slow, same-hue,
+  lightness-only shimmer. Rejected: bouncing dots, spinners, whole-label blinking,
+  colored or rainbow gradients, card backgrounds and large enclosing UI. This
+  loading shimmer on glyphs is the only gradient allowed in chat; surfaces stay flat.
+
 When the user rejects a design, record it here in the same change.
 
 ### Inputs
@@ -220,7 +229,7 @@ When the user rejects a design, record it here in the same change.
 - **Row anatomy:** title (`titleSmall`/`bodyLarge`, 1–2 lines) → one meta line
   (`bodySmall`, `onSurfaceVariant`, items joined by ` · `). Put counts and state on
   the trailing side as small text or a small badge. Trailing icons are 20dp inside
-  a 40dp target; do not let a 48dp `IconButton` dictate row height.
+  a 40dp target; do not let a 48dp `IconButton` dictate row height. Chat history rows (2026-10-29) always reserve one fixed 24dp trailing status slot, even when quiet, so single-line titles end at one boundary; spinner = running/starting/background child work (muted while a still-fresh status is being rechecked after one failed refresh), shield = approval, speech = input, hourglass = generic wait, quiet hollow ring = status unconfirmed, nothing = idle/no evidence (never a success badge); the state is also the row's state description. The user rejected the unexplained sync-problem (↺!) icon (2026-10-29): an unconfirmed status feed is explained once by a quiet one-line `bodySmall` notice above the list, never by a lone icon or a long trailing label.
 - **Section breaks:** a `labelMedium` label in `outline` color with 16dp above and
   4dp below. Not a card, not a `headlineMedium` title.
 - **Vertical rhythm:** 4 / 8 / 12 / 16 / 24dp only. Between major sections use 24dp
@@ -437,6 +446,24 @@ must not create duplicate sessions or sockets. See
 - Mini Apps use host tokens, components and approval surfaces; no separate color or
   spacing system. Stages are bounded by
   [MINIAPP_PLATFORM.md](docs/personal-ai-spec/MINIAPP_PLATFORM.md).
+
+## Today Home task selection and completion
+
+The daily list is the user's own work, not an inbox of recruitment advertising.
+Receiving a deadline notice does not establish interest, an application, or a
+personal obligation. Put unconfirmed opportunities and legacy unclassified
+records in a discoverable, folded review section, outside today's actionable
+count. Say explicitly when coursework or submission status remains unverified;
+an empty confirmed list is not proof that no work exists. User-selected work and
+confirmed personal obligations take precedence. Keep overdue obligations distinct
+from closed optional opportunities; never label an expired item "今日必須".
+
+Completion and "対象外" are different, reversible, server-persisted decisions.
+A checkbox must respond even during background polling, show saving/failure at
+the affected row, and never pretend a failed write succeeded. Keep other rows
+usable. Reuse flat task rows and progressive disclosure; show useful titles and
+human-readable deadlines, with full details on expansion. Collapsed counts must
+remain accurate and final rows must be reachable above the navigation bar.
 
 ## Accessibility and input
 

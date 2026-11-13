@@ -118,6 +118,44 @@ class EditorTests(unittest.TestCase):
         self.assertEqual('proposed',self.summary()['job']['state'])
         self.assertEqual(receipt,self.post(payload));self.assertEqual(1,len(self.runner.calls))
 
+    def test_restart_never_dispatches_a_pre_restart_queued_receipt(self):
+        payload, receipt = self.propose()
+        restarted_runner = FakeRunner()
+        restarted = AppWorkbench(self.root, 'one', 'default', editor_runner=restarted_runner,
+                                 editor_execution=EXECUTION, editor_auto_run=True)
+        self.workbench = restarted; self.client = self.make_client(restarted)
+        self.assertEqual(receipt, self.post(payload))
+        restarted.editor.run(payload['operation_id'])
+        self.assertEqual([], restarted_runner.calls)
+        self.assertEqual('queued', self.summary()['job']['state'])
+        self.assertFalse(self.snapshot()['draft'])
+
+    def test_shutdown_fences_running_results_interrupts_and_blocks_new_claims(self):
+        payload, _ = self.propose(); started = threading.Event(); release = threading.Event()
+        self.runner.on_run = lambda job, cancelled: (started.set(), release.wait(5))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self.workbench.editor.run, payload['operation_id'])
+            self.assertTrue(started.wait(5))
+            try:
+                self.workbench.editor.close()
+                self.assertEqual([payload['operation_id']], self.runner.cancelled)
+            finally:
+                release.set()
+            future.result(timeout=5)
+        self.assertEqual('running', self.summary()['job']['state'])
+        self.assertFalse(self.snapshot()['draft'])
+        self.post(self.payload('cancel_editor'))
+        queued, _ = self.propose('Explicit new request')
+        self.workbench.editor.run(queued['operation_id'])
+        self.assertEqual(1, len(self.runner.calls))
+
+    def test_router_shutdown_closes_editor_without_dispatching_queued_job(self):
+        payload, _ = self.propose()
+        with self.client:
+            self.assertEqual('queued', self.summary()['job']['state'])
+        self.workbench.editor.run(payload['operation_id'])
+        self.assertEqual([], self.runner.calls)
+
     def test_concurrent_worker_claim_is_at_most_once(self):
         payload,_=self.propose();self.runner.on_run=lambda job,cancelled:time.sleep(.05)
         with ThreadPoolExecutor(max_workers=6) as pool:list(pool.map(lambda _:self.workbench.editor.run(payload['operation_id']),range(6)))
@@ -127,6 +165,18 @@ class EditorTests(unittest.TestCase):
         payload,_=self.propose()
         _,second=self.propose('Other request')
         self.assertEqual('editor_busy',second['code']);self.assertEqual(payload['operation_id'],self.summary()['job']['id'])
+
+    def test_delayed_cancel_interrupts_original_job_after_new_request(self):
+        original, _ = self.propose()
+        scheduled = []
+        with patch('fastapi.BackgroundTasks.add_task', side_effect=lambda fn, *args, **kw: scheduled.append((fn, args, kw))):
+            cancelled = self.post(self.payload('cancel_editor'))
+        newer, _ = self.propose('New request before cancellation callback')
+        for fn, args, kw in scheduled:
+            fn(*args, **kw)
+        self.assertEqual([original['operation_id']], self.runner.cancelled)
+        self.assertEqual(newer['operation_id'], self.summary()['job']['id'])
+        self.assertEqual('queued', self.summary()['job']['state'])
 
     def test_cancel_running_job_interrupts_and_fences_late_proposal(self):
         payload,_=self.propose();started=threading.Event();release=threading.Event()

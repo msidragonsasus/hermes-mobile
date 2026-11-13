@@ -226,22 +226,21 @@ class ChatScrollController(
      * @param contentOffset character offset of the word in the message text.
      * @param contentLength total length of the message text.
      */
-    fun scrollToSearchMatch(
+    suspend fun scrollToSearchMatch(
         index: Int,
         contentOffset: Int,
         contentLength: Int,
     ) {
-        scope.launch {
-            listState.animateScrollToItem(index)
-            val info = listState.layoutInfo
-            val item = info.visibleItemsInfo.firstOrNull { it.index == index } ?: return@launch
-            val viewportHeight = info.viewportEndOffset - info.viewportStartOffset
-            val fraction = if (contentLength > 0) contentOffset.toFloat() / contentLength else 0f
-            val targetTop = (viewportHeight / 3) - (item.size * fraction).toInt()
-            val delta = item.offset - targetTop
-            if (delta != 0) {
-                listState.animateScrollBy(delta.toFloat())
-            }
+        // Runs in the caller's search effect: a changed query cancels stale positioning.
+        listState.animateScrollToItem(index)
+        val info = listState.layoutInfo
+        val item = info.visibleItemsInfo.firstOrNull { it.index == index } ?: return
+        val viewportHeight = info.viewportEndOffset - info.viewportStartOffset
+        val fraction = if (contentLength > 0) contentOffset.toFloat() / contentLength else 0f
+        val targetTop = (viewportHeight / 3) - (item.size * fraction).toInt()
+        val delta = item.offset - targetTop
+        if (delta != 0) {
+            listState.animateScrollBy(delta.toFloat())
         }
     }
 }

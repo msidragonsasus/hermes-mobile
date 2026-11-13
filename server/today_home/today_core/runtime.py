@@ -20,14 +20,33 @@ def build_prompt(store):
         "メール送信、予約、提出などはせず、本人が今日するべき行動を日本語の一覧にまとめる。"
         "日付は日本時間。相対日付はメールの送信日時を基準に解釈し、不明な期限はnullにする。"
         "今日必須・締切前に今日着手すべき準備を優先し、重複、完了済み、古い締切を照合する。"
+        "本人の確認済み義務・本人が選んで進めている応募や参加・本人が明示した目標だけを主一覧の行動にする。"
+        "受信した案内、締切、会員登録、就活サービスへの登録、対象者への一斉送信だけでは本人の応募意思や応募中を証明しない。"
+        "manabaの未提出一覧も個人の必須義務とは限らない。任意アンケート、代表者のみ提出、試験練習などを必須にしない。"
+        "本人の履修・担当と個人の提出義務を確認できた coursework だけを本人の課題として扱う。"
+        "各項目にeligibilityを付ける。kindはconfirmed_obligation（本人の確定義務）、user_application（本人が選んだ進行中応募・参加）、"
+        "user_goal（本人の明示目標）、coursework（本人の必須個人課題）、optional（未選択の機会）、unknown（不明）。"
+        "user_intentはconfirmed（個人義務・意思の直接根拠あり）/inferred（推測のみ）/unknown。推測をconfirmedにしない。"
+        "eligibility.source_idとquoteには個人義務・意思や状態を判断した実際の資料IDと原文の完全一致引用（2000字以内）を指定する。"
+        "資料に根拠がなければunknownで引用可能な事実だけを示す。理由の創作や受信を応募意思とする引用は禁止。"
+        "action_statusはpending（その行動が必要で実行可能な根拠あり）/unknown（提出・完了や実行可否が不明）/closed（実行不可・不要）。"
+        "提出状態不明を未提出とも提出済みとも言い換えない。未確認のstatusはunknownで要確認にする。"
+        "deadline_policyはremains_actionable（期限後も本人の必要行動として実行可能な根拠あり）/closes（期限で機会終了）/unknown。"
+        "必須課題など期限後も実行可能な義務は残すが、期限切れの任意機会を今日の必須行動へ繰り越さない。"
+        "tasks配列は保存対象の提案全体で、サーバーが分類して主一覧tasksとreview_tasksに分ける。optional/unknownはpriority=3。"
+        "不確かな広告を必須行動として大量に追加せず、意味のある候補だけを要確認として残す。分類は件数上限やタイトル語句で決めない。"
         "titleは具体的な行動、reasonは今日する理由。priorityは1=今日必須、2=今日準備、3=要確認。"
         "最終返答だけはコードブロックなしのJSON。source_idはツールが返したキャッシュ資料IDを使う。"
         "最上位はtasksとresolvedのみ。確認上の注意は各項目のreasonへ含める。"
         "task_keyは企業・募集・作業、または授業・課題を特定する安定したキーにし、同じ作業は前回のキーを維持する。"
-        "出力から前回項目を省略しても未完了項目は消えない。完了・不要と判断した前回項目だけresolvedに明示する。"
+        "出力から前回項目を省略しても未完了記録は消えない。review_tasksに移すことは完了や解決ではない。"
+        "dismissed_tasksは本人が対象外を選んだ記録。同じ作業のtask_keyを変えて復活させず、対象外をモデルが解除しない。"
+        "完了・不要を今回の資料で確認した前回項目だけresolvedに明示し、任意・不明という分類だけを解決根拠にしない。"
         "resolvedには今回実際に取得した根拠資料のsource_idと判断理由が必須。未確認の項目はそのまま残す。"
         "キャッシュを読んだだけでは資料は最新確認済みにならない。取得時刻とretrieved_in_current_runを確認する。"
-        '{"tasks":[{"task_key":"企業/募集/作業","source_id":"資料id","title":"行動","reason":"理由","deadline":null,"priority":1}],'
+        '{"tasks":[{"task_key":"企業/募集/作業","source_id":"資料id","title":"行動","reason":"理由","deadline":null,"priority":1,'
+        '"eligibility":{"kind":"user_application","user_intent":"confirmed","source_id":"意思の根拠資料id",'
+        '"quote":"本人が選んだ応募・参加と必要な行動を確認できる実際の原文","action_status":"pending","deadline_policy":"closes"}}],'
         '"resolved":[{"task_key":"前回のキー","source_id":"今回取得した根拠資料id","reason":"完了・不要と判断した理由"}]}。'
         "未確認の情報源の内容を捏造しない。前回の一覧と今日の日付は以下。\n"
         + json.dumps(store.snapshot(), ensure_ascii=False)

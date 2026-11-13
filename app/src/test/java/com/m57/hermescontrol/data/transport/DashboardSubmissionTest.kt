@@ -44,22 +44,32 @@ class DashboardSubmissionTest {
     }
 
     @Test
-    fun `approval allows only exact once or deny and requires one resolved request`() =
+    fun `approval transports known choices for one exact request and requires one resolved request`() =
         runTest {
             val ref = RequestRef(scope, session, "approval")
-            for (choice in listOf("session", "always", "approve", "unexpected")) {
+            for (choice in listOf("approve", "unexpected", "SESSION", " session", "all", "")) {
                 assertEquals(SubmissionResult.NotSent, transport.respondApproval(ref, choice))
+            }
+            for (invalidRef in listOf(ref.copy(requestId = " "), ref.copy(questionId = "question"))) {
+                assertEquals(SubmissionResult.NotSent, transport.respondApproval(invalidRef, "session"))
             }
             verify(exactly = 0) { HermesWsClient.writeScoped(any(), any(), any(), any()) }
             reply("""{"resolved":1}""")
-            assertEquals(SubmissionResult.Confirmed("rpc", true), transport.respondApproval(ref, "once"))
-            verify(exactly = 1) {
-                HermesWsClient.writeScoped(
-                    scope,
-                    WsMethods.APPROVAL_RESPOND,
-                    mapOf("session_id" to "runtime", "request_id" to "approval", "choice" to "once", "all" to false),
-                    any(),
-                )
+            for (choice in listOf("once", "session", "always", "deny")) {
+                assertEquals(SubmissionResult.Confirmed("rpc", true), transport.respondApproval(ref, choice))
+                verify(exactly = 1) {
+                    HermesWsClient.writeScoped(
+                        scope,
+                        WsMethods.APPROVAL_RESPOND,
+                        mapOf(
+                            "session_id" to "runtime",
+                            "request_id" to "approval",
+                            "choice" to choice,
+                            "all" to false,
+                        ),
+                        any(),
+                    )
+                }
             }
             for (count in listOf(0, 2, -1)) {
                 reply("""{"resolved":$count}""")

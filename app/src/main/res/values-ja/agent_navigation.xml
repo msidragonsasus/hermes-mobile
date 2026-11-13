@@ -9,6 +9,12 @@
     <string name="agent_history_untitled">無題のチャット</string>
     <string name="agent_history_more">以前のチャットを読み込む</string>
     <string name="agent_history_current">現在のチャット</string>
+    <string name="agent_history_status_waiting">確認待ち</string>
+    <string name="agent_history_status_starting">開始待ち</string>
+    <string name="agent_history_status_background">バックグラウンド実行中</string>
+    <string name="agent_history_status_unconfirmed">状態を確認できません</string>
+    <string name="agent_history_status_rechecking">%1$s（再確認中）</string>
+    <string name="agent_history_status_notice">実行状態を確認できていません。自動で再確認しています。</string>
     <string name="agent_history_no_results">一致するチャットはありません</string>
     <string name="agent_history_empty">まだチャットはありません。新しい会話を始めましょう</string>
     <string name="agent_controls_title">エージェント設定</string>

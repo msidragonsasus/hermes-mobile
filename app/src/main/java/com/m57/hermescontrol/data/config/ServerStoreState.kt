@@ -39,4 +39,7 @@ data class ServerStoreState(
     val lastUpdateCheckTimestamp: Long = 0L,
     // Tag the user explicitly dismissed from the update banner / dialog (e.g. "v1.24.2").
     val dismissedUpdateTag: String? = null,
+    // In-app update source (UpdateSource.storageKey). Absent in older stores →
+    // the connected server; the public upstream is an explicit opt-in.
+    val updateSource: String = "connected_server",
 )

@@ -55,6 +55,11 @@ class Settings(BaseModel):
     enabled: StrictBool
 
 
+class Interest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    interested: StrictBool
+
+
 class Completion(BaseModel):
     model_config = ConfigDict(extra="forbid")
     done: StrictBool
@@ -100,6 +105,13 @@ def create_router(resolver=resolve_home, model=synthesize, launch=None):
                     threading.Thread(target=run, args=(store, home, name, body.request_id), daemon=True).start()
             return store.snapshot()
         return invoke(profile, start)
+
+    @router.put("/tasks/{identity}/interest")
+    def interest(identity: str, body: Interest, profile: str | None = None):
+        def update(store, home, name):
+            store.interest(identity, body.interested)
+            return store.snapshot()
+        return invoke(profile, update)
 
     @router.patch("/tasks/{identity}")
     def complete(identity: str, body: Completion, profile: str | None = None):

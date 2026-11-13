@@ -10,6 +10,7 @@ import com.m57.hermescontrol.domain.hermes.AttentionSignal
 import com.m57.hermescontrol.domain.hermes.ConnectionScope
 import com.m57.hermescontrol.domain.hermes.RequestRef
 import com.m57.hermescontrol.domain.hermes.SessionRef
+import com.m57.hermescontrol.domain.hermes.allowedApprovalChoices
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
@@ -86,7 +87,12 @@ internal fun dashboardAttentionItems(
                             AttentionDetails(
                                 action = event.command,
                                 patterns = event.patternKeys.orEmpty(),
-                                approvalChoices = event.choices,
+                                approvalChoices =
+                                    allowedApprovalChoices(
+                                        event.choices,
+                                        event.allowPermanent,
+                                        event.smartDenied,
+                                    ),
                             ),
                     ),
                 )

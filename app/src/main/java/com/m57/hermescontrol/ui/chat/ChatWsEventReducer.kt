@@ -62,8 +62,11 @@ object ChatWsEventReducer {
                 is WsEvent.MessageToken -> event.sessionId
                 is WsEvent.ThinkingDelta -> event.sessionId
                 is WsEvent.ReasoningDelta -> event.sessionId
+                is WsEvent.ReasoningAvailable -> event.sessionId
                 is WsEvent.MessageComplete -> event.sessionId
                 is WsEvent.MessageDone -> event.sessionId
+                is WsEvent.MessageInterim -> event.sessionId
+                is WsEvent.MessageSegmentEnd -> event.sessionId
                 is WsEvent.ToolStart -> event.sessionId
                 is WsEvent.ToolComplete -> event.sessionId
                 is WsEvent.ToolOutputRisk -> event.sessionId
@@ -80,11 +83,12 @@ object ChatWsEventReducer {
         if (eventSessionId != null && currentSessionId != null && eventSessionId != currentSessionId) {
             return ReducerResult(state = state, streamingState = streamingState)
         }
-        val reduced = reduceInternal(state, streamingState, event)
+        val reduced = resumeObservedTurn(state, streamingState, event, reduceInternal(state, streamingState, event))
         val observedActivity =
             event is WsEvent.MessageStart || event is WsEvent.MessageToken ||
                 event is WsEvent.ThinkingDelta || event is WsEvent.ReasoningDelta ||
-                event is WsEvent.ToolStart || event is WsEvent.ToolComplete
+                event is WsEvent.ToolStart || event is WsEvent.ToolComplete ||
+                event is WsEvent.MessageInterim || event is WsEvent.MessageSegmentEnd
         val result =
             if (observedActivity || event is WsEvent.MessageDone || event is WsEvent.MessageComplete ||
                 (state.isAgentTyping && !reduced.state.isAgentTyping)
@@ -106,92 +110,194 @@ object ChatWsEventReducer {
         }
     }
 
+    /**
+     * Work frames of a turn that has not ended show it is running again, e.g.
+     * after an approval was answered. Waiting prompts keep precedence, and a
+     * late frame after message.complete/done never revives a finished turn.
+     */
+    private fun resumeObservedTurn(
+        state: ChatUiState,
+        streamingState: StreamingState,
+        event: WsEvent,
+        reduced: ReducerResult,
+    ): ReducerResult {
+        val workFrame =
+            (event is WsEvent.ThinkingDelta && event.token.isNotEmpty()) ||
+                event is WsEvent.ReasoningDelta || event is WsEvent.ReasoningAvailable ||
+                event is WsEvent.ToolGenerating || event is WsEvent.ToolStart || event is WsEvent.ToolComplete ||
+                event is WsEvent.MessageInterim || event is WsEvent.MessageSegmentEnd
+        if (!workFrame || reduced.state.isAgentTyping || streamingState.turnEnded || state.awaitsUserInput()) {
+            return reduced
+        }
+        return reduced.copy(state = reduced.state.copy(isAgentTyping = true))
+    }
+
     private fun reduceInternal(
         state: ChatUiState,
         streamingState: StreamingState,
         event: WsEvent,
     ): ReducerResult =
         when (event) {
-            is WsEvent.GatewayReady -> onGatewayReady(state, streamingState)
+            is WsEvent.GatewayReady -> {
+                onGatewayReady(state, streamingState)
+            }
 
-            is WsEvent.MessageStart -> onMessageStart(state, streamingState, event)
+            is WsEvent.MessageStart -> {
+                onMessageStart(state, streamingState, event)
+            }
 
-            is WsEvent.MessageToken -> onMessageToken(state, streamingState, event)
+            is WsEvent.MessageToken -> {
+                onMessageToken(state, streamingState, event)
+            }
 
-            is WsEvent.ThinkingDelta -> onThinkingDelta(state, streamingState, event)
+            is WsEvent.MessageInterim -> {
+                onMessageInterim(state, streamingState, event)
+            }
 
-            is WsEvent.ReasoningDelta -> onReasoningDelta(state, streamingState, event)
+            is WsEvent.MessageSegmentEnd -> {
+                ReducerResult(state = state, streamingState = streamingState.copy(isWritingText = false))
+            }
 
-            is WsEvent.ReasoningAvailable -> onReasoningAvailable(state, streamingState, event)
+            is WsEvent.ThinkingDelta -> {
+                onThinkingDelta(state, streamingState, event)
+            }
 
-            is WsEvent.MessageComplete -> onMessageComplete(state, streamingState, event)
+            is WsEvent.ReasoningDelta -> {
+                onReasoningDelta(state, streamingState, event)
+            }
 
-            is WsEvent.MessageDone -> onMessageDone(state, streamingState)
+            is WsEvent.ReasoningAvailable -> {
+                onReasoningAvailable(state, streamingState, event)
+            }
 
-            is WsEvent.ToolStart -> onToolStart(state, streamingState, event)
+            is WsEvent.MessageComplete -> {
+                onMessageComplete(state, streamingState, event)
+            }
 
-            is WsEvent.ToolComplete -> onToolComplete(state, streamingState, event)
+            is WsEvent.MessageDone -> {
+                onMessageDone(state, streamingState)
+            }
 
-            is WsEvent.ToolOutputRisk -> onToolOutputRisk(state, streamingState, event)
+            is WsEvent.ToolStart -> {
+                onToolStart(state, streamingState, event)
+            }
 
-            is WsEvent.ToolProgress -> onToolProgress(state, streamingState, event)
+            is WsEvent.ToolComplete -> {
+                onToolComplete(state, streamingState, event)
+            }
 
-            is WsEvent.ToolGenerating -> onToolGenerating(state, streamingState, event)
+            is WsEvent.ToolOutputRisk -> {
+                onToolOutputRisk(state, streamingState, event)
+            }
 
-            is WsEvent.SubagentEvent -> onSubagentEvent(state, streamingState, event)
+            is WsEvent.ToolProgress -> {
+                onToolProgress(state, streamingState, event)
+            }
 
-            is WsEvent.ClarifyRequest -> onClarifyRequest(state, streamingState, event)
+            is WsEvent.ToolGenerating -> {
+                onToolGenerating(state, streamingState, event)
+            }
 
-            is WsEvent.ClarifyExpire -> onClarifyExpire(state, streamingState, event)
+            is WsEvent.SubagentEvent -> {
+                onSubagentEvent(state, streamingState, event)
+            }
 
-            is WsEvent.ReviewSummary -> onReviewSummary(state, streamingState, event)
+            is WsEvent.ClarifyRequest -> {
+                onClarifyRequest(state, streamingState, event)
+            }
 
-            is WsEvent.BtwComplete -> onBtwComplete(state, streamingState, event)
+            is WsEvent.ClarifyExpire -> {
+                onClarifyExpire(state, streamingState, event)
+            }
 
-            is WsEvent.SessionUsage -> onSessionUsage(state, streamingState, event)
+            is WsEvent.ReviewSummary -> {
+                onReviewSummary(state, streamingState, event)
+            }
 
-            is WsEvent.TodoUpdated -> onTodoUpdated(state, streamingState, event)
+            is WsEvent.BtwComplete -> {
+                onBtwComplete(state, streamingState, event)
+            }
 
-            is WsEvent.RpcError -> onRpcError(state, streamingState, event)
+            is WsEvent.SessionUsage -> {
+                onSessionUsage(state, streamingState, event)
+            }
 
-            is WsEvent.GatewayError -> onGatewayError(state, streamingState, event)
+            is WsEvent.TodoUpdated -> {
+                onTodoUpdated(state, streamingState, event)
+            }
 
-            is WsEvent.BackgroundComplete -> onBackgroundComplete(state, streamingState, event)
+            is WsEvent.RpcError -> {
+                onRpcError(state, streamingState, event)
+            }
 
-            is WsEvent.SessionUpdated -> onSessionUpdated(state, streamingState)
+            is WsEvent.GatewayError -> {
+                onGatewayError(state, streamingState, event)
+            }
 
-            is WsEvent.StatusUpdate -> onStatusUpdate(state, streamingState)
+            is WsEvent.BackgroundComplete -> {
+                onBackgroundComplete(state, streamingState, event)
+            }
 
-            is WsEvent.Unknown -> onUnknown(state, streamingState)
+            is WsEvent.SessionUpdated -> {
+                onSessionUpdated(state, streamingState)
+            }
+
+            is WsEvent.StatusUpdate -> {
+                onStatusUpdate(state, streamingState)
+            }
+
+            is WsEvent.Unknown -> {
+                onUnknown(state, streamingState)
+            }
 
             // SessionInfo is a no-op in the original code
-            is WsEvent.SessionInfo -> ReducerResult(state = state, streamingState = streamingState)
+            is WsEvent.SessionInfo -> {
+                ReducerResult(state = state, streamingState = streamingState)
+            }
 
             // RpcResult is handled by the ViewModel (needs pending request context)
-            is WsEvent.RpcResult -> ReducerResult(state = state, streamingState = streamingState)
+            is WsEvent.RpcResult -> {
+                ReducerResult(state = state, streamingState = streamingState)
+            }
 
             // ApprovalRequest is handled by the ViewModel (needs active session + WS client)
-            is WsEvent.ApprovalRequest -> ReducerResult(state = state, streamingState = streamingState)
+            is WsEvent.ApprovalRequest -> {
+                ReducerResult(state = state, streamingState = streamingState)
+            }
 
             // SudoRequest / SecretRequest are handled by the ViewModel (issue #524)
-            is WsEvent.SudoRequest -> ReducerResult(state = state, streamingState = streamingState)
+            is WsEvent.SudoRequest -> {
+                ReducerResult(state = state, streamingState = streamingState)
+            }
 
-            is WsEvent.SudoExpire -> ReducerResult(state = state, streamingState = streamingState)
+            is WsEvent.SudoExpire -> {
+                ReducerResult(state = state, streamingState = streamingState)
+            }
 
-            is WsEvent.SecretRequest -> ReducerResult(state = state, streamingState = streamingState)
+            is WsEvent.SecretRequest -> {
+                ReducerResult(state = state, streamingState = streamingState)
+            }
 
-            is WsEvent.SecretExpire -> ReducerResult(state = state, streamingState = streamingState)
+            is WsEvent.SecretExpire -> {
+                ReducerResult(state = state, streamingState = streamingState)
+            }
 
             is WsEvent.VaultRequest,
             is WsEvent.ServerRequestCancel,
             is WsEvent.UnsupportedServerRequest,
-            -> ReducerResult(state = state, streamingState = streamingState)
+            -> {
+                ReducerResult(state = state, streamingState = streamingState)
+            }
 
             // ReactionEvent is handled by the ViewModel — purely cosmetic animation
-            is WsEvent.ReactionEvent -> ReducerResult(state = state, streamingState = streamingState)
+            is WsEvent.ReactionEvent -> {
+                ReducerResult(state = state, streamingState = streamingState)
+            }
 
             // Change events (issue #784) are consumed by their screens' ViewModels
-            is WsEvent.ChangeEvent -> ReducerResult(state = state, streamingState = streamingState)
+            is WsEvent.ChangeEvent -> {
+                ReducerResult(state = state, streamingState = streamingState)
+            }
         }
 
     // ── GatewayReady ──────────────────────────────────────────────────
@@ -277,6 +383,63 @@ object ChatWsEventReducer {
         return ReducerResult(state = state, streamingState = streamingState)
     }
 
+    // ── MessageInterim ────────────────────────────────────────────────
+
+    /**
+     * `message.interim` seals interim commentary as its own bubble while the
+     * turn continues (with or without tools). Text that already streamed is
+     * sealed from the live message; unstreamed text is added once. Sealed ids
+     * feed the final-answer prefix strip exactly like tool.start seals.
+     */
+    private fun onMessageInterim(
+        state: ChatUiState,
+        streamingState: StreamingState,
+        event: WsEvent.MessageInterim,
+    ): ReducerResult {
+        val now = System.currentTimeMillis()
+        val live = streamingState.streamingMessage?.takeIf { it.content.isNotBlank() }
+        val reasoning = streamingState.reasoningText.ifBlank { live?.reasoningText.orEmpty() }
+        val segments = mutableListOf<ChatMessage>()
+        if (live != null) {
+            segments += live.copy(isStreaming = false, reasoningText = reasoning, finishTimestamp = now)
+        }
+        val text = event.text
+        val turn = state.messages.drop(state.messages.indexOfLast { it.role == MessageRole.USER } + 1) + segments
+
+        fun ChatMessage.shows(text: String) = role == MessageRole.ASSISTANT && content.trim() == text.trim()
+        // Streamed text is already on screen somewhere in the turn. Unstreamed
+        // text is a repeated frame only while it is still the latest row; the
+        // same words after a tool round or other activity are a new segment.
+        val alreadyShown =
+            if (event.alreadyStreamed) {
+                live != null || turn.any { it.shows(text) }
+            } else {
+                turn.lastOrNull()?.shows(text) == true
+            }
+        if (text.isNotBlank() && !alreadyShown) {
+            segments +=
+                ChatMessage(
+                    role = MessageRole.ASSISTANT,
+                    content = text,
+                    reasoningText = if (live == null) reasoning else "",
+                    finishTimestamp = now,
+                )
+        }
+        val sid = state.currentSessionId
+        val effects: List<ReducerEffect> =
+            if (sid == null) emptyList() else segments.map { ReducerEffect.PersistMessage(it, sid) }
+        return ReducerResult(
+            state = state.copy(messages = segments.fold(state.messages) { messages, m -> messages.upsertById(m) }),
+            streamingState =
+                streamingState.copy(
+                    streamingMessage = if (live != null) null else streamingState.streamingMessage,
+                    sealedOrphanIds = streamingState.sealedOrphanIds + segments.map { it.id },
+                    isWritingText = false,
+                ),
+            effects = effects,
+        )
+    }
+
     // ── ThinkingDelta ─────────────────────────────────────────────────
 
     private fun onThinkingDelta(
@@ -284,6 +447,14 @@ object ChatWsEventReducer {
         streamingState: StreamingState,
         event: WsEvent.ThinkingDelta,
     ): ReducerResult {
+        // An empty thinking.delta clears the status around an API call; it is
+        // neither content nor the end of the turn.
+        if (event.token.isEmpty()) {
+            return ReducerResult(
+                state = state,
+                streamingState = streamingState.copy(isThinking = false, thinkingText = ""),
+            )
+        }
         val currentContent = streamingState.thinkingText + event.token
         return ReducerResult(
             state = state,
@@ -291,6 +462,7 @@ object ChatWsEventReducer {
                 streamingState.copy(
                     isThinking = true,
                     thinkingText = currentContent,
+                    isWritingText = false,
                 ),
         )
     }
@@ -308,12 +480,19 @@ object ChatWsEventReducer {
                 streamingState.copy(
                     isReasoning = true,
                     reasoningText = currentContent,
+                    isWritingText = false,
                 ),
         )
     }
 
     // ── ReasoningAvailable ────────────────────────────────────────────
     private fun onReasoningAvailable(
+        state: ChatUiState,
+        streamingState: StreamingState,
+        event: WsEvent.ReasoningAvailable,
+    ): ReducerResult = onReasoningBlock(state, streamingState.copy(isWritingText = false), event)
+
+    private fun onReasoningBlock(
         state: ChatUiState,
         streamingState: StreamingState,
         event: WsEvent.ReasoningAvailable,
@@ -425,6 +604,7 @@ object ChatWsEventReducer {
                         finalizedMessage =
                             finalized ?: state.messages.lastOrNull { it.id in streamingState.sealedOrphanIds },
                         completedText = event.text,
+                        turnEnded = true,
                     ),
             )
         }
@@ -445,6 +625,7 @@ object ChatWsEventReducer {
                 finalizedMessage = msg,
                 completedText = event.text,
                 sealedOrphanIds = streamingState.sealedOrphanIds,
+                turnEnded = true,
             )
         if (msg == finalized) {
             return ReducerResult(
@@ -497,6 +678,7 @@ object ChatWsEventReducer {
                         finalizedMessage = streamingState.finalizedMessage,
                         completedText = streamingState.completedText,
                         sealedOrphanIds = streamingState.sealedOrphanIds,
+                        turnEnded = true,
                     ),
             )
         val reasoning =
@@ -533,6 +715,7 @@ object ChatWsEventReducer {
                 StreamingState(
                     finalizedMessage = msg,
                     sealedOrphanIds = streamingState.sealedOrphanIds,
+                    turnEnded = true,
                 ),
             effects = effects,
         )
@@ -609,9 +792,10 @@ object ChatWsEventReducer {
                 streamingState.copy(
                     streamingMessage = null,
                     sealedOrphanIds = streamingState.sealedOrphanIds + orphanToPersist.id,
+                    isWritingText = false,
                 )
             } else {
-                streamingState
+                streamingState.copy(isWritingText = false)
             }
 
         val parsedTodos = if (event.name == "todo") extractTodosFromMap(event.data) else null
@@ -918,6 +1102,8 @@ object ChatWsEventReducer {
         streamingState: StreamingState,
         event: WsEvent.ToolGenerating,
     ): ReducerResult {
+        // The model is writing tool arguments: the reply segment has ended.
+        val working = streamingState.copy(isWritingText = false)
         val messages = state.messages.toMutableList()
         val toolIdx =
             messages.indexOfLast {
@@ -925,12 +1111,12 @@ object ChatWsEventReducer {
                     it.toolName == event.name &&
                     it.toolStatus == ToolStatus.RUNNING
             }
-        if (toolIdx < 0) return ReducerResult(state = state, streamingState = streamingState)
+        if (toolIdx < 0) return ReducerResult(state = state, streamingState = working)
 
         messages[toolIdx] = messages[toolIdx].copy(progressPreview = "")
         return ReducerResult(
             state = state.copy(messages = messages),
-            streamingState = streamingState,
+            streamingState = working,
         )
     }
 

@@ -13,15 +13,20 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.Circle
+import androidx.compose.material.icons.outlined.GppMaybe
+import androidx.compose.material.icons.outlined.HourglassTop
+import androidx.compose.material.icons.outlined.QuestionAnswer
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -34,8 +39,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -43,14 +52,20 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.domain.hermes.SessionActivity
+import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.sessions.SessionsUiState
+import kotlinx.coroutines.delay
 
 /**
  * Conversation operations only; app-wide management has a separate shell entry point.
@@ -78,8 +93,14 @@ fun ConversationMenuSheet(
     onRefreshHistory: () -> Unit = {},
     onLoadMore: () -> Unit = {},
     selectionEnabled: Boolean = true,
+    historyActivity: Map<String, SessionActivity> = emptyMap(),
+    historyRechecking: Set<String> = emptySet(),
+    historyStatusUnverified: Boolean = false,
+    groupKeys: Set<String> = emptySet(),
+    drawerModifier: Modifier = Modifier,
 ) {
     val spacing = LocalSpacing.current
+    val untitled = stringResource(R.string.agent_history_untitled)
     val currentOnDismiss by rememberUpdatedState(onDismiss)
     val swipeCloseDistance = with(LocalDensity.current) { 48.dp.toPx() }
     BackHandler(enabled = visible, onBack = onDismiss)
@@ -107,7 +128,7 @@ fun ConversationMenuSheet(
         ) {
             ModalDrawerSheet(
                 modifier =
-                    Modifier.pointerInput(Unit) {
+                    drawerModifier.pointerInput(Unit) {
                         var travelled = 0f
                         detectHorizontalDragGestures(
                             onDragStart = { travelled = 0f },
@@ -201,48 +222,35 @@ fun ConversationMenuSheet(
                                 }
                             }
                         }
-                        if (searching) {
-                            val results = historyState.searchResults.distinctBy { it.session_id }
-                            if (!loading && error == null && !groupError && results.isEmpty()) {
-                                item { HistoryEmpty(searching = true) }
-                            }
-                            items(results, key = { it.session_id }) { result ->
-                                HistoryRow(
-                                    id = result.session_id,
-                                    title =
-                                        conversationHistoryTitle(
-                                            historyState.sessions.firstOrNull { it.id == result.session_id }?.title,
-                                            result.snippet,
-                                            stringResource(R.string.agent_history_untitled),
-                                        ),
-                                    selected = result.session_id == currentSessionId,
-                                    onSelect = onSelectSession,
-                                    enabled = selectionEnabled,
-                                )
-                            }
-                        } else {
-                            if (!loading && error == null && !groupError && historyState.displaySessions.isEmpty()) {
-                                item { HistoryEmpty(searching = false) }
-                            }
-                            items(historyState.displaySessions, key = { it.id }) { session ->
-                                HistoryRow(
-                                    id = session.id,
-                                    title =
-                                        conversationHistoryTitle(
-                                            session.title,
-                                            session.preview,
-                                            stringResource(R.string.agent_history_untitled),
-                                        ),
-                                    selected = session.id == currentSessionId,
-                                    onSelect = onSelectSession,
-                                    enabled = selectionEnabled,
-                                )
-                            }
-                            if (historyState.hasMore) {
-                                item {
-                                    TextButton(onClick = onLoadMore, enabled = !historyState.isLoadingMore) {
-                                        Text(stringResource(R.string.agent_history_more))
-                                    }
+                        if (historyStatusUnverified) {
+                            item(key = "conversation_status_notice") { HistoryStatusNotice() }
+                        }
+                        val rows =
+                            conversationHistoryRows(
+                                historyState,
+                                historyActivity,
+                                untitled,
+                                groupKeys,
+                                historyRechecking,
+                            )
+                        if (!loading && error == null && !groupError && rows.isEmpty()) {
+                            item { HistoryEmpty(searching = searching) }
+                        }
+                        items(rows, key = { it.id }) { row ->
+                            HistoryRow(
+                                id = row.id,
+                                title = row.title,
+                                selected = row.id == currentSessionId,
+                                onSelect = onSelectSession,
+                                enabled = selectionEnabled,
+                                activity = row.activity,
+                                rechecking = row.rechecking,
+                            )
+                        }
+                        if (!searching && historyState.hasMore) {
+                            item {
+                                TextButton(onClick = onLoadMore, enabled = !historyState.isLoadingMore) {
+                                    Text(stringResource(R.string.agent_history_more))
                                 }
                             }
                         }
@@ -263,6 +271,32 @@ private fun HistoryEmpty(searching: Boolean) {
     )
 }
 
+/**
+ * One quiet line explaining that row statuses cannot be confirmed right now. A brief gap (the
+ * first read after reopening) is not worth a layout change, so it appears only if it persists.
+ */
+@Composable
+private fun HistoryStatusNotice() {
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        delay(1_500)
+        shown = true
+    }
+    if (!shown) return
+    val spacing = LocalSpacing.current
+    Text(
+        stringResource(R.string.agent_history_status_notice),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = spacing.lg, vertical = spacing.sm)
+                .semantics { liveRegion = LiveRegionMode.Polite }
+                .testTag("conversation_status_notice"),
+    )
+}
+
 @Composable
 internal fun HistoryRow(
     id: String,
@@ -270,11 +304,30 @@ internal fun HistoryRow(
     selected: Boolean,
     onSelect: (String) -> Unit,
     enabled: Boolean = true,
+    activity: SessionActivity? = null,
+    rechecking: Boolean = false,
 ) {
+    val label = activity?.let { stringResource(it.labelRes()) }
+    val stateLabel =
+        if (label != null &&
+            rechecking
+        ) {
+            stringResource(R.string.agent_history_status_rechecking, label)
+        } else {
+            label
+        }
     ListItem(
         headlineContent = {
-            Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                title,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.testTag("conversation_title_$id"),
+            )
         },
+        // Always present, even when quiet, so every title ends at the same boundary.
+        trailingContent = { HistoryStatusSlot(id, activity, rechecking) },
         colors =
             ListItemDefaults.colors(
                 containerColor = if (selected) MaterialTheme.colorScheme.surfaceContainerHigh else Color.Transparent,
@@ -282,9 +335,77 @@ internal fun HistoryRow(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .height(56.dp)
-                .semantics { this.selected = selected }
-                .testTag("conversation_session_$id")
+                .heightIn(min = 56.dp)
+                .semantics {
+                    this.selected = selected
+                    if (stateLabel != null) stateDescription = stateLabel
+                }.testTag("conversation_session_$id")
                 .clickable(enabled = enabled) { onSelect(id) },
     )
 }
+
+/**
+ * Fixed 24dp slot; the row's state description carries the meaning, color only supports it.
+ * Busy work spins (muted while its still-fresh status is rechecked); an unconfirmed status is a
+ * quiet hollow ring explained by [HistoryStatusNotice], never a lone sync-problem glyph.
+ */
+@Composable
+private fun HistoryStatusSlot(
+    id: String,
+    activity: SessionActivity?,
+    rechecking: Boolean,
+) {
+    val statusColors = LocalHermesStatusColors.current
+    val quiet = MaterialTheme.colorScheme.onSurfaceVariant
+    Box(Modifier.size(24.dp).testTag("conversation_status_$id"), contentAlignment = Alignment.Center) {
+        val icon =
+            when (activity) {
+                null -> {
+                    return@Box
+                }
+
+                SessionActivity.RUNNING, SessionActivity.STARTING, SessionActivity.BACKGROUND -> {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = if (rechecking) quiet else MaterialTheme.colorScheme.primary,
+                        strokeWidth = 2.dp,
+                    )
+                    return@Box
+                }
+
+                SessionActivity.UNCERTAIN -> {
+                    Icon(
+                        Icons.Outlined.Circle,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.size(14.dp).testTag("conversation_status_unconfirmed_$id"),
+                    )
+                    return@Box
+                }
+
+                SessionActivity.WAITING_APPROVAL -> {
+                    Icons.Outlined.GppMaybe to statusColors.warning
+                }
+
+                SessionActivity.NEEDS_INPUT -> {
+                    Icons.Outlined.QuestionAnswer to statusColors.warning
+                }
+
+                SessionActivity.WAITING -> {
+                    Icons.Outlined.HourglassTop to quiet
+                }
+            }
+        Icon(icon.first, contentDescription = null, tint = icon.second, modifier = Modifier.size(20.dp))
+    }
+}
+
+private fun SessionActivity.labelRes(): Int =
+    when (this) {
+        SessionActivity.RUNNING -> R.string.activity_running
+        SessionActivity.STARTING -> R.string.agent_history_status_starting
+        SessionActivity.BACKGROUND -> R.string.agent_history_status_background
+        SessionActivity.WAITING_APPROVAL -> R.string.activity_waiting_approval
+        SessionActivity.NEEDS_INPUT -> R.string.activity_needs_input
+        SessionActivity.WAITING -> R.string.agent_history_status_waiting
+        SessionActivity.UNCERTAIN -> R.string.agent_history_status_unconfirmed
+    }

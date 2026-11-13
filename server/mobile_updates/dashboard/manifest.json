@@ -1,0 +1,8 @@
+{
+  "name": "mobile_updates",
+  "label": "アプリ更新配布",
+  "description": "運用者が公開したHermes Mobile APKを、認証済み接続へ読み取り専用で配布する",
+  "version": "0.1.0",
+  "tab": {"hidden": true},
+  "api": "plugin_api.py"
+}

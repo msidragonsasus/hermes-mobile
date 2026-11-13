@@ -68,6 +68,10 @@ object ActiveSessionHolder {
         while (notificationSessions.size > 32) notificationSessions.remove(notificationSessions.keys.first())
     }
 
+    /** The active chat's runtime id, only when it was opened on exactly [scope]. */
+    @Synchronized
+    fun activeRuntimeId(scope: ConnectionScope): String? = _activeSessionId.value.takeIf { activeScope == scope }
+
     @Synchronized
     fun resolveStoredSessionId(sessionId: String?): String? =
         if (sessionId == _activeSessionId.value) activeStoredSessionId ?: sessionId else sessionId

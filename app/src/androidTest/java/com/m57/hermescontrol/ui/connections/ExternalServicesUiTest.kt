@@ -20,11 +20,13 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.Density
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.m57.hermescontrol.data.model.McpServer
 import com.m57.hermescontrol.theme.HermesControlTheme
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.theme.ThemePreference
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.mcp.McpServersViewModel
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -124,9 +126,7 @@ class ExternalServicesUiTest {
                                 state =
                                     com.m57.hermescontrol.ui.mcp
                                         .McpServersUiState(),
-                                viewModel =
-                                    com.m57.hermescontrol.ui.mcp
-                                        .McpServersViewModel(),
+                                viewModel = viewModel<McpServersViewModel>(),
                                 spacing = spacing,
                                 onClick = {},
                                 onOpenBrowser = {},

@@ -10,8 +10,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.SoftwareKeyboardController
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -22,10 +25,28 @@ import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
 import com.m57.hermescontrol.theme.HermesControlTheme
 import com.m57.hermescontrol.theme.ThemePreference
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicReference
+
+/** Synthetic fixture only; never a real password. */
+private const val FIXTURE_PASSWORD = "fixture-not-a-password"
+
+private class FixtureStorage : TerminalSecretStorage {
+    val values = mutableMapOf<String, String>()
+
+    override fun read(key: String) = values[key]
+
+    override fun write(
+        key: String,
+        value: String?,
+    ) {
+        if (value == null) values.remove(key) else values[key] = value
+    }
+}
 
 class TerminalUiTest {
     @get:Rule val compose = createComposeRule()
@@ -60,6 +81,52 @@ class TerminalUiTest {
             override fun report(value: String) {}
         }
 
+    private fun snippets(keiya: Boolean = false): TerminalSnippetsModel {
+        val model = TerminalSnippetsModel(TerminalSnippetStore(FixtureStorage(), "fixture-scope"))
+        runBlocking {
+            model.load()
+            if (keiya) model.save(newKeiyaPassword().copy(value = FIXTURE_PASSWORD))
+        }
+        return model
+    }
+
+    @Test
+    fun savedKeiyaPasswordIsInsertedMaskedAndNeverSentAutomatically() {
+        val saved = snippets(keiya = true)
+        compose.setContent {
+            HermesControlTheme {
+                TerminalContent(TerminalUiState(selected = "fixture", connected = true, enabled = true), actions, saved)
+            }
+        }
+        compose.onAllNodesWithText("秘密入力", substring = true).assertCountEquals(0)
+        compose.onNodeWithTag("terminal_keiya_password").performClick()
+        compose.runOnIdle { assertTrue(actions.sent.isEmpty()) }
+        compose.onAllNodesWithText(FIXTURE_PASSWORD, substring = true).assertCountEquals(0)
+        compose.onNodeWithText("パスワードを消去").assertIsDisplayed()
+        compose.onNodeWithTag("send_button").performClick()
+        compose.runOnIdle { assertEquals(listOf(FIXTURE_PASSWORD to true), actions.sent) }
+        compose.onNodeWithText("パスワードを消去").assertDoesNotExist()
+    }
+
+    @Test
+    fun savedStringIsAddedFromThePickerAndOnlyFillsTheEditor() {
+        val saved = snippets()
+        compose.setContent {
+            HermesControlTheme {
+                TerminalContent(TerminalUiState(selected = "fixture", connected = true, enabled = true), actions, saved)
+            }
+        }
+        compose.onNodeWithTag("terminal_saved_inputs").performClick()
+        compose.onNodeWithTag("terminal_snippet_add").performClick()
+        compose.onNodeWithTag("terminal_snippet_label").performTextInput("一覧")
+        compose.onNodeWithTag("terminal_snippet_value").performTextInput("ls -la")
+        compose.onNodeWithTag("terminal_snippet_save").performClick()
+        compose.waitUntil(5000) { saved.state.value.items.size == 1 }
+        compose.onNodeWithText("一覧").performClick()
+        compose.onNodeWithTag("terminal_input").assertTextEquals("ls -la")
+        compose.runOnIdle { assertTrue(actions.sent.isEmpty()) }
+    }
+
     @Test
     fun normalEditorSendsCommittedUnicodeAndExplicitControlKeys() {
         var keyboard: SoftwareKeyboardController? = null
@@ -68,7 +135,11 @@ class TerminalUiTest {
             keyboard = LocalSoftwareKeyboardController.current
             keyboardBottom = WindowInsets.ime.getBottom(LocalDensity.current)
             HermesControlTheme {
-                TerminalContent(TerminalUiState(selected = "fixture", connected = true, enabled = true), actions)
+                TerminalContent(
+                    TerminalUiState(selected = "fixture", connected = true, enabled = true),
+                    actions,
+                    snippets(),
+                )
             }
         }
         compose.onNodeWithTag("terminal_input").performClick().performTextInput("日本語と paste")
@@ -128,12 +199,13 @@ class TerminalUiTest {
         compose.setContent {
             val density = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
-                HermesControlTheme { TerminalContent(TerminalUiState(error = "接続を確認してください。"), actions) }
+                HermesControlTheme { TerminalContent(TerminalUiState(error = "接続を確認してください。"), actions, snippets()) }
             }
         }
         compose.onNodeWithText("接続を確認してください。").assertIsDisplayed()
         compose.onNodeWithTag("terminal_create").assertIsDisplayed()
         compose.onNodeWithTag("terminal_create_keiya").assertIsDisplayed()
+        compose.onNodeWithTag("terminal_home_keiya_password").assertExists()
     }
 
     private fun saveScreenshot(name: String) {

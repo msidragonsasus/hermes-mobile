@@ -128,6 +128,9 @@ class ChatStreamingController(
 
     fun handleMessageToken(event: WsEvent.MessageToken) {
         if (!isCurrentSession(event.sessionId)) return
+        // A late token of an ended turn must not revive it; the next legitimate
+        // send/start opens a fresh lifecycle (message.start or the ViewModel).
+        if (streamingState.value.turnEnded) return
 
         streamingBuffer.append(event.token)
         val now = System.currentTimeMillis()
@@ -149,6 +152,7 @@ class ChatStreamingController(
                                 reasoningText = currentReasoning,
                             ),
                         isThinking = false,
+                        isWritingText = state.isWritingText || event.token.isNotEmpty(),
                     )
                 } else {
                     // Fallback: no MessageStart was received — create one now
@@ -162,6 +166,7 @@ class ChatStreamingController(
                     state.copy(
                         streamingMessage = msg,
                         isThinking = false,
+                        isWritingText = state.isWritingText || event.token.isNotEmpty(),
                     )
                 }
             }
@@ -171,6 +176,12 @@ class ChatStreamingController(
 
     fun handleThinkingDelta(event: WsEvent.ThinkingDelta) {
         if (!isCurrentSession(event.sessionId)) return
+        if (event.token.isEmpty()) {
+            // thinking.delta "" clears the status line; the reducer already did.
+            thinkingBuffer.clear()
+            lastThinkingFlushMs = 0L
+            return
+        }
 
         thinkingBuffer.append(event.token)
         val now = System.currentTimeMillis()
@@ -185,6 +196,7 @@ class ChatStreamingController(
                 state.copy(
                     isThinking = true,
                     thinkingText = currentContent,
+                    isWritingText = false,
                 )
             }
         }
@@ -213,6 +225,7 @@ class ChatStreamingController(
                 isReasoning = true,
                 reasoningText = currentContent,
                 streamingMessage = state.streamingMessage?.copy(reasoningText = currentContent),
+                isWritingText = false,
             )
         }
     }

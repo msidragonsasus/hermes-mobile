@@ -12,6 +12,7 @@ from career_core.deployment import attach, prepare
 deployment = prepare(plugin_root)
 
 from career_core.api import create_router
+from career_core.mobile_activation import configured_workbench
 
-router = create_router(run_worker=True, browser_consent=True)
+router = create_router(run_worker=True, browser_consent=True, mobile_workbench=configured_workbench())
 attach(router, plugin_root, deployment)

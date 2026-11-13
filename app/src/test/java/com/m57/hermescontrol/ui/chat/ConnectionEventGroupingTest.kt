@@ -16,11 +16,11 @@ class ConnectionEventGroupingTest {
     ) = ChatMessage(id = id, role = MessageRole.SYSTEM, content = text)
 
     @Test
-    fun adjacentConnectionEventsKeepEveryMessageAndSearchTarget() {
+    fun adjacentConnectionEventsKeepEveryMessageButHaveNoVisibleSearchDestination() {
         val messages = listOf(event("1", "Connected to Hermes"), event("2", "Session resumed"))
         val entries = (groupIntoTurns(messages).single() as ChatTurn.Agent).entries
         assertEquals(messages, (entries.single() as AgentEntry.ConnectionEvents).messages)
-        assertEquals(mapOf("1" to 1, "2" to 1), messageIdToLazyIndex(groupIntoTurns(messages), leadingItems = 1))
+        assertEquals(emptyMap<String, Int>(), messageIdToLazyIndex(groupIntoTurns(messages), leadingItems = 1))
     }
 
     @Test

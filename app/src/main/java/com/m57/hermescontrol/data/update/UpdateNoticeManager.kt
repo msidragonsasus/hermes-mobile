@@ -7,18 +7,16 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import java.io.IOException
 
 /**
- * Startup update check (issue #890): one silent GitHub ping per installed
- * version, fired right after launch, so the chat screen can show an update
- * banner without the user ever opening the About tab.
+ * Startup update check (issue #890): one silent check per installed version
+ * (or per 24h), fired right after launch, so the chat screen can show an
+ * update banner without the user ever opening the About tab.
  *
- * The result lands in [AppUpdateCache] (consumed by the chat banner and
- * adopted by the About tab) and the latest tag is persisted via
- * [AuthManager.setLastKnownLatestTag] so a dismissed banner can return on a
- * later launch. Failures leave the cache Idle — the About tab still has its
- * own manual retry path.
+ * It uses the same source selection and policy as the About tab
+ * ([resolveUpdate]). For the connected server it runs only while signed in
+ * and never falls back to the public upstream. The result lands in
+ * [AppUpdateCache]; failures leave the cache Idle.
  */
 object UpdateNoticeManager {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -26,7 +24,7 @@ object UpdateNoticeManager {
     /**
      * Release-only feature (issue #890): the launch check and chat banner are
      * disabled in debug builds (BuildConfig.DEBUG) so daily dev builds never
-     * hit the GitHub API or nag about updates. Tests flip this to true.
+     * nag about updates. Tests flip this to true.
      */
     var enabled: Boolean = !BuildConfig.DEBUG
         internal set
@@ -40,36 +38,28 @@ object UpdateNoticeManager {
         currentVersion: String = BuildConfig.VERSION_NAME,
         ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
         now: Long = System.currentTimeMillis(),
+        inspector: ApkInspector? = null,
+        scopes: UpdateScopeProvider = AuthManagerUpdateScopes,
+        expectedPackage: String = BuildConfig.APPLICATION_ID,
     ) {
         if (!enabled) return
         val lastCheck = AuthManager.getLastUpdateCheckTimestamp()
         val versionChanged = AuthManager.getUpdateCheckDoneForVersion() != currentVersion
         if (!versionChanged && (now - lastCheck < CHECK_INTERVAL_MS)) return
+        val updateScope = scopes.current(scopes.source()) ?: return
+        val generation = AppUpdateCache.generation
 
         scope.launch(ioDispatcher) {
             AuthManager.setUpdateCheckDoneForVersion(currentVersion)
             AuthManager.setLastUpdateCheckTimestamp(now)
-            val result =
-                try {
-                    checker.fetchLatestRelease()
-                } catch (e: IOException) {
-                    return@launch
-                } catch (e: Exception) {
-                    return@launch
-                }
-            val info = result ?: return@launch
-            val apk = info.apkAsset ?: return@launch
+            val result = resolveUpdate(checker, updateScope, generation, inspector, expectedPackage, currentVersion)
             val state =
-                if (isNewerVersion(info.tagName, currentVersion)) {
-                    AppUpdateState.UpdateAvailable(
-                        latestTag = info.tagName,
-                        apkUrl = apk.browserDownloadUrl,
-                        sizeBytes = apk.size,
-                        releaseNotes = info.body,
-                    )
-                } else {
-                    AppUpdateState.UpToDate(latestTag = info.tagName)
+                when (result) {
+                    is UpdateCheck.Available -> AppUpdateState.UpdateAvailable(result.candidate)
+                    is UpdateCheck.UpToDate -> AppUpdateState.UpToDate(result.versionName, updateScope)
+                    is UpdateCheck.Failed -> return@launch
                 }
+            if (generation != AppUpdateCache.generation) return@launch
             AppUpdateCache.update(state)
             state.releaseTag()?.let { AuthManager.setLastKnownLatestTag(it) }
         }
@@ -77,17 +67,27 @@ object UpdateNoticeManager {
 
     /**
      * The tag the chat banner should advertise, or null when nothing newer is
-     * known or if the user explicitly dismissed this tag.
+     * known or if the user explicitly dismissed this tag. A connected-server
+     * result counts only for its live connection; the persisted tag (shown
+     * after restart without a new check) is used only for the upstream source.
      */
-    fun noticeTag(currentVersion: String = BuildConfig.VERSION_NAME): String? {
+    fun noticeTag(
+        currentVersion: String = BuildConfig.VERSION_NAME,
+        scopes: UpdateScopeProvider = AuthManagerUpdateScopes,
+    ): String? {
         if (!enabled) return null
         val dismissed = AuthManager.getDismissedUpdateTag()
+        val source = scopes.source()
+        val cached =
+            (AppUpdateCache.state.value as? AppUpdateState.UpdateAvailable)
+                ?.takeIf { it.candidate.source == source && it.candidate.scope == scopes.current(source) }
         val candidateTag =
-            (AppUpdateCache.state.value as? AppUpdateState.UpdateAvailable)?.latestTag
-                ?: AuthManager.getLastKnownLatestTag()
+            cached?.latestTag
+                ?: AuthManager.getLastKnownLatestTag()?.takeIf { source == UpdateSource.UPSTREAM_GITHUB }
                 ?: return null
 
         if (candidateTag == dismissed) return null
-        return candidateTag.takeIf { isNewerVersion(it, currentVersion) }
+        // A cached candidate already passed the versionCode policy.
+        return if (cached != null) candidateTag else candidateTag.takeIf { isNewerVersion(it, currentVersion) }
     }
 }

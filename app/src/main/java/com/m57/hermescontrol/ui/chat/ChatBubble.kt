@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Build
@@ -74,6 +73,7 @@ import com.m57.hermescontrol.data.model.Attachment
 import com.m57.hermescontrol.theme.HermesStatusColors
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.theme.onColorFor
+import com.m57.hermescontrol.ui.chat.components.CollapsiblePromptBody
 import com.m57.hermescontrol.util.BidiUtils
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -170,21 +170,25 @@ fun ChatBubble(
                     val bubbleDirection = if (isRtl) LayoutDirection.Rtl else LocalLayoutDirection.current
                     CompositionLocalProvider(LocalLayoutDirection provides bubbleDirection) {
                         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
-                            SelectionContainer {
-                                Text(
-                                    text = highlightedText,
-                                    color = userBubbleTextColor,
-                                    style =
-                                        MaterialTheme.typography.bodyLarge.copy(
-                                            textDirection =
-                                                if (isRtl) {
-                                                    TextDirection.Rtl
-                                                } else {
-                                                    TextDirection.Ltr
-                                                },
-                                        ),
-                                )
-                            }
+                            // Long USER prompts fold here; attachments, copy and time stay outside.
+                            CollapsiblePromptBody(
+                                text = highlightedText,
+                                messageId = message.id,
+                                content = message.content,
+                                role = message.role,
+                                color = userBubbleTextColor,
+                                surfaceColor = bubbleColor,
+                                currentSearchMatch = searchQuery.isNotBlank() && isCurrentMatch,
+                                style =
+                                    MaterialTheme.typography.bodyLarge.copy(
+                                        textDirection =
+                                            if (isRtl) {
+                                                TextDirection.Rtl
+                                            } else {
+                                                TextDirection.Ltr
+                                            },
+                                    ),
+                            )
                             // Render inline attachments
                             if (!message.attachments.isNullOrEmpty()) {
                                 Spacer(modifier = Modifier.height(6.dp))

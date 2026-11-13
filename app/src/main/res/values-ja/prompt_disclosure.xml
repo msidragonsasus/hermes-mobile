@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="prompt_disclosure_show_more">もっと表示</string>
+    <string name="prompt_disclosure_show_less">折りたたむ</string>
+    <string name="prompt_disclosure_state_collapsed">折りたたみ中</string>
+    <string name="prompt_disclosure_state_expanded">全文表示中</string>
+</resources>

@@ -139,6 +139,36 @@ object AuthManager {
 
     private val contextScope = CoroutineScope(Dispatchers.Default)
 
+    // ── Connection epoch (in-memory, never persisted) ────────────────────
+    private val connectionEpochLock = Any()
+    private var connectionChangeDepth = 0
+    private val _connectionEpoch = MutableStateFlow(0L)
+
+    /**
+     * Seqlock-style counter for consumers that must stay bound to one exact
+     * connection (connected-server app updates). It is odd while a connection
+     * setter runs and even otherwise, and moves on every real change of server
+     * URL, selected/active profile, token, session cookie or auth mode, so
+     * logout/re-login and A→B→A switches are distinguishable. Unrelated store
+     * writes (theme, update-check timestamps, update source) do not move it.
+     */
+    val connectionEpoch: StateFlow<Long> = _connectionEpoch.asStateFlow()
+
+    private inline fun <T> connectionChange(
+        changed: Boolean,
+        block: () -> T,
+    ): T {
+        if (!changed) return block()
+        synchronized(connectionEpochLock) {
+            if (connectionChangeDepth++ == 0) _connectionEpoch.value = _connectionEpoch.value + 1
+            try {
+                return block()
+            } finally {
+                if (--connectionChangeDepth == 0) _connectionEpoch.value = _connectionEpoch.value + 1
+            }
+        }
+    }
+
     /**
      * The single source of truth for connection state: server URL + token +
      * selected profile. Emits on login, logout, profile switch, or URL change,
@@ -250,7 +280,9 @@ object AuthManager {
         }
 
     fun setWsAuthParam(param: String) {
-        serverStore.update { it.copy(wsAuthParam = param) }
+        connectionChange(runCatching { serverStore.getLatestState().wsAuthParam != param }.getOrDefault(true)) {
+            serverStore.update { it.copy(wsAuthParam = param) }
+        }
     }
 
     /** Non-secret UI preferences share the encrypted, connection/profile-scoped store. */
@@ -306,7 +338,9 @@ object AuthManager {
     fun getSessionCookie(): String? = CookieManager.getSessionCookie()
 
     fun setSessionCookie(cookie: String?) {
-        CookieManager.setSessionCookie(cookie, endpoint())
+        connectionChange(runCatching { getSessionCookie() != cookie }.getOrDefault(true)) {
+            CookieManager.setSessionCookie(cookie, endpoint())
+        }
     }
 
     /**
@@ -437,6 +471,17 @@ object AuthManager {
         profileId: String,
         token: String?,
     ) {
+        // The selected profile's token, or the default token it may inherit.
+        val selected = getSelectedProfileId()
+        connectionChange(selected == null || selected == profileId || profileId == DEFAULT_PROFILE_ID) {
+            setProfileTokenNow(profileId, token)
+        }
+    }
+
+    private fun setProfileTokenNow(
+        profileId: String,
+        token: String?,
+    ) {
         requirePrefs().edit().putString("token_$profileId", token).apply()
         if (getSelectedProfileId() == profileId) {
             if (token == null) ActiveSessionHolder.clear()
@@ -456,6 +501,10 @@ object AuthManager {
     }
 
     fun setSelectedProfileId(id: String?) {
+        connectionChange(getSelectedProfileId() != id?.takeIf { it.isNotBlank() }) { setSelectedProfileIdNow(id) }
+    }
+
+    private fun setSelectedProfileIdNow(id: String?) {
         if (getSelectedProfileId() != id?.takeIf { it.isNotBlank() }) {
             ActiveSessionHolder.clear()
         }
@@ -489,6 +538,10 @@ object AuthManager {
      * String, 2026-08-06 CI).
      */
     fun setActiveProfileId(id: String?) {
+        connectionChange(_activeProfileId.value != id?.takeIf { it.isNotBlank() }) { setActiveProfileIdNow(id) }
+    }
+
+    private fun setActiveProfileIdNow(id: String?) {
         val normalized = id?.takeIf { it.isNotBlank() }
         if (_activeProfileId.value != normalized) {
             if (prefsDeferred?.isCompleted == true) {
@@ -618,6 +671,14 @@ object AuthManager {
     fun endpointForBuild(): ServerEndpoint = ServerEndpoint.parseForBuild(getBaseUrl())
 
     fun setBaseUrl(baseUrl: String) {
+        val changed =
+            runCatching {
+                ServerEndpoint.parse(baseUrl, CleartextPolicy.ALLOW_WITH_WARNING).baseUrl.toString() != getBaseUrl()
+            }.getOrDefault(true)
+        connectionChange(changed) { setBaseUrlNow(baseUrl) }
+    }
+
+    private fun setBaseUrlNow(baseUrl: String) {
         val normalized =
             ServerEndpoint
                 .parse(
@@ -763,5 +824,12 @@ object AuthManager {
 
     fun setDismissedUpdateTag(tag: String?) {
         serverStore.update { it.copy(dismissedUpdateTag = tag) }
+    }
+
+    /** Selected in-app update source key (see UpdateSource). */
+    fun getUpdateSource(): String = serverStore.getLatestState().updateSource
+
+    fun setUpdateSource(source: String) {
+        serverStore.update { it.copy(updateSource = source) }
     }
 }

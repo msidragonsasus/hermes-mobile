@@ -43,6 +43,78 @@ class AttentionCoordinatorTest {
     private fun approval(target: RequestRef = ref) = AttentionItem(target, AttentionKind.APPROVAL, "Synthetic request")
 
     @Test
+    fun broaderChoicesWaitForAckAndCannotBeRetriedThroughReconnect() =
+        runTest {
+            val details = AttentionDetails(approvalChoices = listOf("session", "always"))
+            val ack = CompletableDeferred<SubmissionResult<Boolean>>()
+            coEvery { transport.respondApproval(ref, "session") } coAnswers { ack.await() }
+            repository.observe(approval().copy(details = details))
+            val response = launch { coordinator.respondApproval(ref, "session") }
+            runCurrent()
+            assertEquals(
+                AttentionStatus.SUBMITTING,
+                repository.items.value
+                    .single()
+                    .status,
+            )
+            coordinator.respondApproval(ref, "always")
+            current = scope.copy(generation = 2)
+            val replay = ref.copy(scope = current)
+            repository.observe(approval(replay).copy(details = details))
+            ack.complete(SubmissionResult.Confirmed("rpc", true))
+            response.join()
+            coordinator.respondApproval(replay, "always")
+            assertEquals(
+                AttentionStatus.UNKNOWN,
+                repository.items.value
+                    .first { it.ref == replay }
+                    .status,
+            )
+            coVerify(exactly = 1) { transport.respondApproval(ref, "session") }
+            coVerify(exactly = 1) { transport.respondApproval(any(), any()) }
+        }
+
+    @Test
+    fun broaderChoicesStillRespectExpiryReadinessAndExactConfiguredScope() =
+        runTest {
+            val details = AttentionDetails(approvalChoices = listOf("session", "always"))
+            repository.observe(approval().copy(details = details, expiresAt = 100))
+            coordinator.respondApproval(ref, "always")
+            assertEquals(
+                AttentionStatus.EXPIRED,
+                repository.items.value
+                    .single()
+                    .status,
+            )
+            val fresh = ref.copy(requestId = "fresh")
+            repository.observe(approval(fresh).copy(details = details))
+            ready = false
+            coordinator.respondApproval(fresh, "session")
+            ready = true
+            current = scope.copy(generation = 2)
+            coordinator.respondApproval(fresh, "always")
+            coVerify(exactly = 0) { transport.respondApproval(any(), any()) }
+            current = scope
+            coordinator.respondApproval(fresh, "session")
+            coVerify(exactly = 1) { transport.respondApproval(fresh, "session") }
+        }
+
+    @Test
+    fun broaderChoicesRequireExactKnownPerItemAdvertisement() =
+        runTest {
+            val choices = listOf(null, emptyList(), listOf("deny"), listOf("unknown", "SESSION", " session"))
+            for ((index, offered) in choices.withIndex()) {
+                val target = ref.copy(requestId = "restricted:$index")
+                repository.observe(approval(target).copy(details = AttentionDetails(approvalChoices = offered)))
+                for (choice in listOf("session", "always", "unknown", "SESSION", " session")) {
+                    coordinator.respondApproval(target, choice)
+                }
+                if (offered != null) coordinator.respondApproval(target, "once")
+            }
+            coVerify(exactly = 0) { transport.respondApproval(any(), any()) }
+        }
+
+    @Test
     fun reconnectReplayCannotResetAnUnknownResponseToPending() =
         runTest {
             coEvery { transport.respondApproval(ref, "once") } returns SubmissionResult.Unknown

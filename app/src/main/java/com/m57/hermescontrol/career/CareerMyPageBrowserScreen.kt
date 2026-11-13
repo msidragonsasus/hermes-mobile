@@ -261,15 +261,23 @@ fun CareerMyPageBrowserScreen(key: CareerMyPageBrowserKey) {
         }
         if (fillJob?.isActive == true || (!manual && !sessionGate.automaticFillAllowed)) return
         if (requested && !passwordStepPending && !manual) return
-        if (!fillPolicy.allowsFill(browser.url) || !fillPolicy.allowsFill(company.mypage?.portal_url)) {
+        // Credentials stay bound to the saved registered URL; the server never learns the landing page.
+        if (!fillPolicy.allowsFill(company.mypage?.portal_url)) {
             status = "登録したログインURLと異なるため入力しません。企業の接続設定を確認してください。"
             return
         }
-        val documentToken = browser.documentToken
+        val documentToken = browser.documentToken?.takeIf { browser.allowsDocumentFill() }
         if (documentToken == null) {
-            status = "このページでは接続を安全に確認できません。開き直すか手動で入力してください。"
+            status =
+                if (browser.documentToken == null && fillPolicy.allowsFill(browser.url)) {
+                    "このページでは接続を安全に確認できません。開き直すか手動で入力してください。"
+                } else {
+                    "最初に開いたページとは異なるため入力しません。開き直すと最初のページで入力します。"
+                }
             return
         }
+        // The first landing (after the registered URL's redirects) is authorized for this document only.
+        val landing = browser.landing?.takeIf { it.token == documentToken }
         if (manual) sessionGate.allowAutomaticFill()
         val documentGeneration = generation
         val fillEpoch = sessionGate.epoch
@@ -280,7 +288,7 @@ fun CareerMyPageBrowserScreen(key: CareerMyPageBrowserKey) {
                     sessionGate.isCurrent(fillEpoch) && !closing && !suspended && !scopeInvalid &&
                         !browser.isDisposed && view === browser &&
                         generation == documentGeneration && connectionScope == careerScope() &&
-                        fillPolicy.allowsFill(browser.url) && browser.documentToken == documentToken
+                        browser.documentToken == documentToken && browser.allowsDocumentFill()
                 try {
                     status = if (passwordContinuation) "パスワード欄を待っています。サイトの次へ進む操作をしてください。" else "ログイン入力欄を確認中…"
                     var readiness =
@@ -289,6 +297,7 @@ fun CareerMyPageBrowserScreen(key: CareerMyPageBrowserKey) {
                             fillPolicy,
                             documentToken,
                             passwordContinuation,
+                            landing,
                             ::documentCurrent,
                         )
                     if (!documentCurrent()) return@launch
@@ -302,7 +311,7 @@ fun CareerMyPageBrowserScreen(key: CareerMyPageBrowserKey) {
                         }
                         status = "軽量モデルでログイン欄を特定中…"
                         val snapshot =
-                            evaluate(CareerBrowserFill.candidateScript(fillPolicy, documentToken))
+                            evaluate(CareerBrowserFill.candidateScript(fillPolicy, documentToken, landing))
                                 ?.let(CareerBrowserLoginSnapshot::parse)
                         if (snapshot != null) {
                             selection =
@@ -325,6 +334,7 @@ fun CareerMyPageBrowserScreen(key: CareerMyPageBrowserKey) {
                                 documentToken,
                                 passwordContinuation,
                                 selection,
+                                landing,
                             ),
                         ) ?: return@launch
                     }
@@ -371,7 +381,14 @@ fun CareerMyPageBrowserScreen(key: CareerMyPageBrowserKey) {
                         ) { credentials ->
                             if (documentCurrent()) {
                                 browser.evaluateJavascript(
-                                    CareerBrowserFill.script(fillPolicy, credentials, documentToken, step, selection),
+                                    CareerBrowserFill.script(
+                                        fillPolicy,
+                                        credentials,
+                                        documentToken,
+                                        step,
+                                        selection,
+                                        landing,
+                                    ),
                                 ) {
                                     evaluation.complete(it)
                                 }
@@ -441,7 +458,7 @@ fun CareerMyPageBrowserScreen(key: CareerMyPageBrowserKey) {
                     // A background navigation must not inherit the previous password-step authority.
                     val document = view?.let { it.url to it.documentToken }
                     if (document != pausedDocument || view?.documentToken == null ||
-                        policy?.allowsFill(view?.url) != true
+                        view?.allowsDocumentFill() != true
                     ) {
                         passwordStepPending = false
                     }
@@ -486,9 +503,7 @@ fun CareerMyPageBrowserScreen(key: CareerMyPageBrowserKey) {
             var menu by remember { mutableStateOf(false) }
             IconButton(
                 onClick = { view?.let { requestFill(it, manual = true) } },
-                enabled =
-                    view?.allowsCredentialFill == true && foreground && !suspended &&
-                        policy?.allowsFill(view?.url) == true,
+                enabled = view?.allowsDocumentFill() == true && foreground && !suspended,
             ) {
                 Icon(Icons.Outlined.Key, contentDescription = "Hermesの保存済みID・パスワードを入力")
             }
@@ -990,6 +1005,7 @@ internal suspend fun awaitCareerBrowserForm(
     policy: CareerBrowserPolicy,
     documentToken: String,
     allowPasswordOnly: Boolean = false,
+    landing: CareerBrowserLanding? = null,
     isCurrent: () -> Boolean,
 ): String =
     withTimeoutOrNull(10_000) wait@{
@@ -1002,7 +1018,12 @@ internal suspend fun awaitCareerBrowserForm(
                             continuation.resume("\"blocked\"") { _, _, _ -> }
                         } else {
                             browser.evaluateJavascript(
-                                CareerBrowserFill.readinessScript(policy, documentToken, allowPasswordOnly),
+                                CareerBrowserFill.readinessScript(
+                                    policy,
+                                    documentToken,
+                                    allowPasswordOnly,
+                                    landing = landing,
+                                ),
                             ) { value ->
                                 if (continuation.isActive) continuation.resume(value) { _, _, _ -> }
                             }
@@ -1050,13 +1071,13 @@ internal fun careerBrowserLifecycleObserver(
 
 internal fun browserFillStatus(result: String): String =
     when (result) {
-        "\"filled_id\"" -> "IDを入力しました。サイトの次へ進む操作後、同じ登録URLのパスワード欄を確認します。"
+        "\"filled_id\"" -> "IDを入力しました。サイトの次へ進む操作後、パスワード欄を確認します。"
         "\"filled_password\"" -> "パスワードを入力しました。内容を確認し、ログインボタンを押してください。"
         "\"filled\"" -> "入力欄に値を設定しました。IDとパスワードの欄を確認してログインボタンを押してください。"
         "\"occupied\"" -> "入力済みの値を保持しています。ログインボタンはご自身で押してください。"
         "\"pending\"" -> "ログイン入力欄がまだ見つかりません。表示後に鍵ボタンで再確認できます。"
         "\"ambiguous\"" -> "ログイン欄を一意に特定できないため入力していません。手動で入力してください。"
-        "\"unsafe_action\"" -> "登録先と同じログイン送信先か確認できないため入力していません。接続設定を確認してください。"
+        "\"unsafe_action\"" -> "開いたログインページと同じ送信先か確認できないため入力していません。手動で入力してください。"
         "\"blocked\"", "\"changed\"" -> "ページまたは入力欄が変わったため入力を止めました。鍵ボタンで再確認できます。"
         "\"not_retained\"" -> "サイトが入力値を保持できませんでした。手動で入力してください。"
         else -> "このログインフォームには自動入力できません。手動で入力してください。"

@@ -652,6 +652,29 @@ class ChatViewModel(
     private val activePromptIntents = ConcurrentHashMap<String, OutgoingDraft>()
     private var hasObservedActiveResponse = false
 
+    /** A fresh prompt put on the wire for this session generation. */
+    private data class PendingAdmission(
+        val generation: Long,
+        val runtimeSessionId: String,
+    )
+
+    @Volatile private var pendingAdmission: PendingAdmission? = null
+    private var refusedAdmission: PendingAdmission? = null
+
+    /** Snapshot before an optimistic send opens the terminal fence. */
+    private data class TurnOpening(
+        val version: Long,
+        val streamVersion: Long,
+        val wasEnded: Boolean,
+    )
+
+    private val turnLifecycleVersion =
+        java.util.concurrent.atomic
+            .AtomicLong()
+
+    // Set by a send that starts a turn; any stream frame afterwards proves admission.
+    private var admissionUnproven = false
+
     // Only a create ACK, idle resume ACK or a terminal turn event releases a queue.
     private var queueExecutionIdle = false
     private var queueTurnObserved = false
@@ -1067,6 +1090,8 @@ class ChatViewModel(
                 is WsEvent.ReasoningDelta -> event.sessionId
                 is WsEvent.MessageComplete -> event.sessionId
                 is WsEvent.MessageDone -> event.sessionId
+                is WsEvent.MessageInterim -> event.sessionId
+                is WsEvent.MessageSegmentEnd -> event.sessionId
                 is WsEvent.ToolStart -> event.sessionId
                 is WsEvent.ToolComplete -> event.sessionId
                 is WsEvent.SubagentEvent -> event.sessionId
@@ -1075,12 +1100,14 @@ class ChatViewModel(
         if (!isCurrentSession(transitionSessionId)) return
         // Actionable questions must retain the socket observation's original identity.
         if (event is WsEvent.ClarifyRequest || event is WsEvent.ClarifyExpire) return
+        val segmentFrame = event is WsEvent.MessageInterim || event is WsEvent.MessageSegmentEnd
         if (event is WsEvent.MessageStart || event is WsEvent.MessageToken ||
             event is WsEvent.ThinkingDelta || event is WsEvent.ReasoningDelta ||
             event is WsEvent.MessageComplete || event is WsEvent.MessageDone ||
-            event is WsEvent.ToolStart || event is WsEvent.ToolComplete
+            event is WsEvent.ToolStart || event is WsEvent.ToolComplete || segmentFrame
         ) {
             streamObservationVersion.incrementAndGet()
+            admissionUnproven = false
         }
         // RpcError is reduced before ViewModel request handling. Drop stale
         // session errors here so the shared reducer cannot clear loading or
@@ -1097,6 +1124,8 @@ class ChatViewModel(
             is WsEvent.MessageComplete,
             is WsEvent.MessageDone,
             is WsEvent.ToolStart,
+            is WsEvent.MessageInterim,
+            is WsEvent.MessageSegmentEnd,
             -> {
                 streamingController.flushPendingReasoning()
                 // Issue #842: the token buffer can hold deltas that landed
@@ -1110,6 +1139,8 @@ class ChatViewModel(
             else -> {}
         }
 
+        // Frames of an ended turn stay fenced until a legitimate send/start.
+        val lateFrame = _streamingState.value.turnEnded && event !is WsEvent.MessageStart
         // First, let the reducer compute the new state and any effects
         val result =
             ChatWsEventReducer.reduce(
@@ -1123,13 +1154,16 @@ class ChatViewModel(
         if (event is WsEvent.MessageStart || event is WsEvent.MessageToken ||
             event is WsEvent.ThinkingDelta || event is WsEvent.ReasoningDelta ||
             event is WsEvent.ToolStart || event is WsEvent.ToolComplete ||
-            event is WsEvent.MessageComplete || event is WsEvent.MessageDone
+            event is WsEvent.MessageComplete || event is WsEvent.MessageDone || segmentFrame
         ) {
             hasObservedActiveResponse = result.state.isAgentTyping
         }
-        if (event is WsEvent.MessageStart || event is WsEvent.MessageToken ||
-            event is WsEvent.ThinkingDelta || event is WsEvent.ReasoningDelta ||
-            event is WsEvent.ToolStart || event is WsEvent.ToolComplete
+        if (!lateFrame &&
+            (
+                event is WsEvent.MessageStart || event is WsEvent.MessageToken ||
+                    event is WsEvent.ThinkingDelta || event is WsEvent.ReasoningDelta ||
+                    event is WsEvent.ToolStart || event is WsEvent.ToolComplete || segmentFrame
+            )
         ) {
             queueTurnObserved = true
             queueExecutionIdle = false
@@ -1279,6 +1313,11 @@ class ChatViewModel(
                 streamingController.clearStreamingBuffers()
             }
 
+            is WsEvent.MessageInterim -> {
+                // The sealed segment must not re-flush into the next live message.
+                streamingController.clearStreamingBuffers()
+            }
+
             is WsEvent.RpcResult -> {
                 handleRpcResult(event.id, event.result)
             }
@@ -1323,7 +1362,24 @@ class ChatViewModel(
             }
 
             is WsEvent.GatewayError -> {
-                // Reducer already set errorMessage; no extra VM work needed.
+                // Reducer already set errorMessage. tui_gateway reports a refused
+                // admission only as this session's `error` (no message.start or
+                // complete); any stream frame since the submit proves admission,
+                // so other errors never end a running turn.
+                val admission = pendingAdmission
+                if (admission != null && event.sessionId == admission.runtimeSessionId &&
+                    admission.generation == sessionGeneration && admissionUnproven && _uiState.value.isAgentTyping
+                ) {
+                    // Refusal is not authoritative idle evidence for already queued input.
+                    queueExecutionIdle = false
+                    queueTurnObserved = false
+                    refusedAdmission = admission
+                    pendingAdmission = null
+                    admissionUnproven = false
+                    hasObservedActiveResponse = false
+                    _streamingState.update { it.copy(turnEnded = true) }
+                    _uiState.update { it.copy(isAgentTyping = false, responseStatusUnknown = false) }
+                }
             }
 
             is WsEvent.BackgroundComplete -> {
@@ -1558,7 +1614,7 @@ class ChatViewModel(
                         responseStatusUnknown = false,
                     )
                 }
-                _streamingState.update { StreamingState() }
+                _streamingState.update { StreamingState(turnEnded = true) }
                 streamingController.resetStreaming()
                 addSystemMessage("Session interrupted")
             }
@@ -1792,7 +1848,7 @@ class ChatViewModel(
             (
                 wasStreaming || state.responseStatusUnknown || scope == null ||
                     !submissionTransport.isReady(scope) || hasQueue || runtimeSessionId == null ||
-                    state.isLoading || (!queueExecutionIdle && !knownActive)
+                    state.isLoading || (!queueExecutionIdle && !knownActive && !canRetryRefusedAdmission())
             )
         ) {
             enqueuePrompt(text, attachments)
@@ -1802,12 +1858,14 @@ class ChatViewModel(
         val message =
             ChatMessage(role = MessageRole.USER, content = text, attachments = attachments.takeIf { it.isNotEmpty() })
         clearAttachments()
+        val turnOpening = openTurnLifecycle(awaitsAdmission = !wasStreaming)
         _uiState.update { it.copy(messages = it.messages + message, isAgentTyping = true) }
         stagePrompt(
             text,
             attachments,
             wasStreaming,
             message,
+            turnOpening,
             queued = queueNewInput,
             redirect = knownActive && attachments.isEmpty(),
         )
@@ -1823,7 +1881,11 @@ class ChatViewModel(
         val state = _uiState.value.copy(connectionStatus = wsClient.connectionStatus.value)
         if (text.isBlank() || !canSendNativeAction(state)) return false
         val scope = sessionScope ?: submissionTransport.configuredScope() ?: return false
-        if (!submissionTransport.isReady(scope) || runtimeSessionId == null || !queueExecutionIdle) return false
+        if (!submissionTransport.isReady(scope) || runtimeSessionId == null ||
+            (!queueExecutionIdle && !canRetryRefusedAdmission())
+        ) {
+            return false
+        }
         // A second tap before the first reply starts is the same intent: drop it.
         if (activePromptIntents.values.any {
                 it.targetKey == scope.draftTargetKey() && it.savedSessionId == state.currentSessionId && it.text == text
@@ -1832,10 +1894,39 @@ class ChatViewModel(
             return false
         }
         val message = ChatMessage(role = MessageRole.USER, content = text)
+        val turnOpening = openTurnLifecycle(awaitsAdmission = true)
         _uiState.update { it.copy(messages = it.messages + message, isAgentTyping = true) }
-        stagePrompt(text, emptyList(), false, message, useEditingDraft = false)
+        stagePrompt(text, emptyList(), false, message, turnOpening, useEditingDraft = false)
         return true
     }
+
+    /**
+     * A legitimately sent or resumed turn opens a fresh lifecycle, so its tokens
+     * (even without message.start) are accepted while late frames of an ended
+     * turn stay fenced until then. A send that starts a turn [awaitsAdmission]
+     * until a stream frame proves the gateway admitted it.
+     */
+    private fun openTurnLifecycle(awaitsAdmission: Boolean): TurnOpening {
+        val opening =
+            TurnOpening(
+                turnLifecycleVersion.incrementAndGet(),
+                streamObservationVersion.get(),
+                _streamingState.value.turnEnded,
+            )
+        if (awaitsAdmission) {
+            admissionUnproven = true
+            pendingAdmission = null
+        }
+        refusedAdmission = null
+        _streamingState.update { if (it.turnEnded) it.copy(turnEnded = false) else it }
+        return opening
+    }
+
+    /** Explicit new intent may retry a refusal; queued intent still needs fresh idle evidence. */
+    private fun canRetryRefusedAdmission(): Boolean =
+        refusedAdmission?.let {
+            it.generation == sessionGeneration && it.runtimeSessionId == runtimeSessionId
+        } == true
 
     private fun nextQueueTimestamp(): Long {
         lastQueueTimestamp =
@@ -1970,6 +2061,7 @@ class ChatViewModel(
                 content = draft.text,
                 attachments = draft.attachments.takeIf { it.isNotEmpty() },
             )
+        val turnOpening = openTurnLifecycle(awaitsAdmission = true)
         _uiState.update {
             it.copy(
                 activeDraftIds = it.activeDraftIds + draft.id,
@@ -1977,7 +2069,7 @@ class ChatViewModel(
                 isAgentTyping = true,
             )
         }
-        dispatchPrompt(outgoing, false, storageId, runtimeId, message, true, false, sessionGeneration)
+        dispatchPrompt(outgoing, false, storageId, runtimeId, message, true, false, sessionGeneration, turnOpening)
     }
 
     fun queueDraft(id: String) {
@@ -2032,6 +2124,7 @@ class ChatViewModel(
         attachments: List<Attachment>,
         wasStreaming: Boolean,
         message: ChatMessage?,
+        turnOpening: TurnOpening,
         queued: Boolean = false,
         redirect: Boolean = false,
         useEditingDraft: Boolean = true,
@@ -2122,6 +2215,7 @@ class ChatViewModel(
                 effectiveQueued,
                 effectiveRedirect,
                 generation,
+                turnOpening,
             )
         }
     }
@@ -2135,10 +2229,12 @@ class ChatViewModel(
         queued: Boolean,
         redirect: Boolean,
         dispatchGeneration: Long,
+        turnOpening: TurnOpening,
     ) {
         val outgoing = draft.copy(savedSessionId = storageSessionId, runtimeSessionId = agentSessionId)
         val session = SessionRef(agentSessionId, storageSessionId)
         var streamVersion = streamObservationVersion.get()
+        var canRollbackOpening = false
         val unknownBeforeAttempt = _uiState.value.responseStatusUnknown
         viewModelScope.launch(ioDispatcher) {
             val prepared = mutableListOf<PreparedAttachment>()
@@ -2200,7 +2296,12 @@ class ChatViewModel(
                 // This write-ahead record survives process death even if the first send/ACK is lost.
                 draftStore.save(outgoing.copy(state = DraftState.UNKNOWN))
                 activePromptIntents[outgoing.id] = outgoing.copy(state = DraftState.UNKNOWN)
+                canRollbackOpening = turnOpening.streamVersion == streamObservationVersion.get()
                 streamVersion = streamObservationVersion.incrementAndGet()
+                // queued is a wire disposition, not proof of established work.
+                if (!wasStreaming && !redirect && turnOpening.version == turnLifecycleVersion.get()) {
+                    pendingAdmission = PendingAdmission(dispatchGeneration, agentSessionId)
+                }
                 attempted = true
                 val fileRefs = mutableListOf<String>()
                 for ((attachment, file) in prepared) {
@@ -2269,10 +2370,17 @@ class ChatViewModel(
                             draftStore.save(outgoing)
                             queueClaims.remove(outgoing.id)
                         }
-                        removeUnsentBubble(userMessage, wasStreaming, dispatchGeneration)
+                        val ownsOpening =
+                            canRollbackOpening &&
+                                turnOpening.version == turnLifecycleVersion.get() &&
+                                streamVersion == streamObservationVersion.get()
+                        removeUnsentBubble(userMessage, wasStreaming, dispatchGeneration, ownsOpening)
                         if (!remoteAttachment && !wasStreaming && dispatchGeneration == sessionGeneration &&
-                            streamVersion == streamObservationVersion.get()
+                            ownsOpening
                         ) {
+                            pendingAdmission = null
+                            admissionUnproven = false
+                            _streamingState.update { it.copy(turnEnded = turnOpening.wasEnded) }
                             _uiState.update { it.copy(responseStatusUnknown = unknownBeforeAttempt) }
                         }
                     }
@@ -2314,6 +2422,7 @@ class ChatViewModel(
         message: ChatMessage?,
         wasStreaming: Boolean,
         generation: Long,
+        restoreTyping: Boolean = true,
     ) {
         if (generation == sessionGeneration) {
             _uiState.update {
@@ -2322,7 +2431,7 @@ class ChatViewModel(
                         it.messages.filterNot { row ->
                             row.id == message?.id
                         },
-                    isAgentTyping = wasStreaming,
+                    isAgentTyping = if (restoreTyping) wasStreaming else it.isAgentTyping,
                 )
             }
         }
@@ -2422,6 +2531,7 @@ class ChatViewModel(
             ) {
                 val wasStreaming = _uiState.value.isAgentTyping
                 val redirect = pending.redirect && wasStreaming && !_uiState.value.responseStatusUnknown
+                val turnOpening = openTurnLifecycle(awaitsAdmission = !wasStreaming)
                 _uiState.update { it.copy(isAgentTyping = true) }
                 dispatchPrompt(
                     pending.draft,
@@ -2432,6 +2542,7 @@ class ChatViewModel(
                     pending.queued,
                     redirect,
                     pending.generation,
+                    turnOpening,
                 )
             } else {
                 removeUnsentBubble(pending.userMessage, pending.wasStreaming, pending.generation)
@@ -2460,12 +2571,15 @@ class ChatViewModel(
         queueExecutionIdle = !running && status == "idle" && result["hydrating"] != true
         if (running) {
             hasObservedActiveResponse = true
+            // A running resume proves the turn was admitted.
+            admissionUnproven = false
+            openTurnLifecycle(awaitsAdmission = false)
             _uiState.update { it.copy(isAgentTyping = true, responseStatusUnknown = false) }
         } else if (status == "idle" && result["hydrating"] != true) {
             hasObservedActiveResponse = false
             sealStreamingMessageIfAny()
             streamingController.resetStreaming()
-            _streamingState.value = StreamingState()
+            _streamingState.value = StreamingState(turnEnded = true)
             _uiState.update {
                 it.copy(isAgentTyping = false, responseStatusUnknown = false, isThinking = false, thinkingText = "")
             }
@@ -3141,8 +3255,9 @@ class ChatViewModel(
     ) {
         if (text.isBlank()) return
         val wasStreaming = _uiState.value.isAgentTyping
+        val turnOpening = openTurnLifecycle(awaitsAdmission = !wasStreaming)
         _uiState.update { it.copy(isAgentTyping = true) }
-        stagePrompt(text, emptyList(), wasStreaming, null, queued, redirect)
+        stagePrompt(text, emptyList(), wasStreaming, null, turnOpening, queued, redirect)
     }
 
     private fun addAssistantMessage(text: String) {

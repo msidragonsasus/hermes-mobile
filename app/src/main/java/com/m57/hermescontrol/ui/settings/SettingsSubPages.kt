@@ -143,6 +143,7 @@ internal fun SettingsAboutPage(
         },
 ) {
     val updateState by viewModel.state.collectAsStateWithLifecycle()
+    val updateSourceInfo by viewModel.sourceInfo.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
 
@@ -175,8 +176,13 @@ internal fun SettingsAboutPage(
         ) {
             AboutSection(
                 updateState = updateState,
+                updateSource = updateSourceInfo.source,
+                serverLabel = updateSourceInfo.serverLabel,
+                onSelectSource = viewModel::selectSource,
                 onCheckUpdate = viewModel::checkForUpdate,
                 onStartUpdate = viewModel::startUpdate,
+                onCancelDownload = viewModel::cancelDownload,
+                onOpenInstaller = viewModel::resumeInstallAfterPermission,
                 onOpenInstallSettings = {
                     val intent =
                         Intent(

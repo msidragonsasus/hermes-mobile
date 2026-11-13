@@ -203,9 +203,10 @@ fun messageIdToLazyIndex(
                             itemIndex++
                         }
 
+                        // Routine connection notices have no rendered item or search destination.
+                        // The original entries remain intact for lifecycle and tool bookkeeping.
                         is AgentEntry.ConnectionEvents -> {
-                            entry.messages.forEach { map[it.id] = itemIndex }
-                            itemIndex++
+                            Unit
                         }
                     }
                 }

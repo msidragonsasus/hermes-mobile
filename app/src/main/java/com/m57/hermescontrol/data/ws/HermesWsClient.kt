@@ -11,6 +11,7 @@ import com.m57.hermescontrol.data.remote.NetworkMonitor
 import com.m57.hermescontrol.data.remote.OkHttpProvider
 import com.m57.hermescontrol.data.session.ActiveSessionHolder
 import com.m57.hermescontrol.domain.hermes.ConnectionScope
+import com.m57.hermescontrol.domain.hermes.KNOWN_APPROVAL_CHOICES
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -788,12 +789,25 @@ object HermesWsClient {
         timeoutMs: Long = 5_000L,
     ): CompletableDeferred<Any?> = requestFixedScope(scope, WsMethods.SESSION_LIST, emptyMap(), timeoutMs)
 
+    /** Read-only live turn roster (`session.active_list`) on the fixed scope; never resumes or queues. */
+    fun readActiveSessions(
+        scope: ConnectionScope,
+        timeoutMs: Long = 5_000L,
+    ): CompletableDeferred<Any?> = requestFixedScope(scope, WsMethods.SESSION_ACTIVE_LIST, emptyMap(), timeoutMs)
+
     /** Read the live child roster only on the socket/profile that owns the session. */
     fun readSubagents(
         scope: ConnectionScope,
         sessionId: String,
     ): CompletableDeferred<Any?> =
         requestFixedScope(scope, WsMethods.SUBAGENT_LIST, mapOf("session_id" to sessionId), 5_000L)
+
+    /** Read the session's own process roster only on the socket/profile that owns the session. */
+    fun readProcesses(
+        scope: ConnectionScope,
+        sessionId: String,
+    ): CompletableDeferred<Any?> =
+        requestFixedScope(scope, WsMethods.PROCESS_LIST, mapOf("session_id" to sessionId), 5_000L)
 
     /** Vault requests never enter the offline queue, transcript, or reconnect replay. */
     internal fun requestVault(
@@ -844,7 +858,14 @@ object HermesWsClient {
                 PendingCall(
                     method,
                     result,
-                    writeScope = if (method == WsMethods.SESSION_LIST) null else scope,
+                    writeScope =
+                        if (method == WsMethods.SESSION_LIST ||
+                            method == WsMethods.SESSION_ACTIVE_LIST
+                        ) {
+                            null
+                        } else {
+                            scope
+                        },
                 )
             if (webSocket?.send(json) != true) {
                 resolvePending(id, null, JsonRpcError(-1, "Read unavailable"))
@@ -921,7 +942,7 @@ object HermesWsClient {
             val exactResponse =
                 when (method) {
                     WsMethods.APPROVAL_RESPOND -> {
-                        params["choice"] in setOf("once", "deny") && params["all"] == false &&
+                        params["choice"] in KNOWN_APPROVAL_CHOICES && params["all"] == false &&
                             !(params["request_id"] as? String).isNullOrBlank()
                     }
 

@@ -50,7 +50,8 @@ class RecoveryTests(unittest.TestCase):
         before = self.store.cached_inputs('daily')
         self.recover()
         self.assertEqual('complete', self.store.snapshot()['state'])
-        self.assertEqual('Prepare ES', self.store.snapshot()['tasks'][0]['title'])
+        self.assertEqual([], self.store.snapshot()['tasks'])
+        self.assertEqual('Prepare ES', self.store.snapshot()['review_tasks'][0]['title'])
         self.assertEqual(before, self.store.cached_inputs('daily'))
         with self.store.db() as db:
             self.assertEqual(1, db.execute('SELECT COUNT(*) FROM requests').fetchone()[0])

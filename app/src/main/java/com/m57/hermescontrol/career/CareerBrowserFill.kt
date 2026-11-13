@@ -16,6 +16,7 @@ internal object CareerBrowserFill {
         documentToken: String,
         allowPasswordOnly: Boolean = false,
         selection: CareerBrowserLoginSelection? = null,
+        landing: CareerBrowserLanding? = null,
     ): String =
         guardedScript(
             policy,
@@ -24,12 +25,15 @@ internal object CareerBrowserFill {
             "return stage === 'password_with_identifier' ? 'ready_password_with_id' : " +
                 "stage === 'identifier' ? 'ready_id' : stage === 'password' ? 'ready_password' : 'ready';",
             selection,
+            landing = landing,
         )
 
     fun candidateScript(
         policy: CareerBrowserPolicy,
         documentToken: String,
-    ): String = guardedScript(policy, documentToken, false, "return 'unsupported';", candidatesOnly = true)
+        landing: CareerBrowserLanding? = null,
+    ): String =
+        guardedScript(policy, documentToken, false, "return 'unsupported';", candidatesOnly = true, landing = landing)
 
     /** Serialize only the selected step's values; every execution repeats the complete guards. */
     fun script(
@@ -38,6 +42,7 @@ internal object CareerBrowserFill {
         documentToken: String,
         step: CareerBrowserFillStep = CareerBrowserFillStep.COMBINED,
         selection: CareerBrowserLoginSelection? = null,
+        landing: CareerBrowserLanding? = null,
     ): String {
         val expectedStage = step.name.lowercase()
         val login =
@@ -71,6 +76,7 @@ internal object CareerBrowserFill {
             step == CareerBrowserFillStep.PASSWORD || step == CareerBrowserFillStep.PASSWORD_WITH_IDENTIFIER,
             operation,
             selection,
+            landing = landing,
         )
     }
 
@@ -81,6 +87,7 @@ internal object CareerBrowserFill {
         operation: String,
         selection: CareerBrowserLoginSelection? = null,
         candidatesOnly: Boolean = false,
+        landing: CareerBrowserLanding? = null,
     ): String {
         val target = JsonPrimitive(policy.loginUrl.toString()).toString()
         val token = JsonPrimitive(documentToken).toString()
@@ -88,6 +95,9 @@ internal object CareerBrowserFill {
         val e2rSiteId = policy.reviewedE2rSiteId?.let { JsonPrimitive(it).toString() } ?: "null"
         val fillPrefix = policy.fillPathPrefix?.let { JsonPrimitive(it).toString() } ?: "null"
         val selected = selection?.json()?.toString() ?: "null"
+        // Only the matching document's landing is embedded; the token check below binds it to that document.
+        val firstLanding = landing?.takeIf { it.token == documentToken }
+        val landingUrl = firstLanding?.let { JsonPrimitive(it.url.toString()).toString() } ?: "null"
         return """
             (() => {
               try {
@@ -98,9 +108,17 @@ internal object CareerBrowserFill {
                 const e2rSiteId = $e2rSiteId;
                 const e2rAction = e2rSiteId === null ? null : registered.origin + '/eARTH/common/Logon';
                 const fillPrefix = $fillPrefix;
+                // Mirrors CareerBrowserLanding: the exact page the registered URL redirected to, in this
+                // document only. Filling it is input-only, so its own form action/method/target never gate.
+                const landingUrl = $landingUrl;
+                const landing = landingUrl === null ? null : new URL(landingUrl);
+                const landingPage = u => landing !== null &&
+                  u.origin + u.pathname + u.search === landing.origin + landing.pathname + landing.search;
+                const landingGranted = () => landingPage(new URL(location.href));
                 // Mirrors CareerBrowserPolicy.allowsFill: exact page, or same host under the company
                 // directory with every registered query parameter unchanged.
                 const inScope = u => {
+                  if (landingPage(u)) return true;
                   if (u.origin + u.pathname + u.search === expected) return true;
                   if (fillPrefix === null || u.origin !== registered.origin || u.username || u.password ||
                       /;|%(?:2f|5c|25|3b)/i.test(u.pathname) || u.pathname.includes('//') ||
@@ -238,7 +256,9 @@ internal object CareerBrowserFill {
                 // Named controls can shadow form.action, form.method and form.elements.
                 const formProperty = name => Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, name).get.call(form);
                 const safeForm = () => {
-                  if (!form.isConnected || formProperty('method').toLowerCase() !== 'post' ||
+                  if (!form.isConnected) return false;
+                  if (landingGranted()) return true;
+                  if (formProperty('method').toLowerCase() !== 'post' ||
                       !['', '_self'].includes(formProperty('target').toLowerCase()) ||
                       !allowedAction(form.getAttribute('action') || '')) return false;
                   const action = clean(formProperty('action'));

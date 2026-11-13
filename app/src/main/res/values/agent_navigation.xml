@@ -9,6 +9,12 @@
     <string name="agent_history_untitled">Untitled chat</string>
     <string name="agent_history_more">Load older chats</string>
     <string name="agent_history_current">Current chat</string>
+    <string name="agent_history_status_waiting">Waiting</string>
+    <string name="agent_history_status_starting">Starting</string>
+    <string name="agent_history_status_background">Running in background</string>
+    <string name="agent_history_status_unconfirmed">Status not confirmed</string>
+    <string name="agent_history_status_rechecking">%1$s (rechecking)</string>
+    <string name="agent_history_status_notice">Run status can\'t be confirmed right now. Rechecking automatically.</string>
     <string name="agent_history_no_results">No matching chats</string>
     <string name="agent_history_empty">No chats yet. Start a new conversation.</string>
     <string name="agent_controls_title">Agent settings</string>

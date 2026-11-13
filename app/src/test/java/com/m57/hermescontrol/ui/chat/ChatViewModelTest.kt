@@ -7134,4 +7134,613 @@ class ChatViewModelTest {
             )
             verify(exactly = 0) { HermesWsClient.sendMessage(any(), any(), any(), any()) }
         }
+
+    // ── Thinking indicator (「思考中」 shimmer) ─────────────────────────────
+
+    private fun ChatViewModel.showsThinking(): Boolean = showsThinkingIndicator(uiState.value, streamingState.value)
+
+    @Test
+    fun thinkingIndicatorStaysWithTheTurnThroughCommentaryAndToolsUntilTheFinalAnswer() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+
+            vm.sendMessage("調べて")
+            advanceUntilIdle()
+            assertTrue("A submitted turn shows progress before the first event", vm.showsThinking())
+
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            mockEventsFlow.emit(WsEvent.ReasoningDelta("hidden plan", sessionId))
+            advanceUntilIdle()
+            assertTrue(vm.showsThinking())
+
+            mockEventsFlow.emit(WsEvent.MessageToken("確認します。", sessionId))
+            advanceUntilIdle()
+            assertFalse("Streaming commentary is its own progress", vm.showsThinking())
+
+            mockEventsFlow.emit(WsEvent.ToolStart("terminal", mapOf("tool_id" to "t1"), sessionId))
+            advanceUntilIdle()
+            assertTrue("A tool batch keeps the turn visibly active", vm.showsThinking())
+            assertTrue(
+                vm.uiState.value.messages
+                    .any { it.content == "確認します。" && !it.isStreaming },
+            )
+
+            mockEventsFlow.emit(WsEvent.ToolComplete("terminal", mapOf("tool_id" to "t1"), sessionId))
+            mockEventsFlow.emit(WsEvent.ReasoningDelta(" more", sessionId))
+            advanceUntilIdle()
+            assertTrue("Thinking again after the tool result shows below the commentary", vm.showsThinking())
+            assertTrue(
+                vm.uiState.value.messages
+                    .any { it.content == "確認します。" },
+            )
+
+            mockEventsFlow.emit(WsEvent.MessageToken("結果です。", sessionId))
+            advanceUntilIdle()
+            assertFalse(vm.showsThinking())
+
+            mockEventsFlow.emit(WsEvent.MessageComplete("結果です。", sessionId))
+            advanceUntilIdle()
+            assertFalse("The completed turn leaves no indicator", vm.showsThinking())
+            assertFalse(vm.uiState.value.isAgentTyping)
+        }
+
+    @Test
+    fun thinkingIndicatorReturnsAfterStreamedInterimWithoutToolsAndFinalIsNotDuplicated() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            vm.sendMessage("進めて")
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            mockEventsFlow.emit(WsEvent.MessageToken("まず確認します。", sessionId))
+            advanceUntilIdle()
+            assertFalse(vm.showsThinking())
+
+            mockEventsFlow.emit(WsEvent.MessageInterim("まず確認します。", alreadyStreamed = true, sessionId))
+            advanceUntilIdle()
+            assertTrue("The turn continues after interim commentary", vm.showsThinking())
+            assertNull(vm.streamingState.value.streamingMessage)
+            assertEquals(
+                1,
+                vm.uiState.value.messages
+                    .count { it.content == "まず確認します。" },
+            )
+
+            mockEventsFlow.emit(WsEvent.ThinkingDelta("考え中", sessionId))
+            advanceUntilIdle()
+            assertTrue(vm.showsThinking())
+
+            mockEventsFlow.emit(WsEvent.MessageToken("完了しました。", sessionId))
+            advanceUntilIdle()
+            assertFalse(vm.showsThinking())
+            assertEquals(
+                "完了しました。",
+                vm.streamingState.value.streamingMessage
+                    ?.content,
+            )
+
+            mockEventsFlow.emit(WsEvent.MessageComplete("まず確認します。完了しました。", sessionId))
+            advanceUntilIdle()
+            assertFalse(vm.showsThinking())
+            val turn =
+                vm.uiState.value.messages
+                    .filter { it.role == MessageRole.ASSISTANT }
+            assertEquals(listOf("まず確認します。", "完了しました。"), turn.map { it.content })
+        }
+
+    @Test
+    fun thinkingIndicatorKeepsUnstreamedInterimOnceAndShowsAfterIt() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            vm.sendMessage("調べて")
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            mockEventsFlow.emit(WsEvent.MessageInterim("検索します。", alreadyStreamed = false, sessionId))
+            mockEventsFlow.emit(WsEvent.MessageInterim("検索します。", alreadyStreamed = false, sessionId))
+            advanceUntilIdle()
+            assertEquals(
+                1,
+                vm.uiState.value.messages
+                    .count { it.content == "検索します。" },
+            )
+            assertTrue(vm.showsThinking())
+
+            mockEventsFlow.emit(WsEvent.MessageComplete("検索します。", sessionId))
+            advanceUntilIdle()
+            assertFalse(vm.showsThinking())
+            assertEquals(
+                1,
+                vm.uiState.value.messages
+                    .count { it.content.contains("検索します。") },
+            )
+        }
+
+    @Test
+    fun thinkingIndicatorKeepsIdenticalUnstreamedInterimsFromDistinctSegments() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            vm.sendMessage("調べて")
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            mockEventsFlow.emit(WsEvent.MessageInterim("検索します。", alreadyStreamed = false, sessionId))
+            mockEventsFlow.emit(WsEvent.MessageInterim("検索します。", alreadyStreamed = false, sessionId))
+            mockEventsFlow.emit(WsEvent.ToolStart("web_search", mapOf("tool_id" to "s1"), sessionId))
+            mockEventsFlow.emit(WsEvent.ToolComplete("web_search", mapOf("tool_id" to "s1"), sessionId))
+            advanceUntilIdle()
+            assertTrue(vm.showsThinking())
+
+            mockEventsFlow.emit(WsEvent.MessageInterim("検索します。", alreadyStreamed = false, sessionId))
+            advanceUntilIdle()
+            mockEventsFlow.emit(WsEvent.MessageComplete("結果です。", sessionId))
+            advanceUntilIdle()
+            assertFalse(vm.showsThinking())
+            assertEquals(
+                "A repeated frame is one row; the same words after a tool round are a new segment",
+                listOf("検索します。", "検索します。", "結果です。"),
+                vm.uiState.value.messages
+                    .filter { it.role == MessageRole.ASSISTANT }
+                    .map { it.content },
+            )
+        }
+
+    @Test
+    fun thinkingIndicatorFollowsSegmentBoundaryThinkingClearAndReasoningAfterText() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            vm.sendMessage("書いて")
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            mockEventsFlow.emit(WsEvent.ThinkingDelta("", sessionId))
+            advanceUntilIdle()
+            assertFalse(vm.streamingState.value.isThinking)
+            assertTrue("An empty thinking clear is not the end of the turn", vm.showsThinking())
+
+            mockEventsFlow.emit(WsEvent.MessageToken("途中の文", sessionId))
+            advanceUntilIdle()
+            assertFalse(vm.showsThinking())
+
+            mockEventsFlow.emit(WsEvent.MessageSegmentEnd(sessionId))
+            advanceUntilIdle()
+            assertTrue("A closed reply segment means work continues", vm.showsThinking())
+            assertEquals(
+                "途中の文",
+                vm.streamingState.value.streamingMessage
+                    ?.content,
+            )
+
+            mockEventsFlow.emit(WsEvent.MessageToken("。続き", sessionId))
+            advanceUntilIdle()
+            assertFalse(vm.showsThinking())
+            mockEventsFlow.emit(WsEvent.ReasoningDelta("reconsider", sessionId))
+            advanceUntilIdle()
+            assertTrue("Reasoning after already rendered text shows below it", vm.showsThinking())
+            assertEquals(
+                "途中の文。続き",
+                vm.streamingState.value.streamingMessage
+                    ?.content,
+            )
+        }
+
+    @Test
+    fun thinkingIndicatorUsesTheActiveTurnWhenTheProviderSendsNoThinking() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            vm.sendMessage("実行して")
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            advanceUntilIdle()
+            assertTrue(vm.showsThinking())
+            mockEventsFlow.emit(WsEvent.ToolStart("terminal", mapOf("tool_id" to "a"), sessionId))
+            mockEventsFlow.emit(WsEvent.ToolStart("read_file", mapOf("tool_id" to "b"), sessionId))
+            mockEventsFlow.emit(WsEvent.ToolComplete("terminal", mapOf("tool_id" to "a"), sessionId))
+            mockEventsFlow.emit(WsEvent.ToolComplete("read_file", mapOf("tool_id" to "b"), sessionId))
+            advanceUntilIdle()
+            assertTrue("A finished tool batch is not a finished turn", vm.showsThinking())
+        }
+
+    @Test
+    fun thinkingIndicatorWaitsForAnApprovalAndResumesAfterItIsConfirmed() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            vm.sendMessage("消して")
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            mockEventsFlow.emit(WsEvent.ToolStart("terminal", mapOf("tool_id" to "a"), sessionId))
+            mockEventsFlow.emit(WsEvent.ToolStart("read_file", mapOf("tool_id" to "b"), sessionId))
+            advanceUntilIdle()
+            val row = observeApproval(vm)
+            assertFalse("Never thinking while the user must approve", vm.showsThinking())
+
+            mockEventsFlow.emit(WsEvent.ToolComplete("read_file", mapOf("tool_id" to "b"), sessionId))
+            advanceUntilIdle()
+            assertFalse("A sibling tool frame does not override the pending approval", vm.showsThinking())
+            assertFalse(vm.uiState.value.isAgentTyping)
+
+            vm.respondToApproval(row.id, "once")
+            advanceUntilIdle()
+            mockEventsFlow.emit(WsEvent.ToolComplete("terminal", mapOf("tool_id" to "a"), sessionId))
+            advanceUntilIdle()
+            assertTrue("Work after the confirmed approval is the same turn", vm.showsThinking())
+            assertTrue(vm.uiState.value.isAgentTyping)
+        }
+
+    @Test
+    fun thinkingIndicatorIsHiddenWhileAClarificationWaits() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            vm.sendMessage("決めて")
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            advanceUntilIdle()
+            observeClarify(vm)
+            mockEventsFlow.emit(WsEvent.ReasoningDelta("late", sessionId))
+            advanceUntilIdle()
+            assertFalse(vm.showsThinking())
+        }
+
+    @Test
+    fun thinkingIndicatorEndsOnEveryTerminalAndIgnoresLateFrames() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            vm.sendMessage("一")
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            mockEventsFlow.emit(WsEvent.MessageDone(sessionId))
+            mockEventsFlow.emit(WsEvent.MessageComplete("", sessionId))
+            advanceUntilIdle()
+            assertFalse("done then complete both end the turn", vm.showsThinking())
+            mockEventsFlow.emit(WsEvent.ReasoningDelta("late", sessionId))
+            mockEventsFlow.emit(WsEvent.ToolComplete("terminal", null, sessionId))
+            advanceUntilIdle()
+            assertFalse("Late frames never revive a finished turn", vm.showsThinking())
+            assertFalse(vm.uiState.value.isAgentTyping)
+
+            vm.sendMessage("二")
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            mockEventsFlow.emit(WsEvent.ReasoningDelta("plan", sessionId))
+            advanceUntilIdle()
+            assertTrue(vm.showsThinking())
+            mockEventsFlow.emit(WsEvent.MessageComplete("Error: provider failed", sessionId))
+            advanceUntilIdle()
+            assertFalse("An error status completion ends the turn", vm.showsThinking())
+            mockEventsFlow.emit(WsEvent.ReasoningDelta("other session", "another-session"))
+            advanceUntilIdle()
+            assertFalse(vm.showsThinking())
+        }
+
+    @Test
+    fun thinkingIndicatorEndsOnInterruptAndStaysEndedForLateToolFrames() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            every { HermesWsClient.send(WsMethods.SESSION_INTERRUPT, any(), any()) } answers {
+                arg<((String) -> Unit)?>(2)?.invoke("interrupt-1")
+                "interrupt-1"
+            }
+            vm.sendMessage("長い作業")
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            mockEventsFlow.emit(WsEvent.ToolStart("terminal", mapOf("tool_id" to "a"), sessionId))
+            advanceUntilIdle()
+            assertTrue(vm.showsThinking())
+            vm.interruptSession()
+            advanceUntilIdle()
+            mockEventsFlow.emit(WsEvent.RpcResult("interrupt-1", emptyMap<String, Any?>()))
+            advanceUntilIdle()
+            assertFalse(vm.showsThinking())
+            mockEventsFlow.emit(WsEvent.ToolComplete("terminal", mapOf("tool_id" to "a"), sessionId))
+            advanceUntilIdle()
+            assertFalse(vm.showsThinking())
+        }
+
+    @Test
+    fun thinkingIndicatorFencesLateTokensAndBoundariesUntilTheNextLegitimateTurn() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            every { HermesWsClient.send(WsMethods.SESSION_INTERRUPT, any(), any()) } answers {
+                arg<((String) -> Unit)?>(2)?.invoke("interrupt-1")
+                "interrupt-1"
+            }
+
+            fun assertEnded(reason: String) {
+                assertFalse(reason, vm.showsThinking())
+                assertFalse(reason, vm.uiState.value.isAgentTyping)
+            }
+            vm.sendMessage("一")
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            mockEventsFlow.emit(WsEvent.MessageToken("答え", sessionId))
+            mockEventsFlow.emit(WsEvent.MessageComplete("答え", sessionId))
+            advanceUntilIdle()
+            assertEnded("complete ends the turn")
+
+            mockEventsFlow.emit(WsEvent.MessageToken("late", sessionId))
+            advanceUntilIdle()
+            assertEnded("a late text token never revives a completed turn")
+            assertNull(vm.streamingState.value.streamingMessage)
+            mockEventsFlow.emit(WsEvent.MessageSegmentEnd(sessionId))
+            advanceUntilIdle()
+            assertEnded("a late segment boundary never revives a completed turn")
+            mockEventsFlow.emit(WsEvent.MessageToken("", sessionId))
+            advanceUntilIdle()
+            assertEnded("a late empty token never revives a completed turn")
+
+            vm.sendMessage("二")
+            advanceUntilIdle()
+            assertTrue("The next legitimate send shows progress", vm.showsThinking())
+            mockEventsFlow.emit(WsEvent.MessageToken("新しい", sessionId))
+            advanceUntilIdle()
+            assertTrue("A turn without message.start still streams", vm.uiState.value.isAgentTyping)
+            assertEquals(
+                "新しい",
+                vm.streamingState.value.streamingMessage
+                    ?.content,
+            )
+            mockEventsFlow.emit(WsEvent.MessageSegmentEnd(sessionId))
+            advanceUntilIdle()
+            assertTrue(vm.showsThinking())
+
+            vm.interruptSession()
+            advanceUntilIdle()
+            mockEventsFlow.emit(WsEvent.RpcResult("interrupt-1", emptyMap<String, Any?>()))
+            advanceUntilIdle()
+            assertEnded("an acknowledged interrupt ends the turn")
+            mockEventsFlow.emit(WsEvent.MessageToken("late", sessionId))
+            advanceUntilIdle()
+            assertEnded("a late token never revives an interrupted turn")
+            mockEventsFlow.emit(WsEvent.MessageSegmentEnd(sessionId))
+            mockEventsFlow.emit(WsEvent.MessageToken("", sessionId))
+            advanceUntilIdle()
+            assertEnded("late boundaries never revive an interrupted turn")
+        }
+
+    @Test
+    fun thinkingIndicatorEndsWhenTheGatewayRefusesThePendingSubmission() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            vm.sendMessage("拒否される")
+            advanceUntilIdle()
+            assertTrue(vm.showsThinking())
+
+            mockEventsFlow.emit(WsEvent.GatewayError("another session's failure", "another-session"))
+            advanceUntilIdle()
+            assertTrue("Another session's error is not this submission's refusal", vm.showsThinking())
+
+            // tui_gateway emits only `error` (no message.start/complete) on a refused admission.
+            mockEventsFlow.emit(WsEvent.GatewayError("session is active elsewhere", sessionId))
+            advanceUntilIdle()
+            assertFalse("A refused submission leaves no indicator", vm.showsThinking())
+            assertFalse(vm.uiState.value.isAgentTyping)
+            assertNotNull(vm.uiState.value.errorMessage)
+
+            vm.sendMessage("もう一度")
+            advanceUntilIdle()
+            assertTrue("The next send starts normally", vm.showsThinking())
+            verify(exactly = 2) { HermesWsClient.sendMessage(any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun thinkingIndicatorEndsWhenAFreshQueuedTurnIsRefusedBeforeStart() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            // This turn originated on the server: no prior local PendingAdmission exists.
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            advanceUntilIdle()
+            vm.sendMessage("Queued B")
+            advanceUntilIdle()
+            assertEquals(
+                "Queued B",
+                fakeDraftStore.drafts.value
+                    .single()
+                    .text,
+            )
+            verify(exactly = 0) { HermesWsClient.sendMessage(any(), any(), any(), any()) }
+
+            mockEventsFlow.emit(WsEvent.MessageComplete("A finished", sessionId))
+            advanceUntilIdle()
+            verify(exactly = 1) { HermesWsClient.sendMessage(sessionId, "Queued B", any(), true) }
+            assertTrue(vm.showsThinking())
+            mockEventsFlow.emit(WsEvent.GatewayError("foreign refusal", "another-session"))
+            advanceUntilIdle()
+            assertTrue(vm.showsThinking())
+            mockEventsFlow.emit(WsEvent.GatewayError("B refused before start", sessionId))
+            advanceUntilIdle()
+            assertFalse("A fresh queued turn's refusal ends its indicator", vm.showsThinking())
+            assertFalse(vm.uiState.value.isAgentTyping)
+            assertTrue(vm.streamingState.value.turnEnded)
+            assertTrue(fakeDraftStore.drafts.value.isEmpty())
+        }
+
+    @Test
+    fun thinkingIndicatorRefusalCannotReleaseDurableQueueUsingOldIdleEvidence() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            stubEmptySessionRests(sessionId)
+            val sent = mutableListOf<String>()
+            every { HermesWsClient.sendMessage(any(), any(), any(), any()) } answers {
+                sent += arg<String>(1)
+                arg<((String) -> Unit)?>(2)?.invoke("tracked-${sent.size}")
+                "tracked-${sent.size}"
+            }
+            vm.sendMessage("A awaiting start")
+            advanceUntilIdle() // Submission ACK settles, but no message.start arrives.
+            vm.sendMessage("Durable B")
+            advanceUntilIdle()
+            val savedB = fakeDraftStore.drafts.value.single()
+            assertEquals(DraftState.QUEUED, savedB.state)
+            assertEquals(listOf("A awaiting start"), sent)
+
+            mockEventsFlow.emit(WsEvent.GatewayError("A refused", sessionId))
+            advanceUntilIdle()
+            assertEquals("Refusal is not new queue-release evidence", listOf("A awaiting start"), sent)
+            assertEquals(listOf(savedB), fakeDraftStore.drafts.value)
+            assertFalse(vm.uiState.value.isAgentTyping)
+            assertFalse(vm.showsThinking())
+            // Neither duplicate refusal nor a stray terminal for the unobserved turn releases B.
+            mockEventsFlow.emit(WsEvent.GatewayError("A refused", sessionId))
+            mockEventsFlow.emit(WsEvent.MessageDone(sessionId))
+            advanceUntilIdle()
+            assertEquals(listOf("A awaiting start"), sent)
+            assertEquals(listOf(savedB), fakeDraftStore.drafts.value)
+
+            val requests = captureRecoveryResumes()
+            vm.switchSession(sessionId)
+            runCurrent()
+            recoveryAck(requests.last(), false, sessionId)
+            advanceUntilIdle()
+            assertEquals(listOf("A awaiting start", "Durable B"), sent)
+            verify(exactly = 1) { HermesWsClient.sendMessage(sessionId, "Durable B", any(), true) }
+            assertTrue(fakeDraftStore.drafts.value.isEmpty())
+            mockEventsFlow.emit(WsEvent.MessageDone(sessionId))
+            advanceUntilIdle()
+            assertEquals(listOf("A awaiting start", "Durable B"), sent)
+        }
+
+    @Test
+    fun thinkingIndicatorDefinitelyUnsentFreshAttemptRestoresTheEndedFence() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            mockEventsFlow.emit(WsEvent.MessageComplete("A finished", sessionId))
+            advanceUntilIdle()
+            assertTrue(vm.streamingState.value.turnEnded)
+            fakeSubmission.nextPromptResult = SubmissionResult.NotSent
+            vm.sendMessage("Definitely unsent B")
+            advanceUntilIdle()
+            val unsent = fakeDraftStore.drafts.value.single()
+            assertEquals("Definitely unsent B", unsent.text)
+            verify(exactly = 0) { HermesWsClient.sendMessage(any(), "Definitely unsent B", any(), any()) }
+            mockEventsFlow.emit(WsEvent.MessageToken("late A", sessionId))
+            mockEventsFlow.emit(WsEvent.MessageSegmentEnd(sessionId))
+            advanceUntilIdle()
+            assertFalse("NotSent must not reopen A to late tokens and boundaries", vm.showsThinking())
+            assertFalse(vm.uiState.value.isAgentTyping)
+            assertTrue(vm.streamingState.value.turnEnded)
+            assertNull(vm.streamingState.value.streamingMessage)
+            assertEquals(listOf(unsent), fakeDraftStore.drafts.value)
+
+            fakeSubmission.nextPromptResult = null
+            vm.sendMessage("Legitimate C")
+            advanceUntilIdle()
+            assertTrue(vm.showsThinking())
+            mockEventsFlow.emit(WsEvent.MessageToken("C without start", sessionId))
+            advanceUntilIdle()
+            assertEquals(
+                "C without start",
+                vm.streamingState.value.streamingMessage
+                    ?.content,
+            )
+            mockEventsFlow.emit(WsEvent.MessageSegmentEnd(sessionId))
+            advanceUntilIdle()
+            assertTrue(vm.showsThinking())
+        }
+
+    @Test
+    fun thinkingIndicatorUnsentRollbackDoesNotClobberNewerObservedReplyWithoutStart() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            mockEventsFlow.emit(WsEvent.MessageDone(sessionId))
+            advanceUntilIdle()
+            val waiting = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            fakeSubmission.beforePrompt = {
+                waiting.complete(Unit)
+                release.await()
+            }
+            fakeSubmission.nextPromptResult = SubmissionResult.NotSent
+            vm.sendMessage("B pending local result")
+            runCurrent()
+            assertTrue(waiting.isCompleted)
+            mockEventsFlow.emit(WsEvent.MessageToken("New observed reply", sessionId))
+            mockEventsFlow.emit(WsEvent.MessageSegmentEnd(sessionId))
+            runCurrent()
+            assertTrue(vm.showsThinking())
+            release.complete(Unit)
+            advanceUntilIdle()
+            assertTrue("An older NotSent result cannot clear newer observed work", vm.uiState.value.isAgentTyping)
+            assertTrue(vm.showsThinking())
+            assertFalse(vm.streamingState.value.turnEnded)
+            assertEquals(
+                "B pending local result",
+                fakeDraftStore.drafts.value
+                    .single()
+                    .text,
+            )
+            assertFalse(
+                vm.uiState.value.messages.any {
+                    it.role == MessageRole.USER &&
+                        it.content == "B pending local result"
+                },
+            )
+        }
+
+    @Test
+    fun thinkingIndicatorUnsentRollbackDoesNotClobberANewerSessionGeneration() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            mockEventsFlow.emit(WsEvent.MessageDone(sessionId))
+            advanceUntilIdle()
+            val waiting = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            fakeSubmission.beforePrompt = {
+                waiting.complete(Unit)
+                release.await()
+            }
+            fakeSubmission.nextPromptResult = SubmissionResult.NotSent
+            vm.sendMessage("Old generation B")
+            runCurrent()
+            assertTrue(waiting.isCompleted)
+            stubEmptySessionRests("other-session")
+            val requests = captureRecoveryResumes()
+            vm.switchSession("other-session")
+            runCurrent()
+            mockEventsFlow.emit(
+                WsEvent.RpcResult(
+                    requests.last(),
+                    mapOf("session_id" to "other-session", "running" to true, "status" to "streaming"),
+                ),
+            )
+            runCurrent()
+            assertTrue(vm.showsThinking())
+            release.complete(Unit)
+            advanceUntilIdle()
+            assertEquals("other-session", vm.uiState.value.currentSessionId)
+            assertTrue(vm.uiState.value.isAgentTyping)
+            assertTrue(vm.showsThinking())
+            assertFalse(vm.streamingState.value.turnEnded)
+        }
+
+    @Test
+    fun thinkingIndicatorKeepsAnEstablishedTurnThroughAGatewayError() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            vm.sendMessage("続けて")
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            mockEventsFlow.emit(WsEvent.ReasoningDelta("plan", sessionId))
+            advanceUntilIdle()
+            assertTrue(vm.showsThinking())
+
+            mockEventsFlow.emit(WsEvent.GatewayError("unrelated failure"))
+            mockEventsFlow.emit(WsEvent.GatewayError("tool failure", sessionId))
+            advanceUntilIdle()
+            assertTrue("An admitted turn is not ended by an error event", vm.showsThinking())
+            assertTrue(vm.uiState.value.isAgentTyping)
+        }
+
+    @Test
+    fun thinkingIndicatorHidesWhileTheResponseStatusIsUnknownAndOnSessionSwitch() =
+        runTest {
+            val (vm, sessionId) = createViewModelWithSession()
+            vm.sendMessage("続けて")
+            mockEventsFlow.emit(WsEvent.MessageStart(sessionId))
+            advanceUntilIdle()
+            assertTrue(vm.showsThinking())
+            mockConnectionStatus.value = ConnectionStatus.RECONNECTING
+            advanceUntilIdle()
+            assertFalse(vm.showsThinking())
+            mockConnectionStatus.value = ConnectionStatus.CONNECTED
+            advanceUntilIdle()
+            assertTrue(vm.uiState.value.responseStatusUnknown)
+            assertFalse("Reconnecting alone does not prove the turn still runs", vm.showsThinking())
+            mockEventsFlow.emit(WsEvent.ReasoningDelta("still running", sessionId))
+            advanceUntilIdle()
+            assertTrue("An observed frame of the unfinished turn is authoritative", vm.showsThinking())
+
+            vm.switchSession("another")
+            advanceUntilIdle()
+            assertFalse(vm.showsThinking())
+            mockEventsFlow.emit(WsEvent.ToolComplete("terminal", null, sessionId))
+            advanceUntilIdle()
+            assertFalse(vm.showsThinking())
+        }
 }

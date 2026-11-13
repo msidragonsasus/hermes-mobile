@@ -127,6 +127,13 @@ class UpdateTests(unittest.TestCase):
                 stack.enter_context(patch.object(update, "VERSION", version))
                 stack.enter_context(patch.object(update, "pwd", types.SimpleNamespace(getpwnam=lambda name: types.SimpleNamespace(pw_uid=1001, pw_gid=1001))))
                 stack.enter_context(patch.object(update, "BASE", base))
+                # The production updater also backs up systemd metadata. Keep
+                # those paths inside this fixture, even on an installed host.
+                def fixture_path(value):
+                    path = Path(value)
+                    systemd = Path('/etc/systemd/system')
+                    return base / 'synthetic-systemd' / path.relative_to(systemd) if path.is_relative_to(systemd) else path
+                stack.enter_context(patch.object(update, 'Path', side_effect=fixture_path))
                 stack.enter_context(patch.object(update, "PLUGIN", plugin))
                 stack.enter_context(patch.object(update, "call", call))
                 stack.enter_context(patch.object(update, "active", lambda name: name == update.SERVICE))

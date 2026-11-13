@@ -40,6 +40,11 @@ class EditorJobs:
         self.runner = runner
         self.execution = execution(selected_execution) if selected_execution is not None else None
         self.auto_run = bool(auto_run)
+        # Only work accepted by this particular executor incarnation may dispatch.
+        # Replayed durable receipts after remount/restart are readback, not consent
+        # to revive an old queued job. Existing jobs remain explicitly cancellable.
+        self.executor_id = uuid.uuid4().hex
+        self.closed = False
         if runner is not None and self.execution is None:
             raise ValueError('explicit_editor_execution_required')
         with workbench.locked() as db:
@@ -76,7 +81,7 @@ class EditorJobs:
                    state='queued' if self.runner is not None else 'awaiting_executor', goal=goal,
                    base=state['active'], accepted_revision=state['revision']+1,
                    files=files, source_hash=digest(files), execution=copy.deepcopy(self.execution),
-                   lease=None, proposal_hash=None, tested_hash=None, applied_hash=None,
+                   executor_id=self.executor_id, lease=None, proposal_hash=None, tested_hash=None, applied_hash=None,
                    error='', created_at=now(), updated_at=now())
         self.save(db, job)
         state.update(editor_job=job['id'], goal=goal, revision=state['revision']+1)
@@ -116,16 +121,36 @@ class EditorJobs:
         job['updated_at'] = now()
         self.save(db, job)
 
-    def interrupt_cancelled(self):
-        # Called after the cancellation transaction commits; no runner call while
-        # SQLite is locked. A runner cannot restore a cancelled job's lease.
+    def interrupt_cancelled(self, identity):
+        # Use the identity pinned in the committed cancellation receipt, not the
+        # current editor pointer: a newer request may precede this callback.
         if self.runner is None or not hasattr(self.runner, 'cancel'):
             return
         with self.workbench.locked() as db:
-            job = self.current(db, self.workbench.load(db))
+            job = self.load(db, identity)
         if job and job['state'] == 'cancelled':
             try:self.runner.cancel(job['id'])
             except Exception:pass
+
+    def close(self):
+        """Revoke this incarnation's leases before best-effort interruption.
+
+        Keep unresolved model work visibly running (not safely retryable). A new
+        process must not resume it; explicit cancellation remains available.
+        """
+        identities = []
+        with self.workbench.locked() as db:
+            self.closed = True
+            for (value,) in db.execute('SELECT value FROM editor_jobs').fetchall():
+                job = json.loads(value)
+                if job.get('executor_id') == self.executor_id and job['state'] == 'running' and job.get('lease'):
+                    job.update(lease=None, error='editor_executor_stopped', updated_at=now())
+                    self.save(db, job)
+                    identities.append(job['id'])
+        if self.runner is not None and hasattr(self.runner, 'cancel'):
+            for identity in identities:
+                try:self.runner.cancel(identity)
+                except Exception:pass
 
     def run(self, identity):
         """At-most-one claim. Never resume a running/unknown job after a restart."""
@@ -135,7 +160,7 @@ class EditorJobs:
         with self.workbench.locked() as db:
             state = self.workbench.load(db)
             job = self.load(db, identity)
-            if not job or job['state'] != 'queued':
+            if self.closed or not job or job['state'] != 'queued' or job.get('executor_id') != self.executor_id:
                 return
             if (state.get('editor_job') != identity or state['active'] != job['base']
                     or state['revision'] != job['accepted_revision'] or job['execution'] != self.execution

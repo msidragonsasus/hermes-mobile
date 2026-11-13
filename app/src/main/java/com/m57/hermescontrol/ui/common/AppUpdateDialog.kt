@@ -49,6 +49,7 @@ fun AppUpdateDialog(
     onCancelDownload: () -> Unit,
     onNeverAskAgain: () -> Unit,
     onOpenSettings: () -> Unit,
+    sourceLabel: String? = null,
 ) {
     val tag = state.releaseTag().orEmpty()
     val available = state as? AppUpdateState.UpdateAvailable
@@ -103,6 +104,13 @@ fun AppUpdateDialog(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
+                        if (sourceLabel != null) {
+                            Text(
+                                text = sourceLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         if (sizeMb != null) {
                             Text(
                                 text = sizeMb,
@@ -189,9 +197,22 @@ fun AppUpdateDialog(
                         }
                     }
 
-                    is AppUpdateState.Installing -> {
+                    is AppUpdateState.Verifying -> {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = stringResource(R.string.settings_about_update_verifying),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+
+                    is AppUpdateState.InstallerOpened -> {
+                        // The system installer still needs the user's confirmation; nothing is installed yet.
                         Text(
-                            text = stringResource(R.string.settings_about_update_installing, tag),
+                            text = stringResource(R.string.settings_about_update_installer_opened, tag.trimStart('v')),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.primary,
                         )
@@ -218,7 +239,7 @@ fun AppUpdateDialog(
                     is AppUpdateState.Error -> {
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Text(
-                                text = state.message,
+                                text = updateFailureText(state.failure),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error,
                             )

@@ -26,6 +26,13 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.io.ByteArrayInputStream
 import java.util.Locale
 
+/** Whether older output is shown, and whether new output arrived meanwhile. */
+internal data class TerminalScroll(
+    val atBottom: Boolean = true,
+    val unseen: Boolean = false,
+    val alternate: Boolean = false,
+)
+
 internal class TerminalDisplay(
     context: Context,
 ) : WebView(context) {
@@ -39,6 +46,9 @@ internal class TerminalDisplay(
     var onFailure: () -> Unit = {}
     var onReport: (String) -> Unit = {}
     var onLink: (String) -> Unit = {}
+    var onLongPress: (TerminalSelection) -> Unit = {}
+    var onScroll: (TerminalScroll) -> Unit = {}
+    private var scroll = TerminalScroll()
     var applicationCursorKeys = false
     private val statusPoll =
         object : Runnable {
@@ -61,6 +71,16 @@ internal class TerminalDisplay(
                         status.getValue("reports").jsonArray.take(16).forEach {
                             val report = it.jsonPrimitive.content
                             if (validTerminalReport(report)) onReport(report)
+                        }
+                        val next =
+                            TerminalScroll(
+                                atBottom = status.getValue("atBottom").jsonPrimitive.content == "true",
+                                unseen = status.getValue("unseen").jsonPrimitive.content == "true",
+                                alternate = status.getValue("alternate").jsonPrimitive.content == "true",
+                            )
+                        if (next != scroll) {
+                            scroll = next
+                            onScroll(next)
                         }
                     }
                 }
@@ -95,16 +115,29 @@ internal class TerminalDisplay(
         }
     }
 
-    private var touchX = 0f
-    private var touchY = 0f
+    private var touching = false
+    private var touchDown = 0L
     private var lastTapUp = 0L
 
-    /** The only page-to-host call: opening a tapped link, validated again here. */
+    /** Page-to-host calls, each honoured only while a real touch backs it. */
     private inner class Host {
         @JavascriptInterface
         fun openLink(url: String) {
             post {
                 if (SystemClock.uptimeMillis() - lastTapUp < 1500 && terminalLinkAllowed(url)) onLink(url)
+            }
+        }
+
+        /** The page's own long-press detector, at a buffer cell (the inset is not text). */
+        @JavascriptInterface
+        fun longPress(
+            row: Int,
+            col: Int,
+        ) {
+            post {
+                if (!touching || SystemClock.uptimeMillis() - touchDown < 300) return@post
+                performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                snapshot(row, col, word = true) { onLongPress(it) }
             }
         }
     }
@@ -114,39 +147,50 @@ internal class TerminalDisplay(
     }
 
     override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
-        if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
-            touchX = event.x
-            touchY = event.y
+        when (event.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                touching = true
+                touchDown = SystemClock.uptimeMillis()
+            }
+
+            android.view.MotionEvent.ACTION_UP -> {
+                touching = false
+                lastTapUp = SystemClock.uptimeMillis()
+            }
+
+            android.view.MotionEvent.ACTION_CANCEL -> {
+                touching = false
+            }
         }
-        if (event.actionMasked == android.view.MotionEvent.ACTION_UP) lastTapUp = SystemClock.uptimeMillis()
         return super.dispatchTouchEvent(event)
     }
 
     /**
-     * Whole buffer as plain text, with the character offset under the last touch
-     * ([atTouch]) or at the end. Feeds the native selection mode.
+     * Whole buffer as plain text for the native selection mode, with the offset of buffer
+     * cell ([row], [col]) or of the visible top when [row] is negative, plus that visible top.
      */
-    fun selectionText(
-        atTouch: Boolean,
+    fun snapshot(
+        row: Int,
+        col: Int,
+        word: Boolean,
         callback: (TerminalSelection) -> Unit,
     ) {
         if (!ready) return
-        val fx = if (atTouch && width > 0) touchX / width else 0f
-        val fy = if (atTouch && height > 0) touchY / height else 1f
-        evaluateJavascript(
-            String.format(Locale.ROOT, "JSON.stringify(window.hermesTerminal.allText(%.4f,%.4f))", fx, fy),
-        ) { result ->
-            runCatching {
-                val json = Json.parseToJsonElement(Json.parseToJsonElement(result).jsonPrimitive.content).jsonObject
-                val text = json.getValue("text").jsonPrimitive.content
-                val offset =
-                    json
-                        .getValue("offset")
-                        .jsonPrimitive.content
-                        .toInt()
-                TerminalSelection(text, if (atTouch) offset.coerceIn(0, text.length) else text.length)
-            }.getOrNull()?.let(callback)
+        evaluateJavascript("JSON.stringify(window.hermesTerminal.snapshot($row,$col))") { result ->
+            runCatching { Json.parseToJsonElement(result).jsonPrimitive.content }
+                .getOrNull()
+                ?.let { parseTerminalSnapshot(it, word) }
+                ?.let(callback)
         }
+    }
+
+    /** Scrolls the view by one page (negative = older); never sends keys to the shell. */
+    fun page(amount: Int) {
+        if (ready) evaluateJavascript("window.hermesTerminal.page(${amount.coerceIn(-1, 1)})", null)
+    }
+
+    fun bottom() {
+        if (ready) evaluateJavascript("window.hermesTerminal.bottom()", null)
     }
 
     fun text(callback: (String) -> Unit) {
@@ -171,6 +215,8 @@ internal fun TerminalDisplay(
     onFailure: () -> Unit,
     onReport: (String) -> Unit = {},
     onLink: (String) -> Unit = {},
+    onLongPress: (TerminalSelection) -> Unit = {},
+    onScroll: (TerminalScroll) -> Unit = {},
 ) {
     val colors = MaterialTheme.colorScheme
     val appearance = "$fontSize,${JsonPrimitive(
@@ -189,6 +235,9 @@ internal fun TerminalDisplay(
                 setBackgroundColor(colors.surface.toArgb())
                 isFocusable = false
                 isFocusableInTouchMode = false
+                // terminal.js owns scroll and long-press; consuming Chromium's long-press keeps
+                // its text selection from racing a slow drag.
+                setOnLongClickListener { true }
                 importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
                 settings.apply {
                     javaScriptEnabled = true
@@ -276,6 +325,8 @@ internal fun TerminalDisplay(
             view.onFailure = onFailure
             view.onReport = onReport
             view.onLink = onLink
+            view.onLongPress = onLongPress
+            view.onScroll = onScroll
             view.render()
         },
         onRelease = { view ->

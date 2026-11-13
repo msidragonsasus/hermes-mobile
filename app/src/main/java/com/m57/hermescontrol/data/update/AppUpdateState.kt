@@ -2,36 +2,44 @@ package com.m57.hermescontrol.data.update
 
 /**
  * State of the in-app updater (issue #867) — shared by the About tab's
- * [com.m57.hermescontrol.ui.settings.AppUpdateViewModel] and the launch
- * notice (issue #890) via [AppUpdateCache].
+ * [com.m57.hermescontrol.ui.settings.AppUpdateViewModel], the chat dialog and
+ * the launch notice (issue #890) via [AppUpdateCache].
  */
 sealed interface AppUpdateState {
-    /** Nothing shown yet (no check run in this session). */
+    /** Nothing shown yet (no check run in this session, or the connection changed). */
     data object Idle : AppUpdateState
 
     /** A check is in flight. */
     data object Checking : AppUpdateState
 
-    /** Latest release equals the installed version. */
+    /** The source has nothing newer for [scope]. */
     data class UpToDate(
         val latestTag: String,
+        val scope: UpdateScope? = null,
     ) : AppUpdateState
 
-    /** A newer release with an APK asset exists. */
+    /** A newer release passed the pre-download policy for its bound connection. */
     data class UpdateAvailable(
-        val latestTag: String,
-        val apkUrl: String,
-        val sizeBytes: Long,
-        val releaseNotes: String = "",
-    ) : AppUpdateState
+        val candidate: UpdateCandidate,
+    ) : AppUpdateState {
+        val latestTag: String get() = candidate.versionName
+        val sizeBytes: Long get() = candidate.sizeBytes
+        val releaseNotes: String get() = candidate.releaseNotes
+    }
 
     /** APK download in progress; [progress] is 0..1. */
     data class Downloading(
         val progress: Float,
     ) : AppUpdateState
 
-    /** Download finished and the system package installer was launched. */
-    data class Installing(
+    /** Checking hash, package, version and signer of the downloaded APK. */
+    data object Verifying : AppUpdateState
+
+    /**
+     * The verified APK was handed to the system installer. The user still has
+     * to confirm there; this state does not mean the update was installed.
+     */
+    data class InstallerOpened(
         val latestTag: String,
     ) : AppUpdateState
 
@@ -39,7 +47,7 @@ sealed interface AppUpdateState {
     data object NeedsUnknownSourcesPermission : AppUpdateState
 
     data class Error(
-        val message: String,
+        val failure: UpdateFailure,
     ) : AppUpdateState
 }
 
@@ -48,6 +56,6 @@ fun AppUpdateState.releaseTag(): String? =
     when (this) {
         is AppUpdateState.UpToDate -> latestTag
         is AppUpdateState.UpdateAvailable -> latestTag
-        is AppUpdateState.Installing -> latestTag
+        is AppUpdateState.InstallerOpened -> latestTag
         else -> null
     }

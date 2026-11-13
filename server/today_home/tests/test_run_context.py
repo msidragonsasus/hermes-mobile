@@ -138,7 +138,7 @@ class RunContextTests(unittest.TestCase):
         with self.assertRaises(PlanError) as error:
             self.store.finish('same', inputs, {'tasks': [], 'resolved': [dict(task_key='entry', source_id='gmail:one', reason='not current')]})
         self.assertEqual('unconfirmed_resolution', error.exception.code)
-        self.assertEqual(1, len(self.store.snapshot()['tasks']))
+        self.assertEqual(1, len(self.store.snapshot()['review_tasks']))
 
     def test_legacy_request_id_marker_migrates_as_unconfirmed_evidence(self):
         home = Path(self.temp.name) / 'legacy'

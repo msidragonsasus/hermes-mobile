@@ -1,0 +1,3 @@
+name: mobile_updates
+version: 0.1.0
+description: 運用者が公開したHermes Mobile APKを認証済み接続へ配布する読み取り専用Dashboard API

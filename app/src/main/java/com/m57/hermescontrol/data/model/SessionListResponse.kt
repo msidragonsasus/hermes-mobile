@@ -2,6 +2,7 @@ package com.m57.hermescontrol.data.model
 
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
@@ -87,6 +88,11 @@ data class SessionInfo(
     // Uses LenientNullableBooleanSerializer to tolerate booleans, raw SQLite ints (0/1), and strings.
     @Serializable(with = LenientNullableBooleanSerializer::class)
     val hidden: Boolean? = null,
+    // Compression lineage: the live roster may report any ID in a compressed chain.
+    @SerialName("_lineage_root_id")
+    val lineage_root_id: String? = null,
+    @SerialName("_lineage_ids")
+    val lineage_ids: List<String>? = null,
 )
 
 @Serializable

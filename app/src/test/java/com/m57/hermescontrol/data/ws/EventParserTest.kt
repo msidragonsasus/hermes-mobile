@@ -462,7 +462,7 @@ class EventParserTest {
     }
 
     @Test
-    fun testParseApprovalRequest_legacyDefaultsToFullChoices() {
+    fun testParseApprovalRequest_legacyDefaultsToOnceDeny() {
         val response =
             createJsonRpcResponse(
                 jsonrpc = "2.0",
@@ -479,7 +479,7 @@ class EventParserTest {
         val event = EventParser.parse(response)
         assertTrue(event is WsEvent.ApprovalRequest)
         val approval = event as WsEvent.ApprovalRequest
-        assertEquals(listOf("once", "session", "always", "deny"), approval.choices)
+        assertEquals(listOf("once", "deny"), approval.choices)
     }
 
     @Test

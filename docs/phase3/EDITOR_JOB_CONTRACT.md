@@ -49,7 +49,15 @@ manual actions, auth/session/origin guard and SDUI contract remain compatible.
 An old server without the editor endpoint retains the manual workflow. No HTTP
 grant/model/directory creation or arbitrary action/path exists.
 
-## Concrete approval facts and remaining unknowns
+## Concrete approval facts and remaining unknowns (historical)
+
+The following host/SSH observations belong to the earlier Windows-agent approval
+record; they are not fresh access or runtime findings for this implementation.
+The source now implements the exact-target bootstrap described in
+[SERVER_ACTIVATION.md](SERVER_ACTIVATION.md). Activation still requires separately
+reviewed real target/execution values and deployment; no production target/model
+was selected or validated. The implementation report records a legacy full-suite
+fixture isolation issue separately from the synthetic activation checks.
 
 * Host: `100.103.190.68`; verified running service
   `home-hermes-dashboard.service`; verified service user `hermes`.

@@ -33,6 +33,61 @@ def parse_plan_response(final):
         raise PlanError('invalid_plan') from None
 
 
+ELIGIBILITY_KINDS = {"confirmed_obligation", "user_application", "user_goal", "coursework", "optional", "unknown"}
+ACTIONABLE_KINDS = ELIGIBILITY_KINDS - {"optional", "unknown"}
+
+
+def validate_eligibility(value, evidence, source):
+    """Require an auditable exact citation, not a model priority as intent proof.
+
+    Semantic interpretation belongs to synthesis; this boundary verifies the
+    declared classification, provenance and evidence text, not title keywords.
+    """
+    if (not isinstance(value, dict)
+            or set(value) != {"kind", "source_id", "quote", "user_intent", "action_status", "deadline_policy"}
+            or not isinstance(value["user_intent"], str) or value["user_intent"] not in {"confirmed", "inferred", "unknown"}
+            or not isinstance(value["kind"], str) or value["kind"] not in ELIGIBILITY_KINDS
+            or not isinstance(value["action_status"], str) or value["action_status"] not in {"pending", "unknown", "closed"}
+            or not isinstance(value["deadline_policy"], str) or value["deadline_policy"] not in {"remains_actionable", "closes", "unknown"}
+            or not isinstance(value["source_id"], str) or value["source_id"] not in evidence
+            or not isinstance(value["quote"], str) or not value["quote"].strip() or len(value["quote"]) > 2000):
+        raise PlanError("invalid_eligibility")
+    proof = evidence[value["source_id"]]
+    if proof.get("source") != source or value["quote"] not in proof.get("text", ""):
+        raise PlanError("unconfirmed_eligibility")
+    return proof
+
+
+def review_reason(task, current, interested=None):
+    if interested is False:
+        return "dismissed"
+    eligibility = task.get("eligibility")
+    due = task.get("deadline")
+    expired = False
+    if due:
+        parsed = datetime.fromisoformat(due)
+        if "T" not in due:
+            expired = parsed.date() < current.astimezone(JST).date()
+        else:
+            expired = (parsed if parsed.tzinfo else parsed.replace(tzinfo=JST)) < current
+    if not eligibility:
+        # A user can choose to verify an undated/open legacy item. This is not
+        # evidence that it is mandatory, pending submission or still open late.
+        return ("expired" if expired else None) if interested is True else "unclassified"
+    kind = eligibility["kind"]
+    if kind not in ACTIONABLE_KINDS and interested is not True:
+        return "expired" if expired else "optional" if kind == "optional" else "unknown_relevance"
+    if eligibility["user_intent"] != "confirmed" and interested is not True:
+        return "interest_unconfirmed"
+    if expired and eligibility["deadline_policy"] != "remains_actionable":
+        return "expired"
+    if eligibility["action_status"] == "unknown" and interested is True:
+        return None  # Explicitly chosen verification; not a pending-submission claim.
+    if eligibility["action_status"] != "pending":
+        return "status_unknown" if eligibility["action_status"] == "unknown" else "closed"
+    return None
+
+
 def now():
     return datetime.now(JST)
 
@@ -68,6 +123,7 @@ class PlanStore:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, payload TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS task_preferences (task_id TEXT PRIMARY KEY, interested INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, day TEXT NOT NULL, state TEXT NOT NULL, started TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS source_cache (id TEXT PRIMARY KEY, source TEXT NOT NULL, payload TEXT NOT NULL, checked_at TEXT NOT NULL, last_run TEXT NOT NULL DEFAULT '', run_token TEXT NOT NULL DEFAULT '');
                 CREATE TABLE IF NOT EXISTS source_checks (request_id TEXT NOT NULL, source TEXT NOT NULL, state TEXT NOT NULL, checked_at TEXT NOT NULL, PRIMARY KEY(request_id,source));
@@ -125,6 +181,7 @@ class PlanStore:
             changed = {s for s, key in (("gmail", "email"), ("manaba", "manaba_url")) if previous.get(key) != value[key]}
             for task in db.execute("SELECT id,payload FROM tasks").fetchall():
                 if json.loads(task["payload"])["source"] in changed:
+                    db.execute("DELETE FROM task_preferences WHERE task_id=?", (task["id"],))
                     db.execute("DELETE FROM tasks WHERE id=?", (task["id"],))
             for source in changed:
                 db.execute("DELETE FROM source_cache WHERE source=?", (source,))
@@ -303,7 +360,7 @@ class PlanStore:
         evidence = {row["id"]: row for source in inputs for row in source["records"]}
         tasks, seen = [], set()
         for row in answer["tasks"]:
-            if (not isinstance(row, dict) or set(row) - {"source_id", "title", "reason", "deadline", "priority", "task_key"}
+            if (not isinstance(row, dict) or set(row) - {"source_id", "title", "reason", "deadline", "priority", "task_key", "eligibility"}
                     or not {"source_id", "title", "reason", "deadline", "priority"} <= set(row)
                     or not isinstance(row.get("source_id"), str)
                     or row.get("source_id") not in evidence
@@ -311,6 +368,10 @@ class PlanStore:
                     or type(row.get("priority")) is not int or row["priority"] not in {1, 2, 3}):
                 raise PlanError("invalid_plan")
             original = evidence[row["source_id"]]
+            if "eligibility" in row:
+                proof = validate_eligibility(row["eligibility"], evidence, original["source"])
+            else:
+                proof = original
             key = row.get("task_key", row["source_id"])
             if not isinstance(key, str) or not 1 <= len(key) <= 200 or key in seen:
                 raise PlanError("invalid_task_key")
@@ -326,7 +387,8 @@ class PlanStore:
             seen.add(key)
             identity = hashlib.sha256(key.encode()).hexdigest()[:32]
             tasks.append(dict(row, task_key=key, id=identity, source=original["source"], url=original["url"],
-                              source_title=original["title"], stale=original.get("retrieved_in_current_run") is not True,
+                              source_title=original["title"], stale=any(item.get("retrieved_in_current_run") is not True for item in (original, proof)),
+                              eligibility_checked_at=proof.get("checked_at", ""),
                               source_checked_at=original.get("checked_at", ""), resolved=False, day=inputs[0]["day"]))
         resolutions = []
         for row in answer.get("resolved", []):
@@ -393,7 +455,8 @@ class PlanStore:
                 db.execute("UPDATE tasks SET payload=? WHERE id=?", (json.dumps(value, ensure_ascii=False), resolution["id"]))
             for task in tasks:
                 original = evidence[task['source_id']]
-                if original.get('retrieval_run_token', context['token']) != context['token']:
+                proof = evidence[task.get('eligibility', {}).get('source_id', task['source_id'])]
+                if any(item.get('retrieval_run_token', context['token']) != context['token'] for item in (original, proof)):
                     task['stale'] = True
                 db.execute("INSERT INTO tasks(id,payload) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
                            (task["id"], json.dumps(task, ensure_ascii=False)))
@@ -475,6 +538,16 @@ class PlanStore:
             if not db.execute("UPDATE tasks SET done=? WHERE id=?", (int(done), identity)).rowcount:
                 raise PlanError("task_missing", 404)
 
+    def interest(self, identity, interested):
+        if type(interested) is not bool:
+            raise PlanError("invalid_request")
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute("SELECT 1 FROM tasks WHERE id=?", (identity,)).fetchone():
+                raise PlanError("task_missing", 404)
+            db.execute("INSERT INTO task_preferences(task_id,interested) VALUES(?,?) "
+                       "ON CONFLICT(task_id) DO UPDATE SET interested=excluded.interested", (identity, int(interested)))
+
     def resolution_history(self):
         # Host-side audit only: evidence bodies are not added to the mobile JSON.
         with self.db() as db:
@@ -489,6 +562,7 @@ class PlanStore:
                 self._read_context(db, request_id)
             values = {r["key"]: json.loads(r["value"]) for r in db.execute("SELECT * FROM state")}
             tasks = [dict(json.loads(r["payload"]), done=bool(r["done"])) for r in db.execute("SELECT * FROM tasks")]
+            preferences = {r["task_id"]: bool(r["interested"]) for r in db.execute("SELECT * FROM task_preferences")}
             latest = db.execute("SELECT state,started FROM requests ORDER BY rowid DESC LIMIT 1").fetchone()
         state = latest["state"] if latest else "idle"
         if state == "running" and current - datetime.fromisoformat(latest["started"]) > timedelta(minutes=15):
@@ -496,13 +570,34 @@ class PlanStore:
         day = current.date().isoformat()
         for task in tasks:
             try:
-                checked = datetime.fromisoformat(task.get("source_checked_at", ""))
-                if checked.tzinfo is None:
-                    checked = checked.replace(tzinfo=JST)
-                task["stale"] = bool(task.get("stale", True)) or checked.astimezone(JST).date().isoformat() != day
+                for stamp in {task.get("source_checked_at", ""), task.get("eligibility_checked_at", task.get("source_checked_at", ""))}:
+                    checked = datetime.fromisoformat(stamp)
+                    if checked.tzinfo is None:
+                        checked = checked.replace(tzinfo=JST)
+                    task["stale"] = bool(task.get("stale", True)) or checked.astimezone(JST).date().isoformat() != day
             except (TypeError, ValueError):
                 task["stale"] = True
         tasks, resolved = [t for t in tasks if not t.get("resolved")], [t for t in tasks if t.get("resolved")]
+        # A legacy email's priority is not evidence of a personal commitment.
+        # Project it into review; never mutate/delete rows or invent a resolution.
+        candidates, actionable, dismissed = [], [], []
+        for task in tasks:
+            interested = preferences.get(task["id"])
+            reason = review_reason(task, current, interested)
+            task.update(actionability="dismissed" if reason == "dismissed" else "review" if reason else "actionable",
+                        review_reason=reason, user_interest=interested)
+            if reason:
+                # Review is never labelled "today mandatory", including legacy
+                # priorities. This changes only the response, not stored intent.
+                task["priority"] = 3
+            if (interested is True and not reason
+                    and (not task.get("eligibility") or task["eligibility"]["action_status"] == "unknown")):
+                # Presentation only: leave the original payload, status and
+                # evidence untouched and label the user's selection honestly.
+                task.update(verification_required=True, priority=3, title="確認する：" + task["title"],
+                            reason="本人が今日やる対象として選択。提出・完了状態は未確認のため、まず元資料と実行可否を確認する。")
+            (dismissed if reason == "dismissed" else candidates if reason else actionable).append(task)
+        tasks = actionable
         same_day = values.get("day") == day and state == "complete"
         coverage = values.get("coverage", [{"id": k, "label": v, "state": "not_checked", "checked_at": ""} for k, v in SOURCES.items()])
         fresh = (same_day and all(not t.get("stale", True) for t in tasks if not t["done"])
@@ -512,4 +607,5 @@ class PlanStore:
             coverage = [dict(c, state="stale" if c["state"] in {"updated", "checked", "partial"} else c["state"]) for c in coverage]
         return dict(day=day, plan_day=values.get("day", ""), checked_at=values.get("checked_at", ""),
                     state=state, fresh=fresh, tasks=sorted(tasks, key=lambda t: (t["done"], t["priority"], t["deadline"] or "9999", t["id"])),
-                    coverage=coverage, resolved_tasks=resolved)
+                    coverage=coverage, resolved_tasks=resolved, review_tasks=sorted(candidates, key=lambda t: t["id"]),
+                    dismissed_tasks=sorted(dismissed, key=lambda t: t["id"]))

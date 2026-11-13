@@ -34,7 +34,8 @@ class ChatWsEventReducerTest {
             )
         assertFalse(result.state.isAgentTyping)
         assertEquals(state.messages, result.state.messages)
-        assertEquals(StreamingState(), result.streamingState)
+        // Terminal: partial reasoning is discarded and late frames are fenced off.
+        assertEquals(StreamingState(turnEnded = true), result.streamingState)
         assertTrue(result.effects.isEmpty())
     }
 

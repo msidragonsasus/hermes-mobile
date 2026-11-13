@@ -223,6 +223,8 @@ class AppWorkbench:
             self.save(db, state)
             receipt = dict(protocol_version=1, company_id=company_id, profile=profile, operation_id=op,
                            request_hash=request_hash, state=outcome, code=code)
+            if action == 'cancel_editor' and outcome == 'done':
+                receipt['editor_job_id'] = state['editor_job']
             db.execute('INSERT INTO operations VALUES (?,?,?)', (op, request_hash, canonical(receipt)))
             return receipt
 
@@ -314,6 +316,8 @@ class AppWorkbench:
 
 def create_workbench_router(store_factory, workbench=None):
     router = APIRouter()
+    if workbench is not None:
+        router.add_event_handler('shutdown', workbench.editor.close)
 
     def target(company_id, profile):
         from .coach_store import profile_key
@@ -381,8 +385,8 @@ def create_workbench_router(store_factory, workbench=None):
             receipt = workbench.mutate(company_id, normalized, payload, idle)
             if receipt['state'] == 'done' and payload.get('action') == 'propose' and workbench.editor.auto_run:
                 background.add_task(workbench.editor.run, payload['operation_id'])
-            if receipt['state'] == 'done' and payload.get('action') == 'cancel_editor':
-                background.add_task(workbench.editor.interrupt_cancelled)
+            if receipt['state'] == 'done' and payload.get('action') == 'cancel_editor' and receipt.get('editor_job_id'):
+                background.add_task(workbench.editor.interrupt_cancelled, receipt['editor_job_id'])
             return receipt
         return await run_in_threadpool(handle, call)
 

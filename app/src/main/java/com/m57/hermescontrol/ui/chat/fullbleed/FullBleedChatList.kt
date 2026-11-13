@@ -16,8 +16,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Density
@@ -31,15 +33,18 @@ import com.m57.hermescontrol.ui.chat.ChatViewModel
 import com.m57.hermescontrol.ui.chat.ClarifyUi
 import com.m57.hermescontrol.ui.chat.ImageViewerModel
 import com.m57.hermescontrol.ui.chat.LocalNativeUiMessage
+import com.m57.hermescontrol.ui.chat.MessageRole
 import com.m57.hermescontrol.ui.chat.NativeUiProtocol
 import com.m57.hermescontrol.ui.chat.RichAnswerPrompt
 import com.m57.hermescontrol.ui.chat.ToolCallDivider
 import com.m57.hermescontrol.ui.chat.components.ChatScrollController
 import com.m57.hermescontrol.ui.chat.components.ClarifyBubble
 import com.m57.hermescontrol.ui.chat.components.ReasoningCard
+import com.m57.hermescontrol.ui.chat.components.ThinkingIndicator
 import com.m57.hermescontrol.ui.chat.nativeUiKey
 import com.m57.hermescontrol.ui.chat.toolCallMilestones
 import com.m57.hermescontrol.ui.common.EmptyState
+import kotlinx.coroutines.flow.first
 
 /**
  * The chat message list for FULL-BLEED style (issue #866) — the single chat
@@ -81,6 +86,7 @@ fun FullBleedChatList(
     openingAttachmentPath: String? = null,
     onImageClick: (ImageViewerModel) -> Unit = {},
     sessionKey: String? = null,
+    showThinkingIndicator: Boolean = false,
 ) {
     var expandedTurns by remember(sessionKey) { mutableStateOf(emptySet<String>()) }
     if (messages.isEmpty() && !isLoading) {
@@ -107,31 +113,36 @@ fun FullBleedChatList(
                 messageIdToLazyIndex(turns, leadingItems = if (isLoadingOlder) 1 else 0, expandedTurns = expandedTurns)
             }
 
-        // Scroll the current search match into view, word-focused. Lives here
-        // (not in ChatLifecycleEffects) because only this composable knows
-        // the message-id → lazy-item-index mapping. Reads search fields in
-        // the effect (not the body), so only this effect restarts on change.
-        LaunchedEffect(
-            searchState.isActive,
-            searchState.currentIndex,
-            searchState.matchIndices,
-            searchState.matchOffsets,
-            searchState.query,
-            expandedTurns,
-            sessionKey,
-        ) {
-            // Answers are never folded, so a match is always on screen to scroll to.
-            if (searchState.isActive &&
-                searchState.currentIndex >= 0 &&
-                searchState.currentIndex < searchState.matchIndices.size
-            ) {
-                val messageIndex = searchState.matchIndices[searchState.currentIndex]
-                if (messageIndex < 0 || messageIndex >= messages.size) return@LaunchedEffect
-                val matchId = messages[messageIndex].id
-                val lazyIndex = lazyIndexById[matchId] ?: return@LaunchedEffect
+        val searchTarget = messages.getOrNull(searchState.matchIndices.getOrNull(searchState.currentIndex) ?: -1)
+        // Identity token, not an equal-by-value key: A→B→A must acknowledge a fresh layout.
+        val searchLayoutToken =
+            remember(
+                sessionKey,
+                searchState.isActive,
+                searchState.currentIndex,
+                searchState.query,
+                searchState.matchOffsets,
+                searchState.currentMatchId,
+                searchTarget?.id,
+                searchTarget?.content,
+                expandedTurns,
+                isLoadingOlder,
+            ) { Any() }
+        var laidOutSearchToken by remember(sessionKey) { mutableStateOf<Any?>(null) }
+
+        // Search positioning stays in this effect so a new query cancels every
+        // old scroll. USER targets must compose and finish their forced-open
+        // layout before the controller reads the item's height.
+        LaunchedEffect(searchLayoutToken) {
+            if (searchState.isActive && searchState.query.isNotBlank() && searchTarget != null) {
+                val lazyIndex = lazyIndexById[searchTarget.id] ?: return@LaunchedEffect
                 val contentOffset = searchState.matchOffsets.getOrElse(searchState.currentIndex) { 0 }
-                val contentLength = messages[messageIndex].content.length
-                scrollController.scrollToSearchMatch(lazyIndex, contentOffset, contentLength)
+                if (searchTarget.role == MessageRole.USER) {
+                    if (searchState.currentMatchId != searchTarget.id) return@LaunchedEffect
+                    listState.scrollToItem(lazyIndex)
+                    snapshotFlow { laidOutSearchToken }.first { it === searchLayoutToken }
+                }
+                scrollController.scrollToSearchMatch(lazyIndex, contentOffset, searchTarget.content.length)
             }
         }
 
@@ -177,7 +188,18 @@ fun FullBleedChatList(
                                 )
                             val milestone = toolMilestones[entryIndex]
                             item(key = "user-${userMessage.id}") {
-                                Column(modifier = Modifier.padding(bottom = 12.dp)) {
+                                Column(
+                                    modifier =
+                                        Modifier.padding(bottom = 12.dp).onGloballyPositioned {
+                                            if (searchState.isActive && searchState.query.isNotBlank() &&
+                                                searchState.currentMatchId == userMessage.id &&
+                                                searchTarget?.id == userMessage.id &&
+                                                searchTarget.content == userMessage.content
+                                            ) {
+                                                laidOutSearchToken = searchLayoutToken
+                                            }
+                                        },
+                                ) {
                                     renderChatBubble(
                                         message = userMessage,
                                         searchQuery = if (searchState.isActive) searchState.query else "",
@@ -342,12 +364,8 @@ fun FullBleedChatList(
                                     }
 
                                     is AgentEntry.ConnectionEvents -> {
-                                        item(key = "connection-" + entry.messages.first().id) {
-                                            ConnectionEventRow(
-                                                messages = entry.messages,
-                                                currentMatchId = searchState.currentMatchId,
-                                            )
-                                        }
+                                        // Routine connect/resume notices stay in the data and keep
+                                        // their entry indices, but render no Lazy item.
                                         entryIndex += entry.messages.size
                                     }
 
@@ -386,6 +404,14 @@ fun FullBleedChatList(
                                 }
                             }
                         }
+                    }
+                }
+
+                // 「思考中」 after everything the turn already shows, including
+                // interim commentary and folded tool rows, while it still works.
+                if (showThinkingIndicator) {
+                    item(key = "thinking-indicator") {
+                        ThinkingIndicator(modifier = Modifier.padding(bottom = 6.dp))
                     }
                 }
 

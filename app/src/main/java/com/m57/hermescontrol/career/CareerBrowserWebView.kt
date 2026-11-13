@@ -131,13 +131,24 @@ internal class CareerBrowserWebView(
     private class NativeDocument(
         val url: String,
         val token: String,
+        val request: Long,
     )
 
     private val nativeDocument = AtomicReference<NativeDocument?>(null)
+    private val landingChain = CareerBrowserLandingChain()
 
     @Volatile
     var documentToken: String? = null
         private set
+
+    /** This root session's first landing document, if it is still the current one. */
+    internal val landing: CareerBrowserLanding?
+        get() = landingChain.landing
+
+    /** Main thread only: whether the current document may receive the registered credentials. */
+    internal fun allowsDocumentFill(): Boolean =
+        allowsCredentialFill && !disposed && policy.allowsDocumentFill(url, documentToken, landing)
+
     private var discardRedirectHistory = false
     private val network =
         networkClient ?: OkHttpClient
@@ -256,6 +267,7 @@ internal class CareerBrowserWebView(
                 ) {
                     if (disposed) return
                     documentToken = null
+                    landingChain.documentStarted()
                     documentSequence++
                     onDocumentChanged(this@CareerBrowserWebView)
                     onStarted()
@@ -271,18 +283,21 @@ internal class CareerBrowserWebView(
                     url: String?,
                 ) {
                     if (disposed) return
-                    onStateChanged(this@CareerBrowserWebView)
                     val candidate = nativeDocument.get()
                     val served = candidate?.takeIf { url == it.url && nativeDocument.compareAndSet(it, null) }
-                    if (!disposed && served != null && url == served.url && policy.allowsNavigation(url)) {
+                    if (served != null && url == served.url && policy.allowsNavigation(url)) {
                         documentToken = served.token
+                        // Only the initial load's own document can become the landing; it is never re-granted.
+                        landingChain.grant(served.request, url, served.token)
                         if (discardRedirectHistory) {
                             clearHistory()
                             discardRedirectHistory = false
                         }
+                        onStateChanged(this@CareerBrowserWebView)
                         onFinished(this@CareerBrowserWebView, url)
-                    } else if (!disposed && redirects.get() == 0 && policy.allowsNavigation(url)) {
-                        onManualPage()
+                    } else {
+                        onStateChanged(this@CareerBrowserWebView)
+                        if (!disposed && redirects.get() == 0 && policy.allowsNavigation(url)) onManualPage()
                     }
                 }
 
@@ -291,23 +306,27 @@ internal class CareerBrowserWebView(
                     request: WebResourceRequest,
                 ): WebResourceResponse? {
                     val url = request.url.toString()
-                    if (request.isForMainFrame) {
-                        nativeDocument.set(null)
-                        documentToken = null
-                    }
+                    val mainFrameRequest =
+                        if (request.isForMainFrame) {
+                            nativeDocument.set(null)
+                            documentToken = null
+                            landingChain.request(url, request.method)
+                        } else {
+                            0L
+                        }
                     if (disposed) return blockedResponse()
                     if (url == "about:blank") return null
                     if (!request.isForMainFrame && (url.startsWith("data:") || url.startsWith("blob:"))) return null
                     if (!policy.allowsResource(url)) return blockedResponse()
                     if (request.isForMainFrame && !policy.allowsNavigation(url)) return blockedResponse()
-                    // Only the exact registered login GET needs the native document identity for autofill.
-                    // Other documents, redirects, frames and resources use the normal Chromium network stack.
+                    // Only registered-scope GETs and the initial load's redirect chain need the native document
+                    // identity for autofill. Other documents, frames and resources use the normal Chromium stack.
                     if (!allowsCredentialFill || !request.isForMainFrame || request.method != "GET" ||
-                        !policy.allowsFill(url)
+                        !(policy.allowsFill(url) || landingChain.continues(mainFrameRequest))
                     ) {
                         return null
                     }
-                    return document(url, view, request.requestHeaders)
+                    return document(url, view, request.requestHeaders, mainFrameRequest)
                 }
 
                 override fun doUpdateVisitedHistory(
@@ -393,7 +412,11 @@ internal class CareerBrowserWebView(
                     removeAllCookies {
                         runCatching {
                             flush()
-                            if (!disposed) loadUrl(policy.loginUrl.toString())
+                            if (!disposed) {
+                                // Popups never start(); only this root's initial load may reach a landing.
+                                if (allowsCredentialFill) landingChain.begin(policy.loginUrl.toString())
+                                loadUrl(policy.loginUrl.toString())
+                            }
                         }.onFailure { if (!disposed) onBlocked() }
                     }
                 }
@@ -413,6 +436,7 @@ internal class CareerBrowserWebView(
         if (disposed || (!leased && !sessionChild)) return
         documentToken = null
         nativeDocument.set(null)
+        landingChain.end()
         redirects.set(0)
         reload()
     }
@@ -421,6 +445,7 @@ internal class CareerBrowserWebView(
         url: String,
         view: WebView,
         requestHeaders: Map<String, String>,
+        mainFrameRequest: Long,
     ): WebResourceResponse {
         var awaiting: Response? = null
         var activeCall: Call? = null
@@ -460,6 +485,8 @@ internal class CareerBrowserWebView(
                 closeResponse(response)
                 mainHandler.post {
                     if (!disposed && redirects.incrementAndGet() <= 5 && policy.allowsNavigation(next)) {
+                        // Server redirects of the initial load stay in its landing chain; nothing else joins.
+                        landingChain.redirect(mainFrameRequest, next)
                         discardRedirectHistory = true
                         view.loadUrl(checkNotNull(next))
                     } else if (!disposed) {
@@ -490,7 +517,7 @@ internal class CareerBrowserWebView(
             val token = UUID.randomUUID().toString()
             val headers = careerBrowserResponseHeaders(response.headers.toMultimap(), token)
             if (disposed) return blockedResponse()
-            nativeDocument.set(NativeDocument(url, token))
+            nativeDocument.set(NativeDocument(url, token, mainFrameRequest))
             val result =
                 WebResourceResponse(
                     type.toString().substringBefore(';'),
@@ -522,6 +549,7 @@ internal class CareerBrowserWebView(
             disposed = true
         }
         documentToken = null
+        landingChain.end()
         documentSequence++
         onDocumentChanged(this)
         nativeDocument.set(null)

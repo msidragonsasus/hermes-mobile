@@ -22,8 +22,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Bookmarks
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
@@ -62,6 +63,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -106,7 +108,18 @@ fun TerminalScreen() {
             }
         }
         DisposableEffect(model) { onDispose { model.forget() } }
-        TerminalContent(state, model)
+        val appContext = LocalContext.current.applicationContext
+        // Bound to this server + profile for its whole life; re-checked before every read/write.
+        val snippets =
+            remember(scope) {
+                TerminalSnippetsModel(
+                    TerminalSnippetStore(EncryptedTerminalStorage(appContext), scope) {
+                        AuthManager.uiPreferenceScope() == scope
+                    },
+                )
+            }
+        LaunchedEffect(snippets) { snippets.load() }
+        TerminalContent(state, model, snippets)
     }
 }
 
@@ -114,11 +127,11 @@ fun TerminalScreen() {
 internal fun TerminalContent(
     state: TerminalUiState,
     model: TerminalActions,
+    snippets: TerminalSnippetsModel,
 ) {
     val context = LocalContext.current
     val spacing = LocalSpacing.current
-    var draft by remember { mutableStateOf("") }
-    var secret by remember { mutableStateOf(false) }
+    var draft by remember { mutableStateOf(TerminalDraft()) }
     var enter by remember { mutableStateOf(true) }
     var fontSize by remember { mutableIntStateOf(14) }
     var display by remember { mutableStateOf<TerminalDisplay?>(null) }
@@ -127,12 +140,32 @@ internal fun TerminalContent(
     var selection by remember { mutableStateOf<TerminalSelection?>(null) }
     var links by remember { mutableStateOf<List<String>?>(null) }
     var displayFailed by remember { mutableStateOf(false) }
+    var scroll by remember { mutableStateOf(TerminalScroll()) }
+    var picker by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<TerminalEditorRequest?>(null) }
+    val saved by snippets.state.collectAsState()
+    val keiyaPassword = saved.items.keiyaPassword()
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
-    // Commands and authentication codes are ephemeral; never use rememberSaveable or a history DB here.
+    // Commands, codes and inserted passwords are ephemeral; never rememberSaveable or a history DB here.
     LaunchedEffect(state.selected) {
-        draft = ""
+        draft = TerminalDraft()
         selection = null
+        scroll = TerminalScroll()
+    }
+    // Leaving the app drops an inserted password and any open password editor.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer =
+            LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_STOP) {
+                    if (draft.secret) draft = TerminalDraft()
+                    editing = null
+                    picker = false
+                }
+            }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     val writable = state.connected && !state.closed && !state.busy && !displayFailed
     val home = state.selected == null
@@ -152,35 +185,49 @@ internal fun TerminalContent(
                 })
                 DropdownMenuItem(text = { Text("選択してコピー(画面の長押しでも)") }, enabled = !home, onClick = {
                     menu = false
-                    display?.selectionText(atTouch = false) { selection = it }
+                    display?.snapshot(-1, -1, word = false) { selection = it }
                 })
                 DropdownMenuItem(text = { Text("貼り付け") }, enabled = writable, onClick = {
                     menu = false
                     scope.launch {
-                        val pasted = clipboard.getClipEntry()?.clipData?.takeIf { it.itemCount > 0 }
-                            ?.getItemAt(0)?.coerceToText(context)?.toString()
-                        if (!pasted.isNullOrEmpty()) draft += pasted
+                        val pasted =
+                            clipboard
+                                .getClipEntry()
+                                ?.clipData
+                                ?.takeIf { it.itemCount > 0 }
+                                ?.getItemAt(0)
+                                ?.coerceToText(context)
+                                ?.toString()
+                        if (!pasted.isNullOrEmpty()) draft = draft.edit(draft.text + pasted)
                     }
                 })
                 DropdownMenuItem(text = { Text("出力内のリンクを開く") }, onClick = {
                     menu = false
                     display?.text { value -> links = terminalLinks(value) }
                 })
-                DropdownMenuItem(text = { Text("末尾へ") }, onClick = {
+                DropdownMenuItem(text = { Text("保存した入力") }, onClick = {
                     menu = false
-                    display?.evaluateJavascript("window.hermesTerminal.bottom()", null)
+                    picker = true
+                })
+                DropdownMenuItem(text = { Text("前のページへ") }, enabled = !home, onClick = {
+                    menu = false
+                    display?.page(-1)
+                })
+                DropdownMenuItem(text = { Text("最新の出力へ") }, enabled = !home, onClick = {
+                    menu = false
+                    display?.bottom()
                 })
                 DropdownMenuItem(
                     text = { Text(if (enter) "送信時にEnter: オン" else "送信時にEnter: オフ") },
                     onClick = { enter = !enter },
                 )
-                DropdownMenuItem(text = { Text("「claude auth login」を入力") }, enabled = writable && !secret, onClick = {
+                DropdownMenuItem(text = { Text("「claude auth login」を入力") }, enabled = writable, onClick = {
                     menu = false
-                    draft = "claude auth login"
+                    draft = TerminalDraft("claude auth login")
                 })
-                DropdownMenuItem(text = { Text("「tmux new -As mobile」を入力") }, enabled = writable && !secret, onClick = {
+                DropdownMenuItem(text = { Text("「tmux new -As mobile」を入力") }, enabled = writable, onClick = {
                     menu = false
-                    draft = "tmux new -As mobile"
+                    draft = TerminalDraft("tmux new -As mobile")
                 })
                 DropdownMenuItem(text = { Text("文字を大きく") }, onClick = { fontSize = (fontSize + 2).coerceAtMost(28) })
                 DropdownMenuItem(text = { Text("文字を小さく") }, onClick = { fontSize = (fontSize - 2).coerceAtLeast(10) })
@@ -217,7 +264,7 @@ internal fun TerminalContent(
                         ),
                 )
                 Text(
-                    listOf(state.serverLabel, state.selected?.let { "端末 ${it.take(8)}" }  ?: "")
+                    listOf(state.serverLabel, state.selected?.let { "端末 ${it.take(8)}" } ?: "")
                         .filter { it.isNotEmpty() }
                         .joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
@@ -254,10 +301,10 @@ internal fun TerminalContent(
                 TerminalHome(
                     state,
                     model,
-                    onCreate = { kind ->
-                        secret = kind == TerminalKind.KEIYA
-                        model.create(kind)
-                    },
+                    onCreate = model::create,
+                    keiyaPasswordSaved = keiyaPassword != null,
+                    savedReady = saved.loaded,
+                    onKeiyaPassword = { editing = TerminalEditorRequest(keiyaPassword ?: newKeiyaPassword()) },
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                 )
             } else if (displayFailed) {
@@ -270,19 +317,22 @@ internal fun TerminalContent(
                         fontSize,
                         Modifier.fillMaxSize().testTag("terminal_display"),
                         model::resize,
-                        { view ->
-                            display = view
-                            // Long-press opens selection mode at the pressed word
-                            // (xterm's own touch selection is unreliable on phones).
-                            view?.setOnLongClickListener {
-                                view.selectionText(atTouch = true) { selection = it }
-                                true
-                            }
-                        },
+                        { view -> display = view },
                         { displayFailed = true },
                         model::report,
                         { url -> runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } },
+                        // The page detects long-press itself and opens selection at the pressed word.
+                        onLongPress = { selection = it },
+                        onScroll = { scroll = it },
                     )
+                    if (!scroll.atBottom && selection == null) {
+                        TerminalScrollControls(
+                            unseen = scroll.unseen,
+                            onPage = { display?.page(it) },
+                            onLatest = { display?.bottom() },
+                            modifier = Modifier.align(Alignment.BottomEnd).padding(spacing.sm),
+                        )
+                    }
                     selection?.let { current ->
                         TerminalSelectionPane(
                             selection = current,
@@ -300,7 +350,7 @@ internal fun TerminalContent(
                 }
             }
             if (!home) {
-                // One accessory row: secret-input toggle, then special keys as small key caps.
+                // One accessory row: saved input, keiya password, then special keys as small key caps.
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -310,11 +360,35 @@ internal fun TerminalContent(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     TerminalKeyCap(
-                        label = if (secret) "秘密入力 オン" else "秘密入力",
-                        selected = secret,
-                        icon = if (secret) Icons.Default.Lock else Icons.Default.LockOpen,
-                        onClick = { secret = !secret },
+                        label = "保存した入力",
+                        icon = Icons.Default.Bookmarks,
+                        onClick = { picker = true },
+                        modifier = Modifier.testTag("terminal_saved_inputs"),
                     )
+                    // Inserts only; the user sends at the password prompt. Never sent automatically.
+                    TerminalKeyCap(
+                        label = if (keiyaPassword != null) "keiyaのパスワード" else "keiyaのパスワードを保存",
+                        icon = Icons.Default.Key,
+                        enabled = saved.loaded,
+                        onClick = {
+                            if (keiyaPassword !=
+                                null
+                            ) {
+                                draft = draft.insert(keiyaPassword)
+                            } else {
+                                editing = TerminalEditorRequest(newKeiyaPassword())
+                            }
+                        },
+                        modifier = Modifier.testTag("terminal_keiya_password"),
+                    )
+                    if (draft.secret) {
+                        TerminalKeyCap(
+                            label = "パスワードを消去",
+                            icon = Icons.Default.Clear,
+                            selected = true,
+                            onClick = { draft = TerminalDraft() },
+                        )
+                    }
                     terminalKeys.forEach { (label, bytes) ->
                         TerminalKeyCap(
                             label = label,
@@ -329,23 +403,25 @@ internal fun TerminalContent(
                     }
                 }
                 ChatComposer(
-                    value = draft,
-                    onValueChange = { draft = it },
+                    value = draft.text,
+                    onValueChange = { draft = draft.edit(it) },
                     onSend = {
-                        val text = draft
-                        draft = ""
+                        val text = draft.text
+                        draft = TerminalDraft()
                         model.send(text, enter)
                     },
-                    sendEnabled = writable && draft.isNotEmpty(),
-                    placeholder = if (secret) "認証コード・パスワード" else "コマンドや返答を入力",
+                    sendEnabled = writable && draft.text.isNotEmpty(),
+                    placeholder = "コマンドや返答を入力",
                     inputTestTag = "terminal_input",
                     keyboardOptions =
                         KeyboardOptions(
                             capitalization = KeyboardCapitalization.None,
                             autoCorrectEnabled = false,
-                            keyboardType = if (secret) KeyboardType.Password else KeyboardType.Text,
+                            keyboardType = if (draft.secret) KeyboardType.Password else KeyboardType.Text,
                         ),
-                    visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
+                    // Masked because a saved password was inserted, not because of a mode.
+                    visualTransformation =
+                        if (draft.secret) PasswordVisualTransformation() else VisualTransformation.None,
                 )
             }
         }
@@ -382,6 +458,38 @@ internal fun TerminalContent(
             confirmButton = { TextButton(onClick = { links = null }) { Text("閉じる") } },
         )
     }
+    if (picker) {
+        TerminalSnippetSheet(
+            state = saved,
+            onInsert = {
+                draft = draft.insert(it)
+                picker = false
+            },
+            onEdit = {
+                snippets.clearError()
+                editing = TerminalEditorRequest(it)
+            },
+            onDismiss = { picker = false },
+        )
+    }
+    editing?.let { request ->
+        val current = request.snippet
+        TerminalSnippetEditor(
+            initial = current,
+            isNew = saved.items.none { it.id == current.id },
+            error = saved.error,
+            busy = saved.busy,
+            // Close only the editor that issued the request; a newer one stays open.
+            onSave = { value ->
+                scope.launch { if (snippets.save(value) && editing === request) editing = null }
+            },
+            onDelete = { scope.launch { if (snippets.delete(current.id) && editing === request) editing = null } },
+            onDismiss = {
+                snippets.clearError()
+                editing = null
+            },
+        )
+    }
 }
 
 /** Start screen: running shells (one tap opens) and the two ways to open a new one. */
@@ -390,6 +498,9 @@ private fun TerminalHome(
     state: TerminalUiState,
     model: TerminalActions,
     onCreate: (TerminalKind) -> Unit,
+    keiyaPasswordSaved: Boolean,
+    savedReady: Boolean,
+    onKeiyaPassword: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val spacing = LocalSpacing.current
@@ -461,6 +572,26 @@ private fun TerminalHome(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             ) { Text("keiya") }
         }
+        // keiya logs in through SSH and asks for its password at the prompt.
+        Text(
+            if (keiyaPasswordSaved) {
+                "keiyaのパスワードは保存済みです。パスワードを聞かれたら「keiyaのパスワード」で入力欄に入れて送信します。"
+            } else {
+                "keiyaのパスワードをこの端末に暗号化して保存すると、ログイン時にワンタップで入力欄に入れられます。"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = spacing.md, vertical = spacing.xs),
+        )
+        TextButton(
+            onClick = onKeiyaPassword,
+            enabled = savedReady,
+            modifier =
+                Modifier
+                    .padding(horizontal = spacing.xs)
+                    .heightIn(min = 48.dp)
+                    .testTag("terminal_home_keiya_password"),
+        ) { Text(if (keiyaPasswordSaved) "keiyaのパスワードを編集" else "keiyaのパスワードを保存") }
     }
 }
 
@@ -471,13 +602,19 @@ private fun TerminalKeyCap(
     enabled: Boolean = true,
     selected: Boolean = false,
     icon: ImageVector? = null,
+    modifier: Modifier = Modifier,
 ) {
     Surface(
         onClick = onClick,
         enabled = enabled,
+        modifier = modifier,
         shape = MaterialTheme.shapes.small,
         color =
-            if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+            if (selected) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerHigh
+            },
         contentColor =
             if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
     ) {

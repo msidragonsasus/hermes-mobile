@@ -59,6 +59,17 @@ class ProtectedInstructionApprovalTest {
     }
 
     @Test
+    fun protectedGuardRejectsConflictingBroaderAdvertisementBeforeObservation() {
+        val event =
+            EventParser.parseApprovalRequest(
+                payload + ("choices" to listOf("once", "session", "always", "deny")),
+                "runtime",
+            )
+        assertEquals(listOf("once", "deny"), event.choices)
+        assertEquals(listOf("once", "deny"), dashboardAttentionItems(scope, event).single().details?.approvalChoices)
+    }
+
+    @Test
     fun sessionSnapshotRestoresApprovalOutsideChatWithExactOuterSession() =
         runTest {
             val events = MutableSharedFlow<ScopedWsEvent>()
@@ -82,7 +93,9 @@ class ProtectedInstructionApprovalTest {
             assertEquals("runtime", item.ref.session.runtimeId)
             assertEquals("protected-write-1", item.ref.requestId)
             coVerify(exactly = 0) { transport.respondApproval(any(), any()) }
+            coordinator.respondApproval(item.ref, "session")
             coordinator.respondApproval(item.ref, "always")
+            coVerify(exactly = 0) { transport.respondApproval(any(), any()) }
             coordinator.respondApproval(item.ref, "once")
             coordinator.respondApproval(item.ref, "once")
             events.emit(ScopedWsEvent(scope, 2, snapshot))
