@@ -29,4 +29,6 @@ data class StreamingState(
      * until the next message.start, so late frames cannot revive a finished turn.
      */
     val turnEnded: Boolean = false,
+    /** Exact newly sealed interim delivery in this observation; never restored from prose. */
+    val previewedFinalCandidateId: String? = null,
 )

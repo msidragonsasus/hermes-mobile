@@ -84,7 +84,24 @@ data class ChatMessage(
      * When present, rendered at the bottom beside the copy button.
      */
     val finishTimestamp: Long? = null,
+    /** Original visible source observed before MEDIA display stripping; never a transport URL or reply proof. */
+    val sourceBody: String? = null,
+    /** Fresh REST display authority; only its selected body/hidden marker is cached. */
+    val hasServerDisplayProjection: Boolean = false,
 )
+
+/** Project only observed source text into the existing body column; never recover stale prose. */
+internal fun ChatMessage.bodyForStorage(): String {
+    val source = sourceBody ?: return content
+    if (source == content || HostMediaExtractor.strip(source) == content) return source
+    // A copied hint can outlive a prose edit. Keep newer prose and only the known file directives.
+    val currentPaths = HostMediaExtractor.extract(content).map { it.path }.toSet()
+    val missing = HostMediaExtractor.extract(source).distinctBy { it.path }.filterNot { it.path in currentPaths }
+    return if (missing.isEmpty()) content else content + "\n" + missing.joinToString("\n") { it.match }
+}
+
+internal fun ChatMessage.sourceMediaPaths(): Set<String> =
+    HostMediaExtractor.extract(bodyForStorage()).map { it.path }.toSet()
 
 /**
  * Single live transcript log entry for subagent execution.

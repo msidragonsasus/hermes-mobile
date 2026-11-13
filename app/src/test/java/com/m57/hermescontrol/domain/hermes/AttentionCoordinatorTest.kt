@@ -40,6 +40,213 @@ class AttentionCoordinatorTest {
         coEvery { transport.respondClarification(any(), any()) } returns SubmissionResult.Confirmed("rpc", true)
     }
 
+    @Test
+    fun modernLegacyApprovalCoalescesWithoutLosingAttempt() =
+        runTest {
+            repository.observe(approval())
+            val modern = ref.copy(serverRequestId = "outer")
+            repository.observe(approval(modern))
+            assertEquals(1, repository.items.value.count { it.status == AttentionStatus.PENDING })
+            coordinator.respondApproval(modern, "once")
+            repository.observe(approval())
+            assertEquals(1, repository.items.value.size)
+            assertEquals(
+                AttentionStatus.CONFIRMED,
+                repository.items.value
+                    .single()
+                    .status,
+            )
+        }
+
+    @Test
+    fun serverLockedNullSkipIsAuthoritativeAndNeverUnlocked() =
+        runTest {
+            val question = ref.copy(requestId = "outer", serverRequestId = "outer", questionId = "q")
+            val item = AttentionItem(question, AttentionKind.CLARIFICATION, "Synthetic question")
+            repository.observe(item)
+            repository.markScopeUnknown(scope)
+            repository.observe(item.copy(clarificationLock = ClarificationLock(null)))
+            assertEquals(
+                AttentionStatus.CONFIRMED,
+                repository.items.value
+                    .single()
+                    .status,
+            )
+            repository.observe(item)
+            assertEquals(
+                ClarificationLock(null),
+                repository.items.value
+                    .single()
+                    .clarificationLock,
+            )
+            coordinator.respondClarification(question, "must not send")
+            coVerify(exactly = 0) { transport.respondClarification(any(), any()) }
+        }
+
+    @Test
+    fun parsedOuterCancellationExpiresMatchingModernOnly() =
+        runTest {
+            val sourceEvents = kotlinx.coroutines.flow.MutableSharedFlow<com.m57.hermescontrol.data.ws.ScopedWsEvent>()
+            val realSource =
+                object : HermesAttentionSource {
+                    override val attentionSignals =
+                        com.m57.hermescontrol.data.transport.normalizeDashboardAttention(
+                            sourceEvents,
+                        )
+                }
+            val running = AttentionCoordinator(repository, realSource, transport, connection).start(backgroundScope)
+            runCurrent()
+            val modern = ref.copy(serverRequestId = "outer")
+            repository.observe(approval(modern))
+            repository.observe(approval(ref.copy(requestId = "outer", serverRequestId = "other")))
+            val parsed =
+                com.m57.hermescontrol.data.ws.EventParser.parseParams(
+                    mapOf(
+                        "type" to "request.cancel",
+                        "session_id" to "runtime",
+                        "payload" to mapOf("id" to "outer", "method" to "approval", "reason" to "timeout"),
+                    ),
+                )
+            sourceEvents.emit(
+                com.m57.hermescontrol.data.ws
+                    .ScopedWsEvent(scope, 1, parsed),
+            )
+            runCurrent()
+            assertEquals(
+                AttentionStatus.EXPIRED,
+                repository.items.value
+                    .first { it.ref == modern }
+                    .status,
+            )
+            assertEquals(
+                AttentionStatus.PENDING,
+                repository.items.value
+                    .first { it.ref.requestId == "outer" }
+                    .status,
+            )
+            running.cancel()
+        }
+
+    @Test
+    fun resolvedCancellationOnlyLetsExactInFlightSuccessfulAckConfirm() =
+        runTest {
+            for (reason in listOf("resolved", "timeout", "interrupted", "closed")) {
+                val modern = ref.copy(requestId = reason, serverRequestId = "outer-$reason")
+                repository.observe(approval(modern))
+                val ack = CompletableDeferred<SubmissionResult<Boolean>>()
+                coEvery { transport.respondApproval(modern, "once") } coAnswers { ack.await() }
+                val task = launch { coordinator.respondApproval(modern, "once") }
+                runCurrent()
+                repository.apply(AttentionSignal.Cancelled(scope, "runtime", "outer-$reason", "approval", reason))
+                repository.apply(AttentionSignal.Cancelled(scope, "runtime", "outer-$reason", "approval", reason))
+                repository.apply(AttentionSignal.Snapshot(scope, "runtime", 100, emptyList(), emptySet()))
+                assertEquals(
+                    AttentionStatus.EXPIRED,
+                    repository.items.value
+                        .first { it.ref == modern }
+                        .status,
+                )
+                ack.complete(SubmissionResult.Confirmed("rpc", true))
+                task.join()
+                assertEquals(
+                    if (reason == "resolved") AttentionStatus.CONFIRMED else AttentionStatus.EXPIRED,
+                    repository.items.value
+                        .first { it.ref == modern }
+                        .status,
+                )
+            }
+        }
+
+    @Test
+    fun cancelBeforeReplaySurvivesGenerationButNotDifferentOriginOrSession() =
+        runTest {
+            repository.apply(AttentionSignal.Cancelled(scope, "runtime", "outer", "approval", "resolved"))
+            val replay = ref.copy(scope = scope.copy(generation = 2), serverRequestId = "outer")
+            assertEquals(AttentionStatus.EXPIRED, repository.observe(approval(replay)).status)
+            assertEquals(
+                AttentionStatus.PENDING,
+                repository.observe(approval(replay.copy(session = SessionRef("other")))).status,
+            )
+            assertEquals(
+                AttentionStatus.PENDING,
+                repository.observe(approval(replay.copy(scope = replay.scope.copy(serverIdentity = "other")))).status,
+            )
+        }
+
+    @Test
+    fun snapshotClosesOnlyPreSnapshotExactModernSessionAndPreservesLocks() =
+        runTest {
+            val old = ref.copy(serverRequestId = "old")
+            val newer = ref.copy(requestId = "new", serverRequestId = "new")
+            val foreign = ref.copy(session = SessionRef("other"), serverRequestId = "foreign")
+            val legacy = ref.copy(requestId = "legacy")
+            repository.apply(AttentionSignal.Requested(listOf(approval(old), approval(foreign), approval(legacy)), 10))
+            repository.apply(AttentionSignal.Requested(listOf(approval(newer)), 30))
+            repository.apply(AttentionSignal.Snapshot(scope, "runtime", 20, emptyList(), emptySet()))
+            assertEquals(
+                AttentionStatus.EXPIRED,
+                repository.items.value
+                    .first { it.ref == old }
+                    .status,
+            )
+            for (keep in listOf(newer, foreign, legacy)) {
+                assertEquals(
+                    AttentionStatus.PENDING,
+                    repository.items.value
+                        .first {
+                            it.ref ==
+                                keep
+                        }.status,
+                )
+            }
+            val locked = ref.copy(requestId = "outer", serverRequestId = "outer", questionId = "locked")
+            val pending = locked.copy(questionId = "pending")
+            repository.observe(
+                AttentionItem(
+                    locked,
+                    AttentionKind.CLARIFICATION,
+                    "locked",
+                    clarificationLock = ClarificationLock("known"),
+                ),
+            )
+            repository.observe(AttentionItem(pending, AttentionKind.CLARIFICATION, "pending"))
+            repository.apply(AttentionSignal.Cancelled(scope, "runtime", "outer", "clarify", "timeout"))
+            assertEquals(
+                ClarificationLock("known"),
+                repository.items.value
+                    .first { it.ref == locked }
+                    .clarificationLock,
+            )
+            assertEquals(
+                AttentionStatus.CONFIRMED,
+                repository.items.value
+                    .first { it.ref == locked }
+                    .status,
+            )
+            assertEquals(
+                AttentionStatus.EXPIRED,
+                repository.items.value
+                    .first { it.ref == pending }
+                    .status,
+            )
+        }
+
+    @Test
+    fun resolvedWithoutAttemptNeverConfirmsAndFalseAckNeverConfirms() =
+        runTest {
+            val modern = ref.copy(serverRequestId = "outer")
+            repository.observe(approval(modern))
+            repository.apply(AttentionSignal.Cancelled(scope, "runtime", "outer", "approval", "resolved"))
+            coordinator.respondApproval(modern, "once")
+            assertEquals(
+                AttentionStatus.EXPIRED,
+                repository.items.value
+                    .single()
+                    .status,
+            )
+            coVerify(exactly = 0) { transport.respondApproval(any(), any()) }
+        }
+
     private fun approval(target: RequestRef = ref) = AttentionItem(target, AttentionKind.APPROVAL, "Synthetic request")
 
     @Test

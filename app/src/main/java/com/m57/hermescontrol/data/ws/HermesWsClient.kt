@@ -272,6 +272,14 @@ object HermesWsClient {
         gapSessionId: String? = null,
     ) {
         if (scope == null || !isCurrentGeneration(scope.generation)) return
+        if ((
+                event is WsEvent.ApprovalRequest || event is WsEvent.ClarifyRequest ||
+                    event is WsEvent.ServerRequestCancel || event is WsEvent.OpenRequestsSnapshot
+            ) &&
+            !matchesCurrentScope(scope)
+        ) {
+            return
+        }
         when (event) {
             is WsEvent.VaultRequest -> {
                 if (answeredVaultPrompts[event.request.id] == scope) return
@@ -284,23 +292,65 @@ object HermesWsClient {
 
             else -> {}
         }
-        _scopedEvents.tryEmit(ScopedWsEvent(scope, observationOrdinal.incrementAndGet(), event, gap, gapSessionId))
+        val observation = ScopedWsEvent(scope, observationOrdinal.incrementAndGet(), event, gap, gapSessionId)
+        // Publish the original first; the proof also retains these exact bytes/metadata until VM admission.
+        if (_scopedEvents.tryEmit(observation)) resolveTerminalProof(observation)
         if (event is WsEvent.SessionInfo) {
             restoreOpenPrompts(scope, event.data)
         }
     }
 
-    /** Restore open prompts and accepted clarify locks from resume and replay snapshots. */
+    internal fun snapshotObservationOrdinal(): Long = observationOrdinal.get()
+
+    /** Incoming name shares the delivered session fence and atomic snapshot admission. */
     internal fun restoreOpenPrompts(
         scope: ConnectionScope,
         payload: Map<*, *>?,
+        expectedRuntimeId: String? = payload?.get("session_id") as? String,
+        startedAt: Long = observationOrdinal.get(),
+    ) = restoreVaultPrompts(scope, payload, expectedRuntimeId, startedAt)
+
+    /** All authoritative carriers share session validation and one scoped admission. */
+    internal fun restoreVaultPrompts(
+        scope: ConnectionScope,
+        payload: Map<*, *>?,
+        expectedRuntimeId: String? = payload?.get("session_id") as? String,
+        startedAt: Long = observationOrdinal.get(),
     ) {
-        if (!matchesCurrentScope(scope)) return
-        (payload?.get("open_requests") as? List<*>)?.filterIsInstance<Map<*, *>>()?.forEach { frame ->
-            val id = frame["id"] as? String ?: return@forEach
-            val method = frame["method"] as? String ?: return@forEach
-            val restored = EventParser.parseServerRequest(id, method, frame["params"] as? Map<*, *>)
-            if (restored is WsEvent.VaultRequest || restored is WsEvent.ClarifyRequest) emitScoped(scope, restored)
+        fun validId(value: String?): Boolean =
+            !value.isNullOrBlank() && value.length <= 512 && value.none(Char::isISOControl)
+        if (!matchesCurrentScope(scope) || expectedRuntimeId.isNullOrBlank() || !validId(expectedRuntimeId)) return
+        if (payload?.containsKey("session_id") == true && payload["session_id"] != expectedRuntimeId) return
+        val raw = payload?.get("open_requests") as? List<*> ?: return
+        if (raw.size > 1000) return
+        val ids = mutableSetOf<String>()
+        val requests = mutableListOf<WsEvent>()
+        for (entry in raw) {
+            val frame = entry as? Map<*, *> ?: return
+            val id = (frame["id"] as? String)?.takeIf(::validId) ?: return
+            val method = (frame["method"] as? String)?.takeIf(String::isNotBlank) ?: return
+            val params = frame["params"] as? Map<*, *> ?: return
+            if (!validId(params["session_id"] as? String) || params["session_id"] != expectedRuntimeId ||
+                !ids.add(id)
+            ) {
+                return
+            }
+            val parsed = EventParser.parseServerRequest(id, method, params)
+            if (parsed is WsEvent.UnsupportedServerRequest &&
+                (method in setOf("approval", "clarify") || VaultPromptKind.entries.any { it.method == method })
+            ) {
+                return
+            }
+            requests.add(parsed)
+        }
+        emitScoped(scope, WsEvent.OpenRequestsSnapshot(expectedRuntimeId, startedAt, requests, ids))
+        // Existing Chat and notification consumers use the same scoped request events.
+        requests.forEach { restored ->
+            if (restored is WsEvent.VaultRequest || restored is WsEvent.ApprovalRequest ||
+                restored is WsEvent.ClarifyRequest
+            ) {
+                emitScoped(scope, restored)
+            }
         }
     }
 
@@ -707,7 +757,13 @@ object HermesWsClient {
             outboundDrainJob?.cancel()
             outboundDrainJob = null
             stopHealthTracking()
-            webSocket?.close(1000, "Client closed")
+            val socket = webSocket
+            if (connected.get()) {
+                socket?.close(1000, "Client closed")
+            } else {
+                // An opening socket cannot send a close frame; cancel its pending upgrade.
+                socket?.cancel()
+            }
             webSocket = null
             closingSocket = null
             if (clearPendingMessages) {
@@ -753,7 +809,86 @@ object HermesWsClient {
         var timeoutJob: Job? = null,
         val writeScope: ConnectionScope? = null,
         val groupCreate: Pair<GroupSessionAccess, String>? = null,
+        val snapshotScope: ConnectionScope? = null,
+        val expectedRuntimeId: String? = null,
+        val snapshotStartedAt: Long = observationOrdinal.get(),
+        val authenticationEpoch: Long = AuthManager.connectionEpoch.value,
+        val socket: WebSocket? = webSocket,
+        val terminalExpectation: TerminalExpectation? = null,
+        val terminalProof: CompletableDeferred<TerminalAcceptanceProof> = CompletableDeferred(),
     )
+
+    private data class TerminalCapability(
+        val scope: ConnectionScope,
+        val epoch: Long,
+        val socket: WebSocket,
+        val peer: String,
+    )
+
+    private data class TerminalExpectation(
+        val capability: TerminalCapability,
+        val runtime: String,
+        val target: String,
+        val nonce: String,
+        val deadlineNanos: Long,
+    )
+
+    @Volatile private var terminalCapability: TerminalCapability? = null
+
+    private fun currentCapability(capability: TerminalCapability): Boolean =
+        capability.epoch % 2L == 0L && AuthManager.connectionEpoch.value == capability.epoch &&
+            connected.get() && webSocket === capability.socket && matchesCurrentScope(capability.scope) &&
+            (capability.peer.isEmpty() || terminalCapability == capability)
+
+    private fun cacheTerminalCapability(
+        call: PendingCall,
+        result: Any?,
+        error: JsonRpcError?,
+    ) {
+        if (call.method != "gateway.capabilities") return
+        val scope = call.snapshotScope ?: return
+        val socket = call.socket ?: return
+        val candidate = TerminalCapability(scope, call.authenticationEpoch, socket, "")
+        if (!currentCapability(candidate)) return
+        terminalCapability = null
+        if (error != null) return
+        val raw = (if (result is JsonElement) result.toAny() else result) as? Map<*, *> ?: return
+        val feature = raw["terminal_acceptance"] as? Map<*, *> ?: return
+        val peer = (feature["peer_id"] as? String)?.takeIf(::isTerminalUuid) ?: return
+        if (feature["version"] == 1 && feature["mode"] == "local-ordinary-text-v1") {
+            terminalCapability = candidate.copy(peer = peer)
+        }
+    }
+
+    private fun resolveTerminalProof(observation: ScopedWsEvent) {
+        val event = observation.event as? WsEvent.MessageComplete ?: return
+        val receipt = event.terminalAcceptance ?: return
+        val id = receipt.originalRequestId
+        val call = pendingCalls[id] ?: return
+        val expected = call.terminalExpectation ?: return
+        synchronized(outboundLock) {
+            if (call.method != WsMethods.PROMPT_SUBMIT || call.writeScope != observation.scope ||
+                !currentCapability(expected.capability) || System.nanoTime() >= expected.deadlineNanos ||
+                receipt.peerId != expected.capability.peer || receipt.clientAttemptNonce != expected.nonce ||
+                receipt.runtimeSessionId != expected.runtime || receipt.targetSessionId != expected.target ||
+                receipt.transcriptSessionId != expected.target ||
+                (event.storedSessionId != null && event.storedSessionId != expected.target) ||
+                !event.hasSafeTerminalAcceptance(receipt)
+            ) {
+                return
+            }
+            // Exact instance compare-remove is the single winner against ACK, deadline and cleanup.
+            if (!pendingCalls.remove(id, call)) return
+            call.timeoutJob?.cancel()
+            pendingPromptSubmits.remove(id)
+            call.terminalProof.complete(
+                TerminalAcceptanceProof(observation, receipt, expected.capability.epoch) {
+                    currentCapability(expected.capability)
+                },
+            )
+            // call.deferred is RPC-only: no forged JSON-RPC response and no remote cancellation.
+        }
+    }
 
     /** Tracks in-flight [request] calls by their JSON-RPC id. */
     private val pendingCalls = ConcurrentHashMap<String, PendingCall>()
@@ -776,7 +911,13 @@ object HermesWsClient {
         val deferred = CompletableDeferred<Any?>()
         val id =
             send(method, params) { reqId ->
-                pendingCalls[reqId] = PendingCall(method, deferred)
+                pendingCalls[reqId] =
+                    PendingCall(
+                        method,
+                        deferred,
+                        snapshotScope = _connectionScope.value,
+                        expectedRuntimeId = params["session_id"] as? String,
+                    )
             }
         // Arm the per-request timeout (fires if the server never answers).
         pendingCalls[id]?.timeoutJob =
@@ -873,6 +1014,8 @@ object HermesWsClient {
                 PendingCall(
                     method,
                     result,
+                    snapshotScope = scope,
+                    expectedRuntimeId = params["session_id"] as? String,
                     writeScope =
                         if (method == WsMethods.SESSION_LIST ||
                             method == WsMethods.SESSION_ACTIVE_LIST
@@ -932,8 +1075,24 @@ object HermesWsClient {
     internal fun writeScoped(
         scope: ConnectionScope,
         method: String,
-        params: Map<String, Any>,
+        params: Map<String, Any?>,
         timeoutMs: Long = REQUEST_TIMEOUT_MS,
+    ): ScopedRpcSubmission = writeScopedInternal(scope, method, params, timeoutMs, null)
+
+    /** Only a known saved ordinary text target may opt into the positively negotiated feature. */
+    internal fun writePromptScoped(
+        scope: ConnectionScope,
+        session: com.m57.hermescontrol.domain.hermes.SessionRef,
+        params: Map<String, Any?>,
+        timeoutMs: Long = REQUEST_TIMEOUT_MS,
+    ): ScopedRpcSubmission = writeScopedInternal(scope, WsMethods.PROMPT_SUBMIT, params, timeoutMs, session.savedId)
+
+    private fun writeScopedInternal(
+        scope: ConnectionScope,
+        method: String,
+        params: Map<String, Any?>,
+        timeoutMs: Long,
+        savedTarget: String?,
     ): ScopedRpcSubmission =
         synchronized(outboundLock) {
             val response = CompletableDeferred<Any?>()
@@ -963,13 +1122,14 @@ object HermesWsClient {
                             !(params["request_id"] as? String).isNullOrBlank()
                     }
 
-                    WsMethods.APPROVAL_RECEIVED, WsMethods.CLARIFY_RESPOND -> {
-                        !(params["request_id"] as? String).isNullOrBlank()
-                    }
-
                     WsMethods.CLARIFY_LOCK -> {
                         !(params["request_id"] as? String).isNullOrBlank() &&
-                            !(params["question_id"] as? String).isNullOrBlank()
+                            !(params["question_id"] as? String).isNullOrBlank() && params.containsKey("answer") &&
+                            (params["answer"] == null || params["answer"] is String)
+                    }
+
+                    WsMethods.APPROVAL_RECEIVED, WsMethods.CLARIFY_RESPOND -> {
+                        !(params["request_id"] as? String).isNullOrBlank()
                     }
 
                     WsMethods.REQUEST_ANSWER -> {
@@ -988,8 +1148,36 @@ object HermesWsClient {
                 response.completeExceptionally(HermesRpcException("Request not sent", OfflineSendPolicy.NOT_SENT))
                 return@synchronized ScopedRpcSubmission(null, false, response)
             }
+            val capability = terminalCapability?.takeIf { it.scope == scope && currentCapability(it) }
+            val text = params["text"] as? String
+            val expectation =
+                if (method == WsMethods.PROMPT_SUBMIT && !savedTarget.isNullOrBlank() && capability != null &&
+                    params["queued"] != true && !text.isNullOrBlank() && !text.trimStart().startsWith("/") &&
+                    !text.contains("@image:") && !text.contains("@file:") && !text.contains("MEDIA:")
+                ) {
+                    TerminalExpectation(
+                        capability,
+                        sessionId,
+                        savedTarget,
+                        UUID.randomUUID().toString(),
+                        System.nanoTime() + timeoutMs * 1_000_000L,
+                    )
+                } else {
+                    null
+                }
             val fixedParams =
                 params.toMutableMap().apply {
+                    // Never pass an unnegotiated or caller-selected tag through this boundary.
+                    remove("terminal_acceptance")
+                    expectation?.let {
+                        put(
+                            "terminal_acceptance",
+                            mapOf(
+                                "version" to 1,
+                                "client_attempt_nonce" to it.nonce,
+                            ),
+                        )
+                    }
                     remove("profile")
                     // These contracts reject unknown keys; session_id above only scopes the write.
                     if (method == WsMethods.CLARIFY_LOCK || method == WsMethods.REQUEST_ANSWER) remove("session_id")
@@ -1004,7 +1192,16 @@ object HermesWsClient {
                 return@synchronized ScopedRpcSubmission(id, false, response)
             }
             val replyPendingBeforeSend = pendingReply
-            pendingCalls[id] = PendingCall(method, response, writeScope = scope)
+            val call =
+                PendingCall(
+                    method,
+                    response,
+                    writeScope = scope,
+                    snapshotScope = scope,
+                    expectedRuntimeId = sessionId,
+                    terminalExpectation = expectation,
+                )
+            pendingCalls[id] = call // Including terminal expectation: MUST precede ws.send.
             if (method == WsMethods.PROMPT_SUBMIT) {
                 pendingPromptSubmits.add(id)
                 pendingReply = true
@@ -1013,13 +1210,22 @@ object HermesWsClient {
             if (!accepted) {
                 rejectNotSent(id, replyPendingBeforeSend)
             } else {
-                pendingCalls[id]?.timeoutJob =
-                    wsScope.launch {
-                        delay(timeoutMs)
-                        resolvePending(id, null, JsonRpcError(-1, "Write acknowledgement unavailable"))
-                    }
+                if (pendingCalls[id] === call) {
+                    call.timeoutJob =
+                        wsScope.launch {
+                            delay(timeoutMs)
+                            resolvePending(id, null, JsonRpcError(-1, "Write acknowledgement unavailable"), call)
+                        }
+                }
             }
-            ScopedRpcSubmission(id, accepted, response)
+            ScopedRpcSubmission(id, accepted, response, call.terminalProof.takeIf { expectation != null }) {
+                synchronized(outboundLock) {
+                    if (pendingCalls.remove(id, call)) {
+                        call.timeoutJob?.cancel()
+                        pendingPromptSubmits.remove(id)
+                    }
+                }
+            }
         }
 
     private val groupAccesses = mutableSetOf<GroupSessionAccess>()
@@ -1200,33 +1406,51 @@ object HermesWsClient {
         id: String,
         result: Any?,
         error: JsonRpcError?,
-    ) {
-        val call = pendingCalls.remove(id) ?: return
-        removeQueuedMessage(id)
-        call.timeoutJob?.cancel()
-        if (error == null) {
-            call.groupCreate?.let { (access, member) ->
-                synchronized(outboundLock) {
-                    if (isCurrentGroupAccess(access)) {
-                        val raw = if (result is kotlinx.serialization.json.JsonElement) result.toAny() else result
-                        val values = raw as? Map<*, *>
-                        val payload = values?.get("result") as? Map<*, *> ?: values
-                        val runtimeId = payload?.get("session_id") as? String
-                        if (!runtimeId.isNullOrBlank()) {
-                            access.acknowledgedCreates[member] =
-                                runtimeId to (payload?.get("stored_session_id") as? String)
+        expectedCall: PendingCall? = null,
+    ): Unit =
+        synchronized(outboundLock) {
+            val call = pendingCalls[id] ?: return
+            if (expectedCall != null && call !== expectedCall) return
+            if (error == null &&
+                call.method in setOf(WsMethods.SESSION_RESUME, "session.activate", WsMethods.SESSION_EVENTS_SINCE)
+            ) {
+                val raw = if (result is JsonElement) result.toAny() else result
+                val payload = raw as? Map<*, *>
+                val runtime =
+                    if (call.method == WsMethods.SESSION_EVENTS_SINCE) {
+                        call.expectedRuntimeId
+                    } else {
+                        (payload?.get("session_id") as? String)?.takeIf(String::isNotBlank)
+                    }
+                call.snapshotScope?.let { restoreVaultPrompts(it, payload, runtime, call.snapshotStartedAt) }
+            }
+            if (!pendingCalls.remove(id, call)) return
+            cacheTerminalCapability(call, result, error)
+            removeQueuedMessage(id)
+            call.timeoutJob?.cancel()
+            if (error == null) {
+                call.groupCreate?.let { (access, member) ->
+                    synchronized(outboundLock) {
+                        if (isCurrentGroupAccess(access)) {
+                            val raw = if (result is kotlinx.serialization.json.JsonElement) result.toAny() else result
+                            val values = raw as? Map<*, *>
+                            val payload = values?.get("result") as? Map<*, *> ?: values
+                            val runtimeId = payload?.get("session_id") as? String
+                            if (!runtimeId.isNullOrBlank()) {
+                                access.acknowledgedCreates[member] =
+                                    runtimeId to (payload?.get("stored_session_id") as? String)
+                            }
                         }
                     }
                 }
             }
+            if (error != null) {
+                call.deferred.completeExceptionally(HermesRpcException(error.message, error.code))
+            } else {
+                call.deferred.complete(result)
+            }
+            disconnectIfIdleInBackground()
         }
-        if (error != null) {
-            call.deferred.completeExceptionally(HermesRpcException(error.message, error.code))
-        } else {
-            call.deferred.complete(result)
-        }
-        disconnectIfIdleInBackground()
-    }
 
     /**
      * Fail and clear every in-flight [request]. Called on disconnect /
@@ -1237,18 +1461,20 @@ object HermesWsClient {
     fun rejectAllPending(
         error: HermesRpcException =
             HermesRpcException("Connection lost — request cancelled"),
-    ) {
-        synchronized(outboundLock) { groupAccesses.clear() }
-        if (pendingCalls.isEmpty()) return
-        val snapshot = pendingCalls.toList()
-        pendingCalls.clear()
-        for ((id, call) in snapshot) {
-            removeQueuedMessage(id)
-            Log.w(TAG, "Rejecting pending request on disconnect")
-            call.timeoutJob?.cancel()
-            call.deferred.completeExceptionally(error)
+    ): Unit =
+        synchronized(outboundLock) {
+            groupAccesses.clear()
+            terminalCapability = null
+            if (pendingCalls.isEmpty()) return
+            val snapshot = pendingCalls.toList()
+            for ((id, call) in snapshot) {
+                if (!pendingCalls.remove(id, call)) continue
+                removeQueuedMessage(id)
+                Log.w(TAG, "Rejecting pending request on disconnect")
+                call.timeoutJob?.cancel()
+                call.deferred.completeExceptionally(error)
+            }
         }
-    }
 
     // ── Send helpers ─────────────────────────────────────────────────────
 
@@ -1542,7 +1768,7 @@ object HermesWsClient {
                                 emitScoped(scope, finalEvent)
                             }
                         }
-                        restoreOpenPrompts(scope, resultMap)
+                        // open_requests was admitted before PendingCall metadata was removed.
                     }
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
@@ -1578,6 +1804,7 @@ object HermesWsClient {
         runtimeId: String,
         snapshot: Map<*, *>,
     ) {
+        if (runtimeId.isBlank() || (snapshot.containsKey("session_id") && snapshot["session_id"] != runtimeId)) return
         val sequence = (snapshot["last_sequence"] as? Number)?.toInt()?.takeIf { it >= 0 } ?: return
         val epoch = (snapshot["replay_epoch"] as? String)?.takeIf(String::isNotBlank) ?: return
         synchronized(outboundLock) {
@@ -1755,6 +1982,7 @@ object HermesWsClient {
         private val scope: ConnectionScope,
     ) : WebSocketListener() {
         private var advertisedServerRequests = false
+        private var requestedTerminalCapabilities = false
 
         private fun isCurrent(): Boolean = isCurrentGeneration(generation)
 
@@ -1845,6 +2073,13 @@ object HermesWsClient {
                                     ),
                                 ),
                             )
+                    }
+                    if (!requestedTerminalCapabilities && rpc.method == "event" &&
+                        rpc.params?.get("type") == "gateway.ready".toJsonElement() && matchesCurrentScope(scope)
+                    ) {
+                        requestedTerminalCapabilities = true
+                        // Existing read-only method, once per accepted socket; no submit-time polling/reconnect.
+                        requestFixedScope(scope, "gateway.capabilities", emptyMap(), 5_000L)
                     }
                     // Resolve pending request() calls with the RAW JsonElement from
                     // rpc.result, BEFORE EventParser.parse() converts it via toAny().

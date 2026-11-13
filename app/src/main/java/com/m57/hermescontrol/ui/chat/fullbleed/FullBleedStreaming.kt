@@ -80,9 +80,11 @@ internal fun StreamingFullBleedWithTypingEffect(
         } else {
             visibleWordCount.coerceIn(0, words.size)
         }
+    // Reasoning-only streams have blank content; ThinkingIndicator already
+    // signals progress there, so a lone caret would read as a stray glyph.
     val displayText =
         words.take(visibleCount.coerceAtLeast(1)).joinToString(" ") +
-            if (caretVisible && currentIsStreaming.value) "▍" else ""
+            if (caretVisible && currentIsStreaming.value && streaming.content.isNotBlank()) "▍" else ""
 
     FullBleedAgentMessage(
         message = streaming.copy(content = displayText),
@@ -91,5 +93,8 @@ internal fun StreamingFullBleedWithTypingEffect(
         isDarkTheme = isDark,
         searchQuery = "",
         isCurrentMatch = false,
+        // The response footer comes from FullBleedChatList once the whole reply ends.
+        showTimestamp = false,
+        showFooter = false,
     )
 }

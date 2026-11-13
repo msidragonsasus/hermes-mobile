@@ -72,6 +72,7 @@ class ChatMediaDelegate(
                         if (msg.id == messageId) {
                             msg.copy(
                                 content = stripped,
+                                sourceBody = current.bodyForStorage(),
                                 attachments =
                                     (msg.attachments.orEmpty() + newAttachments)
                                         .distinctBy { it.gatewayUrl ?: it.uri },
@@ -282,5 +283,7 @@ internal fun sameMessages(
             a.id == b.id &&
                 a.role == b.role &&
                 a.content == b.content &&
-                a.reasoningText == b.reasoningText
+                a.reasoningText == b.reasoningText &&
+                a.displayKind == b.displayKind &&
+                a.hasServerDisplayProjection == b.hasServerDisplayProjection
         }

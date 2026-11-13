@@ -131,36 +131,12 @@ internal fun SettingsConnectionPage(
 internal fun SettingsAboutPage(
     onBack: () -> Unit,
     viewModel: AppUpdateViewModel =
-        viewModel {
-            val app =
-                this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]
-                    ?: error("Application not available")
-            // Explicit factory lambda: the default AndroidViewModelFactory
-            // resolves ctors via reflection, which cannot see Kotlin
-            // default-arg synthetic constructors — opening About crashed with
-            // NoSuchMethodException AppUpdateViewModel.<init>(Application).
-            AppUpdateViewModel(app)
-        },
+        com.m57.hermescontrol.ui.common
+            .sharedAppUpdateViewModel(),
 ) {
     val updateState by viewModel.state.collectAsStateWithLifecycle()
     val updateSourceInfo by viewModel.sourceInfo.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
-        val observer =
-            androidx.lifecycle.LifecycleEventObserver { _, event ->
-                if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                    if (updateState is com.m57.hermescontrol.data.update.AppUpdateState.NeedsUnknownSourcesPermission) {
-                        viewModel.resumeInstallAfterPermission()
-                    }
-                }
-            }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
     HermesScaffold(
         title = { Text(stringResource(R.string.settings_sec_about)) },
         navigationIcon = NavIcon.Back(onBack),

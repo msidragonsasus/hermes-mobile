@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.map
 
 class FakeOutgoingDraftStore : OutgoingDraftStore {
     val drafts = MutableStateFlow<List<OutgoingDraft>>(emptyList())
+    var beforeDelete: (suspend () -> Unit)? = null
     var failSave = false
 
     override fun observe(scope: ConnectionScope) =
@@ -28,6 +29,7 @@ class FakeOutgoingDraftStore : OutgoingDraftStore {
         scope: ConnectionScope,
         id: String,
     ) {
+        beforeDelete?.invoke()
         drafts.value = drafts.value.filterNot { it.id == id && it.targetKey == scope.draftTargetKey() }
     }
 }

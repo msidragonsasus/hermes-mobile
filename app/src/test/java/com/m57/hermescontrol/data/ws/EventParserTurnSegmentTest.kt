@@ -20,6 +20,21 @@ class EventParserTurnSegmentTest {
         )
 
     @Test
+    fun persistedTurnEvidenceIsNotDroppedOrConfusedWithTheRpcId() {
+        val withReceipt =
+            parse(
+                """{"type":"message.complete","session_id":"s1","payload":{"text":"done","persisted_turn":{"row_ids":[101,102],"complete":false,"user_row_id":101,"submission_id":"server-submission"}}}""",
+            )
+        val without = parse("""{"type":"message.complete","session_id":"s1","payload":{"text":"done"}}""")
+        org.junit.Assert.assertNotEquals(without, withReceipt)
+        val malformed =
+            parse(
+                """{"type":"message.complete","session_id":"s1","payload":{"text":"done","persisted_turn":{"row_ids":[101,101],"complete":true}}}""",
+            )
+        assertEquals(without, malformed)
+    }
+
+    @Test
     fun nullDeltaTextIsASegmentBoundaryNotAnEmptyToken() {
         assertEquals(
             WsEvent.MessageSegmentEnd("s1"),

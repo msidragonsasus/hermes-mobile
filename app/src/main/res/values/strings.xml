@@ -1118,6 +1118,8 @@
     <string name="update_dialog_action_install">Download &amp; Install</string>
     <string name="update_dialog_action_later">Remind Me Later</string>
     <string name="update_dialog_action_skip">Skip this version</string>
+    <string name="home_update_action">Update</string>
+    <string name="home_update_content_desc">Update to v%1$s</string>
 
     <!-- Processes Screen (issue #532) -->
     <string name="processes_empty_title">No running processes</string>
@@ -1186,7 +1188,8 @@
     <string name="channels_search_placeholder">Search channels…</string>
     <string name="chat_attach_file">Attach file</string>
     <string name="chat_save_attachment">Save %1$s</string>
-    <string name="chat_switch_model_title">Switch model (this chat)</string>
+    <string name="chat_switch_model_title">Switch model</string>
+    <string name="chat_switch_model_scope">Applies to this chat only</string>
     <string name="config_clear_value">Clear value</string>
     <string name="config_invalid_json">Invalid JSON</string>
     <string name="config_no_matches">No matches</string>

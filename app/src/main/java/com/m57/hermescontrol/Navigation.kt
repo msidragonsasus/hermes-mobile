@@ -443,7 +443,11 @@ fun MainNavigation(sessionId: String? = null) {
     val shellMenu: (@Composable () -> Unit)? = if (hasToken && shell?.isAtRoot == true) ({ ShellMenu() }) else null
     val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val managementScope = hasToken && shell?.isInManagement == true
+    val appUpdateViewModel =
+        com.m57.hermescontrol.ui.common
+            .sharedAppUpdateViewModel()
     CompositionLocalProvider(
+        com.m57.hermescontrol.ui.common.LocalAppUpdateViewModel provides appUpdateViewModel,
         LocalDrawerGestureController provides gestureController,
         LocalShellMenu provides shellMenu,
         LocalManagementScope provides managementScope,
@@ -567,6 +571,10 @@ fun MainNavigation(sessionId: String? = null) {
                     }
                 }
             }
+        }
+        if (hasToken) {
+            com.m57.hermescontrol.ui.common
+                .AppUpdateHost(appUpdateViewModel)
         }
     }
 }

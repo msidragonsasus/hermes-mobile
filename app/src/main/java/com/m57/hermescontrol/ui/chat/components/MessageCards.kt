@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -38,14 +39,18 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.outlined.CloudOff
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Lightbulb
+import androidx.compose.material.icons.outlined.QuestionAnswer
+import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -66,10 +71,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -80,6 +91,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.domain.hermes.AttentionStatus
 import com.m57.hermescontrol.theme.CodeComment
 import com.m57.hermescontrol.theme.CodeKeyword
 import com.m57.hermescontrol.theme.CodeNumber
@@ -89,6 +101,7 @@ import com.m57.hermescontrol.theme.CodeTerminalBg
 import com.m57.hermescontrol.theme.CodeTerminalBorder
 import com.m57.hermescontrol.theme.CodeTerminalMuted
 import com.m57.hermescontrol.theme.CodeTerminalText
+import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.ui.chat.ClarifyUi
 import com.m57.hermescontrol.ui.chat.SubagentIndicator
 import kotlinx.coroutines.delay
@@ -436,8 +449,11 @@ private fun copyToClipboard(
 // ── ClarifyBubble ─────────────────────────────────────────────────────────
 
 /**
- * Centered dashed-border bubble showing a clarify question (or batch of questions) with
- * selectable option chips, multi-select toggles, open-ended input, and a dismiss button.
+ * Clarification request from Hermes as one soft surface: question first, then choices and a
+ * rounded answer field, one inverse conversation pill to send and a quiet decline. Status is an
+ * icon plus text; locked, submitted or unconfirmed content stays readable as plain text instead
+ * of a faded editor. Nothing here resends after an unconfirmed submission. Technical IDs sit
+ * behind the collapsed 詳細 row.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -450,6 +466,7 @@ fun ClarifyBubble(
 ) {
     val questions = clarifyRequest.resolvedQuestions
     val isBatch = questions.size > 1
+    val scheme = MaterialTheme.colorScheme
 
     var selectedChoicesByQid by remember(clarifyRequest.ref, clarifyRequest.clarifyId) {
         mutableStateOf<Map<String, Set<String>>>(emptyMap())
@@ -457,164 +474,182 @@ fun ClarifyBubble(
     var customTextByQid by remember(clarifyRequest.ref, clarifyRequest.clarifyId) {
         mutableStateOf<Map<String, String>>(emptyMap())
     }
+    var detailsExpanded by remember(clarifyRequest.ref, clarifyRequest.clarifyId) {
+        mutableStateOf(false)
+    }
+    val anyAnswerable = questions.any { clarifyRequest.canRespond(it.qid) }
 
     Surface(
         modifier =
             modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 4.dp)
+                .padding(horizontal = 12.dp, vertical = 4.dp)
                 .testTag("clarify_bubble"),
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        border =
-            BorderStroke(
-                width = 1.dp,
-                color = MaterialTheme.colorScheme.outline,
-            ),
+        shape = MaterialTheme.shapes.medium,
+        color = scheme.surfaceContainerLow,
     ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text("確認への回答", style = MaterialTheme.typography.titleSmall)
-            Text("期限：不明", style = MaterialTheme.typography.labelSmall)
-            clarifyRequest.ref?.let { ref ->
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.semantics(mergeDescendants = true) { heading() },
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.QuestionAnswer,
+                    contentDescription = null,
+                    tint = scheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(8.dp))
                 Text(
-                    "依頼元：${ref.session.runtimeId}\n依頼ID：${ref.requestId}",
-                    style = MaterialTheme.typography.labelSmall,
+                    text = "Hermesからの質問",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = scheme.onSurfaceVariant,
                 )
             }
-            questions.forEachIndexed { index, q ->
-                val enabled = clarifyRequest.canRespond(q.qid)
-                val status = clarifyRequest.questionStates[q.qid]
-                Text(
-                    when (status) {
-                        com.m57.hermescontrol.domain.hermes.AttentionStatus.SUBMITTING -> "送信中・確認待ち"
-                        com.m57.hermescontrol.domain.hermes.AttentionStatus.CONFIRMED -> "回答を受け付けました"
-                        com.m57.hermescontrol.domain.hermes.AttentionStatus.EXPIRED -> "期限切れ"
-                        com.m57.hermescontrol.domain.hermes.AttentionStatus.UNKNOWN -> "結果不明・再送しません"
-                        else -> if (enabled) "回答待ち" else "保留・依頼元への接続を確認してください"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                )
-                if (index > 0) {
-                    HorizontalDivider(
-                        modifier = Modifier.padding(vertical = 12.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                    )
-                }
 
-                if (isBatch) {
-                    Text(
-                        text = "${index + 1}. ${q.question}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.fillMaxWidth(),
+            questions.forEachIndexed { index, q ->
+                val answerable = clarifyRequest.canRespond(q.qid)
+                val status = clarifyRequest.questionStates[q.qid]
+                val hasLock =
+                    clarifyRequest.questionLocks.containsKey(q.qid) || clarifyRequest.lockedAnswers.containsKey(q.qid)
+
+                Spacer(Modifier.height(if (index == 0) 12.dp else 24.dp))
+                Text(
+                    text = if (isBatch) "${index + 1}. ${q.question}" else q.question,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    color = scheme.onSurface,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                if (answerable) {
+                    if (q.choices.isNotEmpty()) {
+                        val customBlank = customTextByQid[q.qid].isNullOrBlank()
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text =
+                                when {
+                                    q.multiSelect -> "複数選択できます。選んだら送信してください"
+                                    !isBatch && customBlank -> "選ぶとその回答をすぐに送信します"
+                                    !isBatch -> "選んだ回答と入力した内容をまとめて送信します"
+                                    else -> "1つ選んでください"
+                                },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = scheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            val selectedSet = selectedChoicesByQid[q.qid] ?: emptySet()
+                            q.choices.forEach { choice ->
+                                val isSelected = selectedSet.contains(choice)
+                                FilterChip(
+                                    selected = isSelected,
+                                    modifier = Modifier.heightIn(min = 48.dp),
+                                    onClick = {
+                                        if (q.multiSelect) {
+                                            val updated = if (isSelected) selectedSet - choice else selectedSet + choice
+                                            selectedChoicesByQid = selectedChoicesByQid + (q.qid to updated)
+                                        } else {
+                                            if (!isBatch && customTextByQid[q.qid].isNullOrBlank()) {
+                                                // Fast 1-tap respond for lone single-select question when no custom text is entered
+                                                selectedChoicesByQid = selectedChoicesByQid + (q.qid to setOf(choice))
+                                                onRespondSingle(choice)
+                                            } else {
+                                                val updated = if (isSelected) emptySet() else setOf(choice)
+                                                selectedChoicesByQid = selectedChoicesByQid + (q.qid to updated)
+                                            }
+                                        }
+                                    },
+                                    label = { Text(choice) },
+                                    leadingIcon =
+                                        if (isSelected) {
+                                            {
+                                                Icon(
+                                                    imageVector = Icons.Default.Check,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(16.dp),
+                                                )
+                                            }
+                                        } else {
+                                            null
+                                        },
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = customTextByQid[q.qid].orEmpty(),
+                        onValueChange = { newText ->
+                            customTextByQid = customTextByQid + (q.qid to newText)
+                        },
+                        label = {
+                            Text(
+                                if (q.choices.isEmpty()) {
+                                    stringResource(R.string.message_your_response)
+                                } else {
+                                    "その他の回答（任意）"
+                                },
+                            )
+                        },
+                        textStyle = MaterialTheme.typography.bodyLarge,
+                        shape = MaterialTheme.shapes.medium,
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .testTag("clarify_input_${q.qid}"),
+                        minLines = 2,
                     )
                 } else {
-                    Text(
-                        text = q.question,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
+                    clarifyStatusOf(
+                        status = status,
+                        locked = hasLock,
+                        responseEnabled = clarifyRequest.responseEnabled,
+                    ).let { ClarifyStatusLine(it) }
 
-                val lockedAnswer = clarifyRequest.lockedAnswers[q.qid]
-                if (lockedAnswer != null) {
-                    Text(
-                        lockedAnswer,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    return@forEachIndexed
-                }
+                    val lockedAnswer =
+                        clarifyRequest.lockedAnswers[q.qid] ?: clarifyRequest.questionLocks[q.qid]?.answer
+                    val draft = composeClarifyAnswer(selectedChoicesByQid[q.qid], customTextByQid[q.qid])
+                    when {
+                        hasLock && lockedAnswer == null -> {
+                            ClarifyReadOnlyAnswer(label = null, text = "回答を辞退しました")
+                        }
 
-                if (q.multiSelect) {
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = "複数選択できます",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-
-                if (q.choices.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        q.choices.forEach { choice ->
-                            val selectedSet = selectedChoicesByQid[q.qid] ?: emptySet()
-                            val isSelected = selectedSet.contains(choice)
-                            FilterChip(
-                                selected = isSelected,
-                                enabled = enabled,
-                                modifier = Modifier.heightIn(min = 48.dp),
-                                onClick = {
-                                    if (q.multiSelect) {
-                                        val updated = if (isSelected) selectedSet - choice else selectedSet + choice
-                                        selectedChoicesByQid = selectedChoicesByQid + (q.qid to updated)
+                        hasLock -> {
+                            ClarifyReadOnlyAnswer(
+                                label =
+                                    if (status ==
+                                        AttentionStatus.CONFIRMED
+                                    ) {
+                                        "送信した回答"
                                     } else {
-                                        if (!isBatch && customTextByQid[q.qid].isNullOrBlank()) {
-                                            // Fast 1-tap respond for lone single-select question when no custom text is entered
-                                            selectedChoicesByQid = selectedChoicesByQid + (q.qid to setOf(choice))
-                                            onRespondSingle(choice)
-                                        } else {
-                                            val updated = if (isSelected) emptySet() else setOf(choice)
-                                            selectedChoicesByQid = selectedChoicesByQid + (q.qid to updated)
-                                        }
-                                    }
-                                },
-                                label = { Text(choice) },
-                                leadingIcon =
-                                    if (isSelected) {
-                                        {
-                                            Icon(
-                                                imageVector = Icons.Default.Check,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(16.dp),
-                                            )
-                                        }
-                                    } else {
-                                        null
+                                        CLARIFY_UNCONFIRMED_LABEL
                                     },
+                                text = lockedAnswer.orEmpty(),
+                            )
+                        }
+
+                        draft.isNotBlank() -> {
+                            ClarifyReadOnlyAnswer(
+                                label =
+                                    if (status == AttentionStatus.SUBMITTING || status == AttentionStatus.UNKNOWN) {
+                                        CLARIFY_UNCONFIRMED_LABEL
+                                    } else {
+                                        "この端末で入力した内容"
+                                    },
+                                text = draft,
                             )
                         }
                     }
                 }
-
-                Spacer(Modifier.height(8.dp))
-                val typed = customTextByQid[q.qid].orEmpty()
-                OutlinedTextField(
-                    value = typed,
-                    enabled = enabled,
-                    onValueChange = { newText ->
-                        customTextByQid = customTextByQid + (q.qid to newText)
-                    },
-                    label = {
-                        Text(
-                            if (q.choices.isEmpty()) {
-                                stringResource(R.string.message_your_response)
-                            } else {
-                                "その他の回答（任意）"
-                            },
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 2,
-                )
             }
 
-            Spacer(Modifier.height(12.dp))
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-            ) {
+            if (anyAnswerable) {
                 val hasAnyInput =
                     questions.any { q ->
                         clarifyRequest.canRespond(q.qid) &&
@@ -623,72 +658,258 @@ fun ClarifyBubble(
                                     !customTextByQid[q.qid].isNullOrBlank()
                             )
                     }
-
-                FilledTonalButton(
-                    onClick = {
-                        if (isBatch) {
-                            val answers =
-                                questions.filter { clarifyRequest.canRespond(it.qid) }.associate { q ->
-                                    val selectedList = selectedChoicesByQid[q.qid]?.toList().orEmpty()
-                                    val custom = customTextByQid[q.qid]?.trim().orEmpty()
-                                    val finalAns =
-                                        when {
-                                            selectedList.isNotEmpty() && custom.isNotEmpty() -> {
-                                                (selectedList + custom).joinToString(", ")
-                                            }
-
-                                            selectedList.isNotEmpty() -> {
-                                                selectedList.joinToString(", ")
-                                            }
-
-                                            else -> {
-                                                custom
-                                            }
-                                        }
-                                    q.qid to finalAns
+                Spacer(Modifier.height(16.dp))
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.heightIn(min = 48.dp),
+                        shapes = ButtonDefaults.shapes(),
+                        colors = ButtonDefaults.textButtonColors(contentColor = scheme.onSurfaceVariant),
+                    ) {
+                        Text("回答を辞退")
+                    }
+                    Button(
+                        onClick = {
+                            if (isBatch) {
+                                val answers =
+                                    questions.filter { clarifyRequest.canRespond(it.qid) }.associate { q ->
+                                        q.qid to
+                                            composeClarifyAnswer(selectedChoicesByQid[q.qid], customTextByQid[q.qid])
+                                    }
+                                onRespondBatch(answers.filterValues { it.isNotBlank() })
+                            } else {
+                                val q = questions.first()
+                                val finalAns = composeClarifyAnswer(selectedChoicesByQid[q.qid], customTextByQid[q.qid])
+                                if (finalAns.isNotBlank()) {
+                                    onRespondSingle(finalAns)
                                 }
-                            onRespondBatch(answers.filterValues { it.isNotBlank() })
-                        } else {
-                            val q = questions.first()
-                            val selectedList = selectedChoicesByQid[q.qid]?.toList().orEmpty()
-                            val custom = customTextByQid[q.qid]?.trim().orEmpty()
-                            val finalAns =
-                                when {
-                                    selectedList.isNotEmpty() && custom.isNotEmpty() -> {
-                                        (selectedList + custom).joinToString(", ")
-                                    }
-
-                                    selectedList.isNotEmpty() -> {
-                                        selectedList.joinToString(", ")
-                                    }
-
-                                    else -> {
-                                        custom
-                                    }
-                                }
-                            if (finalAns.isNotBlank()) {
-                                onRespondSingle(finalAns)
                             }
-                        }
-                    },
-                    enabled = hasAnyInput,
-                    modifier = Modifier.heightIn(min = 48.dp),
-                    shapes = ButtonDefaults.shapes(),
-                ) {
-                    Text(if (isBatch) "入力した回答を送信" else "回答を送信")
+                        },
+                        enabled = hasAnyInput,
+                        shape = CircleShape,
+                        colors =
+                            ButtonDefaults.buttonColors(
+                                containerColor = scheme.onSurface,
+                                contentColor = scheme.surface,
+                                disabledContainerColor = scheme.onSurface.copy(alpha = .12f),
+                                disabledContentColor = scheme.onSurface.copy(alpha = .38f),
+                            ),
+                        contentPadding = PaddingValues(horizontal = 20.dp),
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) {
+                        Text(
+                            text = if (isBatch) "入力した回答を送信" else "回答を送信",
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
                 }
-                TextButton(
-                    onClick = onDismiss,
-                    enabled = questions.any { clarifyRequest.canRespond(it.qid) },
-                    modifier = Modifier.heightIn(min = 48.dp),
-                    shapes = ButtonDefaults.shapes(),
+            }
+
+            Spacer(Modifier.height(8.dp))
+            TextButton(
+                onClick = { detailsExpanded = !detailsExpanded },
+                modifier =
+                    Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("clarify_details")
+                        .semantics { stateDescription = if (detailsExpanded) "表示中" else "非表示" },
+                shapes = ButtonDefaults.shapes(),
+                colors = ButtonDefaults.textButtonColors(contentColor = scheme.onSurfaceVariant),
+                contentPadding = PaddingValues(horizontal = 8.dp),
+            ) {
+                Text("詳細", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    imageVector = if (detailsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            AnimatedVisibility(visible = detailsExpanded) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("回答を辞退")
+                    clarifyDetailRows(clarifyRequest, questions.map { it.qid }).forEach { (label, value) ->
+                        Column(modifier = Modifier.semantics(mergeDescendants = true) {}) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = scheme.onSurfaceVariant,
+                            )
+                            Text(
+                                text = value,
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                color = scheme.onSurface,
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
+
+private const val CLARIFY_UNCONFIRMED_LABEL = "送信内容（受付未確認）"
+
+/** Selected choices plus trimmed custom text, comma-joined; blank when nothing was entered. */
+private fun composeClarifyAnswer(
+    selected: Set<String>?,
+    custom: String?,
+): String {
+    val selectedList = selected?.toList().orEmpty()
+    val trimmed = custom?.trim().orEmpty()
+    return when {
+        selectedList.isNotEmpty() && trimmed.isNotEmpty() -> (selectedList + trimmed).joinToString(", ")
+        selectedList.isNotEmpty() -> selectedList.joinToString(", ")
+        else -> trimmed
+    }
+}
+
+private class ClarifyStatus(
+    val text: String,
+    val tint: Color,
+    val icon: ImageVector? = null,
+    val note: String? = null,
+)
+
+/** Status for a question that cannot be answered now. Never claims delivery without a server ACK. */
+@Composable
+private fun clarifyStatusOf(
+    status: AttentionStatus?,
+    locked: Boolean,
+    responseEnabled: Boolean,
+): ClarifyStatus {
+    val statusColors = LocalHermesStatusColors.current
+    val scheme = MaterialTheme.colorScheme
+    return when {
+        status == AttentionStatus.CONFIRMED -> {
+            ClarifyStatus("回答を受け付けました", statusColors.success, Icons.Default.Check)
+        }
+
+        status == AttentionStatus.SUBMITTING -> {
+            ClarifyStatus("送信中・受付確認待ち", statusColors.info)
+        }
+
+        status == AttentionStatus.EXPIRED -> {
+            ClarifyStatus("期限切れのため回答できません", scheme.onSurfaceVariant, Icons.Outlined.Schedule)
+        }
+
+        status == AttentionStatus.UNKNOWN || locked -> {
+            ClarifyStatus(
+                text = "受付を確認できていません",
+                tint = statusColors.warning,
+                icon = Icons.Outlined.ErrorOutline,
+                note = "サーバーが受け取ったかはまだ分かりません。二重に回答しないよう、このアプリからは再送しません。",
+            )
+        }
+
+        !responseEnabled -> {
+            ClarifyStatus("接続を確認できないため、いまは回答できません", scheme.onSurfaceVariant, Icons.Outlined.CloudOff)
+        }
+
+        else -> {
+            ClarifyStatus("この質問にはいま回答できません", scheme.onSurfaceVariant, Icons.Outlined.Info)
+        }
+    }
+}
+
+@Composable
+private fun ClarifyStatusLine(status: ClarifyStatus) {
+    Row(
+        verticalAlignment = Alignment.Top,
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp)
+                .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+    ) {
+        Box(modifier = Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+            if (status.icon != null) {
+                Icon(
+                    imageVector = status.icon,
+                    contentDescription = null,
+                    tint = status.tint,
+                    modifier = Modifier.size(20.dp),
+                )
+            } else {
+                CircularProgressIndicator(
+                    color = status.tint,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        Column {
+            Text(
+                text = status.text,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            status.note?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** Submitted, locked or local answer as plain readable text, not a disabled editor. */
+@Composable
+private fun ClarifyReadOnlyAnswer(
+    label: String?,
+    text: String,
+) {
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp)
+                .semantics(mergeDescendants = true) {},
+    ) {
+        label?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(4.dp))
+        }
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+/** Factual identifiers for diagnostics only; no server identity, process or credential fields. */
+private fun clarifyDetailRows(
+    clarifyRequest: ClarifyUi,
+    qids: List<String>,
+): List<Pair<String, String>> =
+    buildList {
+        clarifyRequest.ref?.let { ref ->
+            add("依頼ID" to ref.requestId)
+            ref.serverRequestId?.let { add("サーバー依頼ID" to it) }
+        }
+        clarifyRequest.clarifyId?.let { add("確認ID" to it) }
+        add("質問ID" to qids.joinToString(", "))
+        clarifyRequest.ref?.let { ref ->
+            add("実行ID" to ref.session.runtimeId)
+            ref.scope.connectionProfileId?.let { add("接続プロファイルID" to it) }
+            ref.scope.serverProfileId?.let { add("サーバープロファイルID" to it) }
+        }
+    }
 
 /**
  * Backward-compatible overload for legacy callers and unit tests.

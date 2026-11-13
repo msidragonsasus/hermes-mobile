@@ -115,8 +115,8 @@ open class AppUpdateChecker(
                     .url("https://api.github.com/repos/Hy4ri/hermes-mobile/releases/latest")
                     .header("Accept", "application/vnd.github+json")
                     .build()
-            upstreamClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@use null
+            upstreamClient.newCall(request).readUpdateMetadata { response ->
+                if (!response.isSuccessful) return@readUpdateMetadata null
                 val body = response.body.string()
                 parseUpdateInfo(body)
             }
@@ -133,23 +133,21 @@ open class AppUpdateChecker(
                     .header("Accept", "application/json")
                     .build()
             val call = serverClientFactory(binding).newCall(request)
-            val executed =
-                try {
-                    call.execute()
-                } catch (e: BoundRequestRefusedException) {
-                    throw UpdateException(UpdateFailure.CONNECTION_CHANGED)
+            try {
+                call.readUpdateMetadata { response ->
+                    if (response.code in 300..399) throw UpdateException(UpdateFailure.REDIRECT_REFUSED)
+                    when (response.code) {
+                        401, 403 -> throw UpdateException(UpdateFailure.LOGIN_REQUIRED)
+                        404 -> throw UpdateException(UpdateFailure.SERVER_UPDATES_MISSING)
+                        503 -> throw UpdateException(UpdateFailure.SERVER_UPDATES_DISABLED)
+                    }
+                    if (!response.isSuccessful) throw UpdateException(UpdateFailure.CHECK_FAILED)
+                    val source = response.body.source()
+                    if (source.request(MAX_METADATA_BYTES + 1)) throw UpdateException(UpdateFailure.INVALID_METADATA)
+                    parseServerLatest(source.readUtf8())
                 }
-            executed.use { response ->
-                if (response.code in 300..399) throw UpdateException(UpdateFailure.REDIRECT_REFUSED)
-                when (response.code) {
-                    401, 403 -> throw UpdateException(UpdateFailure.LOGIN_REQUIRED)
-                    404 -> throw UpdateException(UpdateFailure.SERVER_UPDATES_MISSING)
-                    503 -> throw UpdateException(UpdateFailure.SERVER_UPDATES_DISABLED)
-                }
-                if (!response.isSuccessful) throw UpdateException(UpdateFailure.CHECK_FAILED)
-                val source = response.body.source()
-                if (source.request(MAX_METADATA_BYTES + 1)) throw UpdateException(UpdateFailure.INVALID_METADATA)
-                parseServerLatest(source.readUtf8())
+            } catch (e: BoundRequestRefusedException) {
+                throw UpdateException(UpdateFailure.CONNECTION_CHANGED)
             }
         }
 

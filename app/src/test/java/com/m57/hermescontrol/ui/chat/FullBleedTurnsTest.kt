@@ -2,6 +2,7 @@ package com.m57.hermescontrol.ui.chat
 
 import com.m57.hermescontrol.ui.chat.fullbleed.AgentEntry
 import com.m57.hermescontrol.ui.chat.fullbleed.ChatTurn
+import com.m57.hermescontrol.ui.chat.fullbleed.ReplyFooter
 import com.m57.hermescontrol.ui.chat.fullbleed.currentMatchMessageId
 import com.m57.hermescontrol.ui.chat.fullbleed.groupIntoTurns
 import com.m57.hermescontrol.ui.chat.fullbleed.groupIntoTurnsWithStreaming
@@ -241,6 +242,95 @@ class FullBleedTurnsTest {
         val map = messageIdToLazyIndex(groupIntoTurns(listOf(u1, u2)), leadingItems = 1)
         assertEquals(1, map["u1"])
         assertEquals(2, map["u2"])
+    }
+
+    // ── Footer row offsets ────────────────────────────────────────────────
+
+    @Test
+    fun `folded activity with history footer and pagination offsets next reply`() {
+        val a1 = msg("a1", MessageRole.ASSISTANT).copy(reasoningText = "reasoning")
+        val t = msg("t", MessageRole.TOOL)
+        val a2 = msg("a2", MessageRole.ASSISTANT)
+        val u = msg("u", MessageRole.USER)
+        val b = msg("b", MessageRole.ASSISTANT)
+        val turns = groupIntoTurns(listOf(a1, t, a2, u, b))
+        val map = messageIdToLazyIndex(turns, leadingItems = 1, replyFooters = listOf(ReplyFooter("a", 1L), null, null))
+        // spinner 0, activity 1, a1 2, a2 3, historical footer 4, user 5, answer 6.
+        assertEquals(mapOf("a1" to 2, "a2" to 3, "u" to 5, "b" to 6), map)
+    }
+
+    @Test
+    fun `expanded activity counts all reasoning and tool rows before historical footer`() {
+        val a1 = msg("a1", MessageRole.ASSISTANT).copy(reasoningText = "first reasoning")
+        val a2 = msg("a2", MessageRole.ASSISTANT).copy(reasoningText = "second reasoning")
+        val tool = msg("tool", MessageRole.TOOL)
+        val system = msg("system", MessageRole.SYSTEM)
+        val u = msg("u", MessageRole.USER)
+        val b = msg("b", MessageRole.ASSISTANT)
+        val turns = groupIntoTurns(listOf(a1, tool, system, a2, u, b))
+        val map =
+            messageIdToLazyIndex(
+                turns,
+                leadingItems = 1,
+                expandedTurns = setOf("a1"),
+                replyFooters = listOf(ReplyFooter("a", 1L), null, ReplyFooter("b", 2L)),
+            )
+        // spinner 0; activity 1; reasoning 2,3; a1 4; tool 5; system 6; a2 7;
+        // footer 8; user 9; b 10; final footer 11 (not a searchable message).
+        assertEquals(mapOf("a1" to 4, "system" to 6, "a2" to 7, "u" to 9, "b" to 10), map)
+        assertNull(map["tool"])
+    }
+
+    @Test
+    fun `multiple preceding footer rows accumulate without shifting their own answer`() {
+        val turns =
+            groupIntoTurns(
+                listOf(
+                    msg("a", MessageRole.ASSISTANT),
+                    msg("u1", MessageRole.USER),
+                    msg("b", MessageRole.ASSISTANT),
+                    msg("u2", MessageRole.USER),
+                    msg("c", MessageRole.ASSISTANT),
+                ),
+            )
+        val footers = listOf(ReplyFooter("a", 1L), null, ReplyFooter("b", 2L), null, null)
+        assertEquals(
+            mapOf("a" to 0, "u1" to 2, "b" to 3, "u2" to 5, "c" to 6),
+            messageIdToLazyIndex(turns, replyFooters = footers),
+        )
+    }
+
+    @Test
+    fun `omitted or short footer plan keeps old callers and absent rows unchanged`() {
+        val turns = groupIntoTurns(listOf(msg("a", MessageRole.ASSISTANT), msg("u", MessageRole.USER)))
+        assertEquals(mapOf("a" to 0, "u" to 1), messageIdToLazyIndex(turns))
+        assertEquals(mapOf("a" to 0, "u" to 1), messageIdToLazyIndex(turns, replyFooters = listOf(null)))
+        assertEquals(
+            mapOf("a" to 0, "u" to 2),
+            messageIdToLazyIndex(turns, replyFooters = listOf(ReplyFooter("a", 1L))),
+        )
+    }
+
+    @Test
+    fun `user turn never consumes a footer even if malformed aligned plan includes one`() {
+        val turns = groupIntoTurns(listOf(msg("u", MessageRole.USER), msg("a", MessageRole.ASSISTANT)))
+        assertEquals(
+            mapOf("u" to 1, "a" to 2),
+            messageIdToLazyIndex(turns, leadingItems = 1, replyFooters = listOf(ReplyFooter("ignored", 1L))),
+        )
+    }
+
+    @Test
+    fun `folded approval tool still occupies a row before footer`() {
+        val a = msg("a", MessageRole.ASSISTANT)
+        val tool = msg("approval", MessageRole.TOOL).copy(approvalInfo = ApprovalInfo(null, null, null))
+        val u = msg("u", MessageRole.USER)
+        val turns = groupIntoTurns(listOf(a, tool, u))
+        // activity 0; prose 1; visible approval 2; footer 3; user 4.
+        assertEquals(
+            mapOf("a" to 1, "u" to 4),
+            messageIdToLazyIndex(turns, replyFooters = listOf(ReplyFooter("a", 1L))),
+        )
     }
 
     // ── currentMatchMessageId / matchedMessageIds ─────────────────────────

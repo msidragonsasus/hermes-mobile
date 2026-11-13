@@ -73,11 +73,17 @@ class DashboardRpcTransport :
 
     override suspend fun respondClarification(
         ref: RequestRef,
-        answer: String,
+        answer: String?,
     ): SubmissionResult<Boolean> {
-        if (ref.requestId.isBlank() || ref.questionId?.isBlank() == true) return SubmissionResult.NotSent
+        if (ref.requestId.isBlank() || ref.questionId?.isBlank() == true ||
+            (ref.serverRequestId != null && ref.serverRequestId != ref.requestId)
+        ) {
+            return SubmissionResult.NotSent
+        }
+        // Explicit modern batches require the typed lock API and its known-qid validation.
+        if (ref.serverRequestId != null && ref.questionId != null) return SubmissionResult.NotSent
         val result =
-            if (ref.requestId.startsWith(SERVER_REQUEST_ID_PREFIX)) {
+            if (ref.serverRequestId != null || ref.requestId.startsWith(SERVER_REQUEST_ID_PREFIX)) {
                 respondServerClarification(ref, answer)
             } else {
                 execute(
@@ -88,14 +94,14 @@ class DashboardRpcTransport :
                         put("request_id", ref.requestId)
                         put("clarify_id", ref.requestId)
                         ref.questionId?.let { put("question_id", it) }
-                        put("answer", answer)
+                        put("answer", answer ?: com.m57.hermescontrol.domain.hermes.CLARIFICATION_DECLINED_ANSWER)
                     },
-                    ::clarificationStatus,
+                    decode = ::clarificationStatus,
                 )
             }
         return when (result) {
             is SubmissionResult.Confirmed -> {
-                if (result.value) SubmissionResult.Confirmed(result.requestId, true) else SubmissionResult.Expired
+                if (result.value) result else SubmissionResult.Expired
             }
 
             SubmissionResult.NotSent -> {
@@ -112,22 +118,22 @@ class DashboardRpcTransport :
         }
     }
 
+    /** Compatibility for incoming srq refs; newly parsed batches always use lockClarification. */
     private suspend fun respondServerClarification(
         ref: RequestRef,
-        answer: String,
-    ): SubmissionResult<Boolean> {
-        val questionId = ref.questionId
-        return if (questionId != null) {
+        answer: String?,
+    ): SubmissionResult<Boolean> =
+        if (ref.questionId != null) {
             execute(
                 ref.scope,
                 WsMethods.CLARIFY_LOCK,
                 mapOf(
                     "session_id" to ref.session.runtimeId,
                     "request_id" to ref.requestId,
-                    "question_id" to questionId,
+                    "question_id" to ref.questionId,
                     "answer" to answer,
                 ),
-                ::clarificationStatus,
+                decode = ::clarificationStatus,
             )
         } else {
             execute(
@@ -138,10 +144,9 @@ class DashboardRpcTransport :
                     "id" to ref.requestId,
                     "result" to mapOf("answer" to answer),
                 ),
-                ::clarificationStatus,
+                decode = ::clarificationStatus,
             )
         }
-    }
 
     private fun clarificationStatus(body: JsonObject): Boolean? =
         when (body.string("status")) {
@@ -149,6 +154,52 @@ class DashboardRpcTransport :
             "expired" -> false
             else -> null
         }
+
+    override suspend fun lockClarification(
+        ref: RequestRef,
+        answer: String?,
+        knownQuestionIds: Set<String>,
+    ): SubmissionResult<ClarificationResult> {
+        val outer = ref.serverRequestId ?: return SubmissionResult.NotSent
+        val qid = ref.questionId ?: return SubmissionResult.NotSent
+        if (outer.isBlank() || ref.requestId != outer || qid !in knownQuestionIds ||
+            knownQuestionIds.any(String::isBlank)
+        ) {
+            return SubmissionResult.NotSent
+        }
+        return execute(
+            ref.scope,
+            WsMethods.CLARIFY_LOCK,
+            mapOf(
+                "session_id" to ref.session.runtimeId,
+                "request_id" to outer,
+                "question_id" to qid,
+                "answer" to answer,
+            ),
+        ) { body ->
+            when (body.string("status")) {
+                "expired" -> {
+                    ClarificationResult.Expired
+                }
+
+                "ok" -> {
+                    val raw = body["remaining"] as? JsonArray
+                    val remaining = raw?.map { (it as? JsonPrimitive)?.takeIf { value -> value.isString }?.content }
+                    if (remaining == null || remaining.any { it == null || it !in knownQuestionIds || it == qid } ||
+                        remaining.distinct().size != remaining.size
+                    ) {
+                        null
+                    } else {
+                        ClarificationResult.Locked(remaining.filterNotNull())
+                    }
+                }
+
+                else -> {
+                    null
+                }
+            }
+        }
+    }
 
     override fun configuredScope(): ConnectionScope? = HermesWsClient.configuredScope()
 
@@ -171,6 +222,8 @@ class DashboardRpcTransport :
                 put("text", text)
                 if (queued) put("queued", true)
             },
+            terminalSession = session.takeUnless { redirect || queued },
+            terminalValue = PromptAcceptance.STREAMING,
         ) { result ->
             when (result.string("status")) {
                 "streaming" -> PromptAcceptance.STREAMING.takeUnless { redirect }
@@ -226,16 +279,62 @@ class DashboardRpcTransport :
     private suspend fun <T : Any> execute(
         scope: ConnectionScope,
         method: String,
-        params: Map<String, Any>,
+        params: Map<String, Any?>,
+        terminalSession: SessionRef? = null,
+        terminalValue: T? = null,
         decode: (JsonObject) -> T?,
     ): SubmissionResult<T> {
-        val call = HermesWsClient.writeScoped(scope, method, params)
+        val call =
+            if (terminalSession != null) {
+                HermesWsClient.writePromptScoped(scope, terminalSession, params)
+            } else {
+                HermesWsClient.writeScoped(scope, method, params)
+            }
         if (!call.accepted) return SubmissionResult.NotSent
         return try {
-            val response = call.response.await() as? JsonObject
+            val outcome =
+                kotlinx.coroutines.selects.select<Any?> {
+                    call.response.onAwait { it }
+                    call.terminalProof?.onAwait { it }
+                }
+            if (outcome is com.m57.hermescontrol.data.ws.TerminalAcceptanceProof) {
+                if (terminalValue == null || !outcome.isCurrent() || !HermesWsClient.matchesCurrentScope(scope)) {
+                    return SubmissionResult.Unknown
+                }
+                return SubmissionResult.Confirmed(
+                    requireNotNull(call.requestId),
+                    terminalValue,
+                    com.m57.hermescontrol.domain.hermes
+                        .PromptEvidence(outcome.receipt.originUserRowId),
+                    com.m57.hermescontrol.domain.hermes.SubmissionProofSource.TERMINAL_RECEIPT,
+                    outcome.observation,
+                    outcome.authenticationEpoch,
+                )
+            }
+            val response = outcome as? JsonObject
             val decoded = response?.let(decode)
             if (decoded != null && HermesWsClient.matchesCurrentScope(scope)) {
-                SubmissionResult.Confirmed(requireNotNull(call.requestId), decoded)
+                val evidence =
+                    if (method == WsMethods.PROMPT_SUBMIT || method == WsMethods.SESSION_REDIRECT) {
+                        val row = response["user_row_id"] as? kotlinx.serialization.json.JsonPrimitive
+                        val rowId =
+                            row
+                                ?.takeUnless { it.isString }
+                                ?.content
+                                ?.toLongOrNull()
+                                ?.takeIf { it > 0 }
+                        val submission =
+                            (response["submission_id"] as? kotlinx.serialization.json.JsonPrimitive)
+                                ?.takeIf { it.isString }
+                                ?.content
+                                ?.takeIf { it.isNotBlank() }
+                        com.m57.hermescontrol.domain.hermes
+                            .PromptEvidence(rowId, submission)
+                            .takeIf { rowId != null || submission != null }
+                    } else {
+                        null
+                    }
+                SubmissionResult.Confirmed(requireNotNull(call.requestId), decoded, evidence)
             } else {
                 SubmissionResult.Unknown
             }
@@ -243,6 +342,8 @@ class DashboardRpcTransport :
             throw e
         } catch (_: HermesWsClient.HermesRpcException) {
             SubmissionResult.Unknown
+        } finally {
+            call.release?.invoke()
         }
     }
 
@@ -347,6 +448,7 @@ internal fun normalizeDashboardEvents(events: Flow<ScopedWsEvent>): Flow<HermesO
 internal fun normalizeDashboardEvent(envelope: ScopedWsEvent): HermesObservation? {
     var requestId: String? = null
     var questionId: String? = null
+    var serverRequestId: String? = null
     var savedId: String? = null
     val (sessionId, kind, state) =
         when (val event = envelope.event) {
@@ -369,11 +471,13 @@ internal fun normalizeDashboardEvent(envelope: ScopedWsEvent): HermesObservation
 
             is WsEvent.ApprovalRequest -> {
                 requestId = event.requestId
+                serverRequestId = event.serverRequestId
                 Triple(event.sessionId, ObservationKind.APPROVAL, ExecutionState.WAITING_APPROVAL)
             }
 
             is WsEvent.ClarifyRequest -> {
                 requestId = event.clarifyId
+                serverRequestId = event.serverRequestId
                 questionId = event.questionId
                 Triple(event.sessionId, ObservationKind.QUESTION, ExecutionState.NEEDS_INPUT)
             }
@@ -398,7 +502,7 @@ internal fun normalizeDashboardEvent(envelope: ScopedWsEvent): HermesObservation
     val session = sessionId?.takeIf(String::isNotBlank)?.let { SessionRef(it, savedId) }
     val request =
         requestId?.takeIf(String::isNotBlank)?.let { id ->
-            session?.let { RequestRef(envelope.scope, it, id, questionId) }
+            session?.let { RequestRef(envelope.scope, it, id, questionId, serverRequestId) }
         }
     return HermesObservation(envelope.scope, envelope.ordinal, session, kind, state, request)
 }

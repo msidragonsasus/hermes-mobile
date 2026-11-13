@@ -74,24 +74,14 @@ internal fun FullBleedAgentMessage(
     onImageClick: ((ImageViewerModel) -> Unit)? = null,
     modifier: Modifier = Modifier,
     showTimestamp: Boolean = true,
+    showFooter: Boolean = true,
 ) {
     val textColor = MaterialTheme.colorScheme.onSurface
-    val clipboard = LocalClipboard.current
-    val scope = rememberCoroutineScope()
-    var copied by remember { mutableStateOf(false) }
     var localImage by remember { mutableStateOf<ImageViewerModel?>(null) }
     val openImage: (ImageViewerModel) -> Unit = onImageClick ?: { localImage = it }
     localImage?.let { image ->
         com.m57.hermescontrol.ui.chat
             .ImageViewerDialog(image, onDismiss = { localImage = null })
-    }
-
-    // Copy feedback: briefly show ✓ then revert
-    LaunchedEffect(copied) {
-        if (copied) {
-            delay(1500)
-            copied = false
-        }
     }
 
     Column(
@@ -150,41 +140,74 @@ internal fun FullBleedAgentMessage(
         }
 
         // A reasoning-only step has nothing to copy, so it gets no footer.
-        if (!message.isStreaming && (message.content.isNotBlank() || !message.attachments.isNullOrEmpty())) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(
-                    onClick = {
-                        scope.launch {
-                            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(null, message.content)))
-                        }
-                        copied = true
-                    },
-                    modifier = Modifier.size(28.dp).testTag("fullbleed_copy"),
-                ) {
-                    Icon(
-                        imageVector = if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
-                        contentDescription = stringResource(R.string.content_desc_copy),
-                        modifier = Modifier.size(14.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+        if (showFooter && !message.isStreaming &&
+            (message.content.isNotBlank() || !message.attachments.isNullOrEmpty())
+        ) {
+            ReplyFooterRow(
+                text = message.content,
+                finishedAt = message.finishTimestamp ?: message.timestamp,
+                showTimestamp = showTimestamp,
+            )
+        }
+    }
+}
+
+/**
+ * The quiet copy + finish-time row under an answer. The main chat places one per
+ * completed response (see [replyFooter]); standalone single-message callers keep
+ * it under their message.
+ */
+@Composable
+internal fun ReplyFooterRow(
+    text: String,
+    finishedAt: Long,
+    modifier: Modifier = Modifier,
+    showTimestamp: Boolean = true,
+) {
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
+    var copied by remember { mutableStateOf(false) }
+
+    // Copy feedback: briefly show ✓ then revert
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1500)
+            copied = false
+        }
+    }
+
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(
+            onClick = {
+                scope.launch {
+                    clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(null, text)))
                 }
-                Spacer(modifier = Modifier.width(4.dp))
-                if (showTimestamp) {
-                    val finishTime = message.finishTimestamp ?: message.timestamp
-                    Text(
-                        text =
-                            com.m57.hermescontrol.ui.chat.formatTimestamp(
-                                finishTime,
-                                DateFormat.is24HourFormat(LocalContext.current),
-                            ),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                        modifier = Modifier.testTag("fullbleed_finish_time"),
-                    )
-                }
-            }
+                copied = true
+            },
+            modifier = Modifier.size(28.dp).testTag("fullbleed_copy"),
+        ) {
+            Icon(
+                imageVector = if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
+                contentDescription = stringResource(R.string.content_desc_copy),
+                modifier = Modifier.size(14.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(modifier = Modifier.width(4.dp))
+        if (showTimestamp) {
+            Text(
+                text =
+                    com.m57.hermescontrol.ui.chat.formatTimestamp(
+                        finishedAt,
+                        DateFormat.is24HourFormat(LocalContext.current),
+                    ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                modifier = Modifier.testTag("fullbleed_finish_time"),
+            )
         }
     }
 }

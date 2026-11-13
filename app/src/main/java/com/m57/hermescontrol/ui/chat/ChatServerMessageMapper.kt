@@ -23,7 +23,7 @@ internal fun mapServerMessages(
 ): List<ChatMessage> {
     val existingReasoningMap =
         liveMessages
-            .filter { it.reasoningText.isNotBlank() }
+            .filter { it.reasoningText.isNotBlank() && it.displayKind != "hidden" && !it.hasServerDisplayProjection }
             .associateBy { it.content }
 
     // Tool rows in the REST transcript carry NO tool name — the live WS
@@ -91,12 +91,40 @@ internal fun mapServerMessages(
                 ?.toLong()
                 ?: System.currentTimeMillis()
 
+        val liveTool =
+            if (role == MessageRole.TOOL) {
+                liveToolByCallId[msg.toolCallId]
+                    ?: canonicalToolResultKey(msg.contentText)?.let(liveToolByResult::get)
+            } else {
+                null
+            }
+        val hidden = msg.display_kind == "hidden" || msg.isModelOnly
+        val projected = hidden || msg.hasDisplayProjection
+        // Keep a same-ID tombstone so a refresh overwrites an older visible cache row.
+        if (hidden || (msg.hasDisplayProjection && msg.displayContentText.isBlank())) {
+            mapped.add(
+                ChatMessage(
+                    id = liveTool?.id ?: restId,
+                    role = role,
+                    content = "",
+                    toolName = liveTool?.toolName,
+                    toolCallId = msg.toolCallId,
+                    timestamp = timestamp,
+                    displayKind = "hidden",
+                    hasServerDisplayProjection = true,
+                ),
+            )
+            return@forEachIndexed
+        }
+
         // User rows drop what the app/server wrapped around the typed text; prefixed attachment
         // refs come back as cards below.
-        val displayedUser = if (role == MessageRole.USER) RichAnswerPrompt.displayText(msg.contentText) else null
-        val rawContent = displayedUser?.text ?: msg.contentText
+        val displayedUser = if (role == MessageRole.USER) RichAnswerPrompt.displayText(msg.displayContentText) else null
+        val rawContent = displayedUser?.text ?: msg.displayContentText
         val rowReasoning =
-            if (msg.reasoningText.isNotBlank()) {
+            if (projected) {
+                ""
+            } else if (msg.reasoningText.isNotBlank()) {
                 msg.reasoningText
             } else {
                 existingReasoningMap[rawContent]?.reasoningText.orEmpty()
@@ -128,7 +156,9 @@ internal fun mapServerMessages(
         }
 
         val finalReasoning =
-            if (rowReasoning.isNotBlank()) {
+            if (projected) {
+                ""
+            } else if (rowReasoning.isNotBlank()) {
                 rowReasoning
             } else if (role == MessageRole.ASSISTANT && pendingReasoning != null) {
                 pendingReasoning.also { pendingReasoning = null }
@@ -136,26 +166,7 @@ internal fun mapServerMessages(
                 ""
             }
 
-        // Tool rows in the REST transcript carry no tool name. When the
-        // result payload matches a live WS tool message, reuse it whole —
-        // keeps the real name, the rich WS payload, AND the same id so
-        // Room upserts instead of accumulating a duplicate `rest-` row.
-        if (role == MessageRole.TOOL) {
-            // Prefer the gateway call id (1:1, works for every tool
-            // shape), then fall back to result-content matching.
-            liveToolByCallId[msg.toolCallId]?.let { live ->
-                mapped.add(live)
-                return@forEachIndexed
-            }
-            canonicalToolResultKey(rawContent)?.let { key ->
-                liveToolByResult[key]?.let { live ->
-                    mapped.add(live)
-                    return@forEachIndexed
-                }
-            }
-        }
-
-        mapped.add(
+        val message =
             ChatMessage(
                 id = restId,
                 role = role,
@@ -166,14 +177,19 @@ internal fun mapServerMessages(
                 timestamp = timestamp,
                 isStreaming = false,
                 displayKind = msg.display_kind,
-            ),
-        )
+                hasServerDisplayProjection = projected,
+            )
+        // Reuse live tool identity so the projected body overwrites its cached UUID row.
+        mapped.add(if (liveTool != null) preferServerDisplayProjection(message, liveTool) else message)
     }
 
     // A reasoning-only row with no following answer (interrupted turn):
     // don't drop the trace — attach it to the last assistant message.
     if (pendingReasoning != null) {
-        val lastAssistantIdx = mapped.indexOfLast { it.role == MessageRole.ASSISTANT }
+        val lastAssistantIdx =
+            mapped.indexOfLast {
+                it.role == MessageRole.ASSISTANT && it.displayKind != "hidden" && !it.hasServerDisplayProjection
+            }
         if (lastAssistantIdx >= 0) {
             val target = mapped[lastAssistantIdx]
             if (target.reasoningText.isBlank()) {

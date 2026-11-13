@@ -613,14 +613,6 @@ fun ChatScreen(
             // Issue #890: launch update check — non-blocking banner when a
             // newer release exists. Tapping "Update" opens the in-place dialog.
             val updateNotice by AppUpdateCache.state.collectAsStateWithLifecycle()
-            val appUpdateViewModel: AppUpdateViewModel =
-                viewModel {
-                    val app =
-                        this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]
-                            ?: error("Application not available")
-                    AppUpdateViewModel(app)
-                }
-
             if (UpdateNoticeManager.enabled && !AppUpdateCache.dismissed) {
                 val noticeTag =
                     (updateNotice as? AppUpdateState.UpdateAvailable)?.latestTag
@@ -632,45 +624,6 @@ fun ChatScreen(
                         onDismiss = { AppUpdateCache.dismiss() },
                     )
                 }
-            }
-
-            if (AppUpdateCache.isDialogVisible) {
-                val context = androidx.compose.ui.platform.LocalContext.current
-                // The view model's state, not the cache: download progress, verification and
-                // cancel must be visible here, and its stale-connection guard applies.
-                val updateDialogState by appUpdateViewModel.state.collectAsStateWithLifecycle()
-                val updateSourceInfo by appUpdateViewModel.sourceInfo.collectAsStateWithLifecycle()
-                AppUpdateDialog(
-                    state = updateDialogState,
-                    sourceLabel =
-                        com.m57.hermescontrol.ui.common.updateSourceLabel(
-                            updateSourceInfo.source,
-                            updateSourceInfo.serverLabel,
-                        ),
-                    onDismiss = { AppUpdateCache.hideDialog() },
-                    onStartUpdate = { appUpdateViewModel.startUpdate() },
-                    onCancelDownload = { appUpdateViewModel.cancelDownload() },
-                    onNeverAskAgain = { appUpdateViewModel.dismissCurrentUpdate() },
-                    onOpenSettings = {
-                        val intent =
-                            android.content
-                                .Intent(
-                                    android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                                    android.net.Uri.parse("package:${context.packageName}"),
-                                ).apply {
-                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                }
-                        try {
-                            context.startActivity(intent)
-                        } catch (e: Exception) {
-                            context.startActivity(
-                                android.content.Intent(android.provider.Settings.ACTION_SECURITY_SETTINGS).apply {
-                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                },
-                            )
-                        }
-                    },
-                )
             }
 
             com.m57.hermescontrol.ui.chat.components.OutgoingDraftPanel(
@@ -806,6 +759,9 @@ fun ChatScreen(
                         openingAttachmentPath = state.openingAttachmentPath,
                         onImageClick = { viewingImage = it },
                         showThinkingIndicator = thinkingIndicatorVisible,
+                        replyLifecycle =
+                            com.m57.hermescontrol.ui.chat.fullbleed
+                                .replyLifecycle(state, streamingState),
                     )
                 }
 
@@ -1011,6 +967,7 @@ fun ChatScreen(
             ModelPickerDialog(
                 providers = state.modelPickerProviders,
                 title = stringResource(R.string.chat_switch_model_title),
+                subtitle = stringResource(R.string.chat_switch_model_scope),
                 isLoading = state.modelPickerLoading,
                 errorMessage = state.modelPickerError,
                 onRefresh = viewModel::refreshModelOptions,

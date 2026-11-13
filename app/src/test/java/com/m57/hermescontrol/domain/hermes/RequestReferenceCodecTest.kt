@@ -20,6 +20,17 @@ class RequestReferenceCodecTest {
     }
 
     @Test
+    fun optionalOuterIdentityRoundTripsWithoutBreakingLegacyOrInferringPrefixes() {
+        val modern = ref.copy(serverRequestId = "outer")
+        assertEquals(modern, RequestReferenceCodec.decode(RequestReferenceCodec.encode(modern)))
+        val legacy = ref.copy(requestId = "srq-legacy")
+        assertEquals(null, RequestReferenceCodec.decode(RequestReferenceCodec.encode(legacy))?.serverRequestId)
+        for (invalid in listOf("", " ", "outer\n", "x".repeat(513))) {
+            assertNull(RequestReferenceCodec.decode(Json.encodeToString(ref.copy(serverRequestId = invalid))))
+        }
+    }
+
+    @Test
     fun rejectsMalformedOversizeAndInvalidIdentifiers() {
         listOf(null, "", "{}", "[", "x".repeat(8193), RequestReferenceCodec.encode(ref).dropLast(1)).forEach {
             assertNull(RequestReferenceCodec.decode(it))

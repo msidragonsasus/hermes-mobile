@@ -16,6 +16,7 @@ import com.m57.hermescontrol.data.remote.CookieManager
 import com.m57.hermescontrol.data.remote.OkHttpProvider
 import com.m57.hermescontrol.data.remote.ServerEndpoint
 import com.m57.hermescontrol.data.remote.await
+import com.m57.hermescontrol.data.remote.isSessionCookie
 import com.m57.hermescontrol.data.remote.safeApiCall
 import com.m57.hermescontrol.data.ws.GatewayWebSocketProbe
 import com.m57.hermescontrol.data.ws.HermesWsClient
@@ -117,7 +118,7 @@ class AuthLoginViewModel(
                     withContext(Dispatchers.IO) {
                         val cookies = CookieManager.cookiesForProfile(profileId, endpoint)
                         if (cookies.isEmpty()) return@withContext false
-                        val ticket = mintTicket(endpoint, isolatedProbeClient(), cookies)
+                        val ticket = mintTicket(endpoint, isolatedProbeClient(), cookies, profileScopedCookies = true)
                         ticket != null && GatewayWebSocketProbe.check(endpoint, "ticket", ticket)
                     }
                 if (!gated && !GatewayWebSocketProbe.check(endpoint, "token", token)) {
@@ -533,9 +534,22 @@ class AuthLoginViewModel(
         endpoint: ServerEndpoint,
         client: OkHttpClient,
         cookies: List<Cookie>,
+        profileScopedCookies: Boolean = false,
     ): String? {
         val url = endpoint.resolve("api/auth/ws-ticket")
-        val header = cookies.filter { it.matches(url) }.joinToString("; ") { "${it.name}=${it.value}" }
+        val header =
+            cookies
+                .filter { cookie ->
+                    // A saved profile owns its alternate server addresses. Relax only the
+                    // session-cookie host check; retain path and secure-transport checks.
+                    val matchingUrl =
+                        if (profileScopedCookies && isSessionCookie(cookie)) {
+                            url.newBuilder().host(cookie.domain).build()
+                        } else {
+                            url
+                        }
+                    cookie.matches(matchingUrl)
+                }.joinToString("; ") { "${it.name}=${it.value}" }
         if (header.isEmpty()) return null
         val request =
             Request

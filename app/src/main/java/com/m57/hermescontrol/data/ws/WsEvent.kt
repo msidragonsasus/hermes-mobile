@@ -11,6 +11,15 @@ sealed class WsEvent {
     data class ServerRequestCancel(
         val requestId: String?,
         val sessionId: String?,
+        val method: String? = null,
+        val reason: String? = null,
+    ) : WsEvent()
+
+    data class OpenRequestsSnapshot(
+        val sessionId: String,
+        val startedAt: Long,
+        val requests: List<WsEvent>,
+        val requestIds: Set<String>,
     ) : WsEvent()
 
     /** A server request is distinct from the result of a client RPC with the same id. */
@@ -75,6 +84,15 @@ sealed class WsEvent {
         val reasoning: String? = null,
         /** Stored session id captured before background disconnect clears the active mapping. */
         val storedSessionId: String? = null,
+        val persistedTurn: PersistedTurn? = null,
+        val responseReused: Boolean? = null,
+        val responseTransformed: Boolean? = null,
+        val status: String? = null,
+        val partial: Boolean? = null,
+        val failureReason: String? = null,
+        /** The terminal body was already delivered in this turn as an interim. */
+        val responsePreviewed: Boolean? = null,
+        val terminalAcceptance: TerminalAcceptance? = null,
     ) : WsEvent()
 
     data class MessageDone(
@@ -179,7 +197,9 @@ sealed class WsEvent {
         val questionId: String? = null,
         val multiSelect: Boolean = false,
         val questions: List<ClarifyQuestion> = emptyList(),
-        val lockedAnswers: Map<String, String?> = emptyMap(),
+        val serverRequestId: String? = null,
+        val answers: Map<String, String?> = emptyMap(),
+        val lockedAnswers: Map<String, String?> = answers,
     ) : WsEvent()
 
     data class ClarifyResolved(
@@ -190,6 +210,8 @@ sealed class WsEvent {
     data class ClarifyExpire(
         val clarifyId: String? = null,
         val sessionId: String? = null,
+        val serverRequestId: String? = null,
+        val reason: String? = null,
     ) : WsEvent()
 
     /**
@@ -289,6 +311,7 @@ sealed class WsEvent {
          * restricts to once/deny only (desktop `smartDenied` parity).
          */
         val smartDenied: Boolean? = null,
+        val serverRequestId: String? = null,
     ) : WsEvent()
 
     // ── Sudo / secret requests ─────────────────────────────────────────

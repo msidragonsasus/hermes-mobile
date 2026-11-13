@@ -1,8 +1,12 @@
 package com.m57.hermescontrol.data.model
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
 
@@ -52,6 +56,8 @@ data class SessionMessage(
     val display_kind: String? = null,
     /** Display-only metadata for the marker (e.g. delegation result counts). */
     val display_metadata: JsonElement? = null,
+    /** Authoritative display-only body; physical content remains available for export. */
+    val display_content: JsonElement? = null,
 ) {
     val timestampText: String?
         get() = (timestamp as? JsonPrimitive)?.content
@@ -72,6 +78,36 @@ data class SessionMessage(
 
     val contentText: String
         get() = messageContentText(content)
+
+    val hasDisplayProjection: Boolean
+        get() = display_content != null && display_content != JsonNull
+
+    val displayContentText: String
+        get() = if (hasDisplayProjection) messageContentText(display_content) else contentText
+
+    val isModelOnly: Boolean
+        get() {
+            val metadata =
+                when (val raw = display_metadata) {
+                    is JsonObject -> {
+                        raw
+                    }
+
+                    is JsonPrimitive -> {
+                        if (raw.isString) {
+                            runCatching { Json.parseToJsonElement(raw.content) }.getOrNull() as? JsonObject
+                        } else {
+                            null
+                        }
+                    }
+
+                    else -> {
+                        null
+                    }
+                }
+            val flag = metadata?.get("model_only") as? JsonPrimitive
+            return flag?.isString == false && flag.booleanOrNull == true
+        }
 
     val reasoningText: String
         get() =

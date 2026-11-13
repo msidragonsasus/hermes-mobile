@@ -7,4 +7,6 @@ data class ScopedRpcSubmission(
     val requestId: String?,
     val accepted: Boolean,
     val response: Deferred<Any?>,
+    val terminalProof: Deferred<TerminalAcceptanceProof>? = null,
+    internal val release: (() -> Unit)? = null,
 )

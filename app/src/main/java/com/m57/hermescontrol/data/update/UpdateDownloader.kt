@@ -48,13 +48,14 @@ class UpdateDownloader(
             part.delete()
             dest.delete()
             val call =
-                client.newCall(
-                    Request
-                        .Builder()
-                        .url(url)
-                        .header("Accept", APK_MIME_TYPE)
-                        .build(),
-                )
+                client
+                    .newCall(
+                        Request
+                            .Builder()
+                            .url(url)
+                            .header("Accept", APK_MIME_TYPE)
+                            .build(),
+                    ).limitUpdateTimeout(UPDATE_APK_TIMEOUT_MILLIS)
             // A blocked socket read does not observe coroutine cancellation; cancel the call itself.
             val watcher =
                 launch(start = CoroutineStart.UNDISPATCHED) {
@@ -69,6 +70,8 @@ class UpdateDownloader(
                 val (sha, size) = transfer(call, expectedSize, part, onProgress)
                 ensureActive()
                 if (!part.renameTo(dest)) throw UpdateException(UpdateFailure.DOWNLOAD_FAILED)
+                onProgress(1f)
+                ensureActive()
                 complete = true
                 DownloadedApk(dest, sha, size)
             } catch (e: IOException) {
@@ -117,7 +120,8 @@ class UpdateDownloader(
                         if (total > expectedSize) throw UpdateException(UpdateFailure.SIZE_MISMATCH)
                         digest.update(buffer, 0, read)
                         out.write(buffer, 0, read)
-                        onProgress((total.toDouble() / expectedSize).toFloat().coerceIn(0f, 1f))
+                        // Even the exact expected byte count is not proof of EOF/fsync/rename.
+                        onProgress((total.toDouble() / expectedSize).toFloat().coerceIn(0f, 0.99999994f))
                     }
                 }
                 out.fd.sync()

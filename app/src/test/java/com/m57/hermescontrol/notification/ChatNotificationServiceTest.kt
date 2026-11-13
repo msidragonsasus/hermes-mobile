@@ -8,6 +8,7 @@ import io.mockk.mockk
 import io.mockk.mockkConstructor
 import io.mockk.unmockkConstructor
 import io.mockk.verify
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -27,6 +28,67 @@ import org.junit.Test
  * or through the public `setAppForeground` API.
  */
 class ChatNotificationServiceTest {
+    @Test
+    fun delayedAttentionSelectsUnansweredAndRechecksCancellationAndExactScope() =
+        kotlinx.coroutines.test.runTest {
+            val scope = ConnectionScope("server", "connection", "profile", "process", 1)
+            val repository =
+                com.m57.hermescontrol.domain.hermes
+                    .AttentionRepository()
+            val event =
+                com.m57.hermescontrol.data.ws.EventParser.parseServerRequest(
+                    "outer",
+                    "clarify",
+                    mapOf(
+                        "session_id" to "runtime",
+                        "questions" to
+                            listOf(
+                                mapOf("qid" to "locked", "question" to "Known?"),
+                                mapOf("qid" to "open", "question" to "Pending?"),
+                            ),
+                        "answers" to mapOf("locked" to null),
+                    ),
+                )
+            com.m57.hermescontrol.data.transport
+                .dashboardAttentionItems(scope, event)
+                .forEach(repository::observe)
+            val ref = actionableAttentionNotificationRef(repository, scope, event, scope, false)
+            assertEquals("open", ref?.questionId)
+            assertEquals(
+                null,
+                actionableAttentionNotificationRef(repository, scope, event, scope.copy(generation = 2), false),
+            )
+            assertEquals(
+                null,
+                actionableAttentionNotificationRef(
+                    repository,
+                    scope,
+                    event,
+                    scope.copy(serverProfileId = "other"),
+                    false,
+                ),
+            )
+            assertEquals(null, actionableAttentionNotificationRef(repository, scope, event, scope, true))
+            val scheduled = kotlinx.coroutines.CompletableDeferred<com.m57.hermescontrol.domain.hermes.RequestRef?>()
+            val job =
+                launch {
+                    kotlinx.coroutines.delay(500)
+                    scheduled.complete(actionableAttentionNotificationRef(repository, scope, event, scope, false))
+                }
+            repository.apply(
+                com.m57.hermescontrol.domain.hermes.AttentionSignal.Cancelled(
+                    scope,
+                    "runtime",
+                    "outer",
+                    "clarify",
+                    "timeout",
+                ),
+            )
+            testScheduler.advanceUntilIdle()
+            assertEquals(null, scheduled.await())
+            job.join()
+        }
+
     @Test
     fun `idle disconnect keeps notification while target switches suppress it`() {
         val origin = ConnectionScope("server", "connection", "profile", "process", 1)

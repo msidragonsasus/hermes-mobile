@@ -58,6 +58,22 @@ private class BoundCredentialInterceptor(
 }
 
 /**
+ * OkHttp may follow a 503 + Retry-After: 0 even with connection retries disabled.
+ * Remove only that follow-up trigger before its protocol retry interceptor sees it;
+ * keep the original status/body so callers still expose the typed 503 failure.
+ */
+private class NoUnavailableFollowUpInterceptor : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val response = chain.proceed(chain.request())
+        return if (response.code == 503 && response.header("Retry-After") == "0") {
+            response.newBuilder().removeHeader("Retry-After").build()
+        } else {
+            response
+        }
+    }
+}
+
+/**
  * Client for connected-server update requests. Unlike the REST client it has
  * no live auth interceptor, no profile rewriting, no shared cookie jar, no
  * token-refresh authenticator, no redirects and no transparent retries; the
@@ -78,4 +94,5 @@ fun boundUpdateClient(
         .followSslRedirects(false)
         .retryOnConnectionFailure(false)
         .addInterceptor(BoundCredentialInterceptor(binding))
+        .addNetworkInterceptor(NoUnavailableFollowUpInterceptor())
         .build()

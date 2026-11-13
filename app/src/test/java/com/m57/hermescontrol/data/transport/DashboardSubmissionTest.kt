@@ -30,6 +30,10 @@ class DashboardSubmissionTest {
     fun setup() {
         mockkObject(HermesWsClient)
         every { HermesWsClient.matchesCurrentScope(scope) } returns true
+        // New specialized seam shares the existing ACK decoder/4-argument write contract.
+        every { HermesWsClient.writePromptScoped(scope, session, any(), any()) } answers {
+            HermesWsClient.writeScoped(scope, WsMethods.PROMPT_SUBMIT, arg(2), arg(3))
+        }
     }
 
     @After

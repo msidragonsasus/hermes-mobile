@@ -65,6 +65,20 @@ import java.util.concurrent.atomic.AtomicBoolean
  * the ChatViewModel collects — and watches for [WsEvent.MessageComplete]
  * events that indicate the agent has finished replying.
  */
+internal fun actionableAttentionNotificationRef(
+    repository: com.m57.hermescontrol.domain.hermes.AttentionRepository,
+    scope: ConnectionScope,
+    event: WsEvent,
+    current: ConnectionScope?,
+    foreground: Boolean,
+): com.m57.hermescontrol.domain.hermes.RequestRef? {
+    if (foreground) return null
+    return dashboardAttentionItems(scope, event)
+        .firstOrNull {
+            RequestReferenceCodec.isValid(it.ref) && repository.actionable(it.ref, current)
+        }?.ref
+}
+
 class ChatNotificationService : Service() {
     companion object {
         internal const val SERVICE_CHANNEL_ID = "hermes_service"
@@ -244,11 +258,17 @@ class ChatNotificationService : Service() {
         scope: ConnectionScope,
         text: String,
     ) {
-        val ref = dashboardAttentionItems(scope, event).firstOrNull()?.ref?.takeIf(RequestReferenceCodec::isValid)
-        if (ref == null) {
-            showReplyNotification(text, null)
-            return
-        }
+        val repository = (application as? com.m57.hermescontrol.HermesControlApp)?.attentionRepository ?: return
+        val ref =
+            actionableAttentionNotificationRef(
+                repository,
+                scope,
+                event,
+                HermesWsClient.configuredScope(),
+                isAppInForeground.get(),
+            )
+                ?: return
+        if (!HermesWsClient.matchesCurrentScope(ref.scope)) return
         val notification = AttentionNotificationRoute.notification(this, ref, text)
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(AttentionNotificationRoute.tag(ref), PENDING_NOTIFICATION_ID, notification)

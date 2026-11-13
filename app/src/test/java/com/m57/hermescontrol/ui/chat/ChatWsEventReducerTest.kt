@@ -8,6 +8,266 @@ import org.junit.Test
 
 class ChatWsEventReducerTest {
     @Test
+    fun consecutiveIndependentEqualUnstreamedInterimsRetainBothDeliveries() {
+        val sid = "independent-interims"
+        val first =
+            ChatWsEventReducer.reduce(
+                ChatUiState(currentSessionId = sid),
+                StreamingState(),
+                WsEvent.MessageInterim("Checking", false, sid),
+                sid,
+            )
+        val second =
+            ChatWsEventReducer.reduce(
+                first.state,
+                first.streamingState,
+                WsEvent.MessageInterim("Checking", false, sid),
+                sid,
+            )
+        assertEquals(listOf("Checking", "Checking"), second.state.messages.map { it.content })
+        val ids = second.state.messages.map { it.id }
+        assertEquals(2, ids.distinct().size)
+        assertEquals(ids, second.streamingState.sealedOrphanIds)
+        val persisted = (first.effects + second.effects).filterIsInstance<ReducerEffect.PersistMessage>()
+        assertEquals(ids, persisted.map { it.message.id })
+        assertEquals(listOf(sid, sid), persisted.map { it.sessionId })
+    }
+
+    @Test
+    fun independentTrimmedEqualAndPrefixUnstreamedInterimsKeepTheirOrder() {
+        val sid = "independent-interims"
+        val texts = listOf(" Checking \n", "Checking", "Checking more", "Checking")
+        var state = ChatUiState(currentSessionId = sid)
+        var streaming = StreamingState()
+        val persisted = mutableListOf<ReducerEffect.PersistMessage>()
+        for (text in texts) {
+            val result = ChatWsEventReducer.reduce(state, streaming, WsEvent.MessageInterim(text, false, sid), sid)
+            state = result.state
+            streaming = result.streamingState
+            persisted += result.effects.filterIsInstance<ReducerEffect.PersistMessage>()
+        }
+        assertEquals(texts, state.messages.map { it.content })
+        val ids = state.messages.map { it.id }
+        assertEquals(texts.size, ids.distinct().size)
+        assertEquals(ids, streaming.sealedOrphanIds)
+        assertEquals(ids, persisted.map { it.message.id })
+    }
+
+    @Test
+    fun independentUnstreamedInterimMatchingLiveTextKeepsBothDeliveries() {
+        val sid = "independent-interims"
+        val live = ChatMessage(id = "stream-id", role = MessageRole.ASSISTANT, content = "Checking", isStreaming = true)
+        val result =
+            ChatWsEventReducer.reduce(
+                ChatUiState(currentSessionId = sid),
+                StreamingState(streamingMessage = live),
+                WsEvent.MessageInterim("Checking", false, sid),
+                sid,
+            )
+        assertEquals(listOf("Checking", "Checking"), result.state.messages.map { it.content })
+        val ids = result.state.messages.map { it.id }
+        assertEquals(live.id, ids.first())
+        assertEquals(2, ids.distinct().size)
+        assertEquals(ids, result.streamingState.sealedOrphanIds)
+        assertEquals(ids, result.effects.filterIsInstance<ReducerEffect.PersistMessage>().map { it.message.id })
+        assertTrue(result.state.messages.none { it.isStreaming })
+        assertEquals(null, result.streamingState.streamingMessage)
+    }
+
+    @Test
+    fun explicitlyAlreadyStreamedInterimSealsTheLiveIdentityOnlyOnce() {
+        val sid = "streamed-interim"
+        val live = ChatMessage(id = "stream-id", role = MessageRole.ASSISTANT, content = "Checking", isStreaming = true)
+        val event = WsEvent.MessageInterim("Checking", true, sid)
+        val sealed =
+            ChatWsEventReducer.reduce(
+                ChatUiState(currentSessionId = sid),
+                StreamingState(streamingMessage = live),
+                event,
+                sid,
+            )
+        assertEquals(listOf(live.id), sealed.state.messages.map { it.id })
+        assertEquals(listOf(live.id), sealed.streamingState.sealedOrphanIds)
+        assertEquals(1, sealed.effects.filterIsInstance<ReducerEffect.PersistMessage>().size)
+        assertFalse(
+            sealed.state.messages
+                .single()
+                .isStreaming,
+        )
+        assertEquals(null, sealed.streamingState.streamingMessage)
+        val replay = ChatWsEventReducer.reduce(sealed.state, sealed.streamingState, event, sid)
+        assertEquals(sealed.state.messages, replay.state.messages)
+        assertEquals(sealed.streamingState.sealedOrphanIds, replay.streamingState.sealedOrphanIds)
+        assertTrue(replay.effects.isEmpty())
+    }
+
+    @Test
+    fun distinctIdenticalFinalWithExplicitFalseKeepsEveryCharacter() {
+        assertDistinctFinalPreserved("**Repeat.**  \n\n", responseReused = false)
+    }
+
+    @Test
+    fun distinctIdenticalFinalWithoutReuseFlagKeepsEveryCharacter() {
+        assertDistinctFinalPreserved("**Repeat.**  \n\n", responseReused = null)
+    }
+
+    @Test
+    fun distinctPrefixBearingFinalWithExplicitFalseKeepsEveryCharacter() {
+        assertDistinctFinalPreserved("**Repeat.**  \n\n## Final\n\n- Repeat.  \n", responseReused = false)
+    }
+
+    @Test
+    fun distinctPrefixBearingFinalWithoutReuseFlagKeepsEveryCharacter() {
+        assertDistinctFinalPreserved("**Repeat.**  \n\n## Final\n\n- Repeat.  \n", responseReused = null)
+    }
+
+    private fun assertDistinctFinalPreserved(
+        finalText: String,
+        responseReused: Boolean?,
+    ) {
+        val sid = "distinct-final"
+        val commentary = "**Repeat.**  \n\n"
+        val start =
+            ChatWsEventReducer.reduce(
+                ChatUiState(currentSessionId = sid),
+                StreamingState(),
+                WsEvent.MessageStart(sid),
+                sid,
+            )
+        val interim =
+            ChatWsEventReducer.reduce(
+                start.state,
+                start.streamingState,
+                WsEvent.MessageInterim(commentary, false, sid),
+                sid,
+            )
+        assertEquals(null, interim.streamingState.streamingMessage)
+        val event = WsEvent.MessageComplete(finalText, sid, responseReused = responseReused)
+        val complete = ChatWsEventReducer.reduce(interim.state, interim.streamingState, event, sid)
+        assertEquals(listOf(commentary, finalText), complete.state.messages.map { it.content })
+        val finalMessage = complete.state.messages.last()
+        assertTrue(
+            finalMessage.id !=
+                interim.state.messages
+                    .single()
+                    .id,
+        )
+        assertEquals(
+            finalText,
+            complete.effects
+                .filterIsInstance<ReducerEffect.PersistMessage>()
+                .single()
+                .message.content,
+        )
+        assertEquals(finalMessage.id, complete.streamingState.finalizedMessage?.id)
+        assertTrue(complete.streamingState.turnEnded)
+        assertFalse(complete.state.isAgentTyping)
+        val done = ChatWsEventReducer.reduce(complete.state, complete.streamingState, WsEvent.MessageDone(sid), sid)
+        val replay = ChatWsEventReducer.reduce(done.state, done.streamingState, event, sid)
+        assertEquals(complete.state.messages, replay.state.messages)
+        assertTrue(done.effects.isEmpty())
+        assertTrue(replay.effects.isEmpty())
+    }
+
+    @Test
+    fun explicitlyReusedCompletionAddsNoProseAfterSealedInterim() {
+        val sid = "reused-final"
+        val text = "**Repeat.**  \n\n"
+        val interim =
+            ChatWsEventReducer.reduce(
+                ChatUiState(currentSessionId = sid, isAgentTyping = true),
+                StreamingState(),
+                WsEvent.MessageInterim(text, false, sid),
+                sid,
+            )
+        val event = WsEvent.MessageComplete(text, sid, responseReused = true)
+        val complete = ChatWsEventReducer.reduce(interim.state, interim.streamingState, event, sid)
+        val replay = ChatWsEventReducer.reduce(complete.state, complete.streamingState, event, sid)
+        assertEquals(interim.state.messages, complete.state.messages)
+        assertEquals(interim.state.messages, replay.state.messages)
+        assertTrue(complete.effects.isEmpty())
+        assertTrue(replay.effects.isEmpty())
+        assertFalse(complete.state.isAgentTyping)
+    }
+
+    @Test
+    fun explicitlyReusedCompletionFinalizesCurrentStreamByIdentity() {
+        val sid = "reused-stream"
+        val text = "**Repeat.**  \n\n"
+        val live = ChatMessage(id = "current-stream", role = MessageRole.ASSISTANT, content = text, isStreaming = true)
+        val complete =
+            ChatWsEventReducer.reduce(
+                ChatUiState(currentSessionId = sid, isAgentTyping = true),
+                StreamingState(streamingMessage = live),
+                WsEvent.MessageComplete(text, sid, responseReused = true),
+                sid,
+            )
+        assertEquals(listOf(text), complete.state.messages.map { it.content })
+        assertEquals(
+            live.id,
+            complete.state.messages
+                .single()
+                .id,
+        )
+        assertFalse(
+            complete.state.messages
+                .single()
+                .isStreaming,
+        )
+    }
+
+    @Test
+    fun unstreamedInterimDoesNotReuseTheEarlierEmptyPlaceholder() {
+        val sid = "segment-order"
+        val placeholder =
+            ChatMessage(
+                id = "old-empty",
+                role = MessageRole.ASSISTANT,
+                content = "",
+                timestamp = 1L,
+                isStreaming = true,
+            )
+        val result =
+            ChatWsEventReducer.reduce(
+                ChatUiState(currentSessionId = sid, isAgentTyping = true),
+                StreamingState(streamingMessage = placeholder),
+                WsEvent.MessageInterim("A1", false, sid),
+                sid,
+            )
+        assertEquals(null, result.streamingState.streamingMessage)
+        assertEquals(listOf("A1"), result.state.messages.map { it.content })
+    }
+
+    @Test
+    fun fallbackFinalSegmentKeepsExplicitOrderWhenClockMovesBackward() {
+        val sid = "segment-order"
+        val a1 =
+            ChatMessage(
+                id = "sealed-a1",
+                role = MessageRole.ASSISTANT,
+                content = "A1",
+                timestamp = Long.MAX_VALUE,
+            )
+        val result =
+            ChatWsEventReducer.reduce(
+                ChatUiState(currentSessionId = sid, isAgentTyping = true, messages = listOf(a1)),
+                StreamingState(sealedOrphanIds = listOf(a1.id)),
+                WsEvent.MessageComplete("A2", sid),
+                sid,
+            )
+        assertEquals(
+            listOf("A1", "A2"),
+            result.state.messages
+                .map { it.content },
+        )
+        assertTrue(
+            result.state.messages
+                .last()
+                .timestamp < a1.timestamp,
+        )
+    }
+
+    @Test
     fun messageDoneClearsClarificationWithOrWithoutAStreamingBubble() {
         val state =
             ChatUiState(
@@ -80,7 +340,7 @@ class ChatWsEventReducerTest {
             ChatWsEventReducer.reduce(
                 result.state,
                 result.streamingState,
-                WsEvent.MessageComplete("Checking now", "session-1"),
+                WsEvent.MessageComplete("Checking now", "session-1", responseReused = true),
                 "session-1",
             )
         assertEquals(tool.state.messages, complete.state.messages)
@@ -133,7 +393,7 @@ class ChatWsEventReducerTest {
     }
 
     @Test
-    fun repeatedCompletionAfterHistoryRekeysCommentaryKeepsTheStrippedAnswer() {
+    fun repeatedCompletionAfterHistoryRekeysCommentaryKeepsTheFullAnswer() {
         val commentary = ChatMessage(role = MessageRole.ASSISTANT, content = "Checking. ")
         val initial =
             ChatWsEventReducer.reduce(
@@ -142,6 +402,7 @@ class ChatWsEventReducerTest {
                 WsEvent.MessageComplete("Checking. Answer", "session-1"),
                 "session-1",
             )
+        assertEquals(listOf("Checking. ", "Checking. Answer"), initial.state.messages.map { it.content })
         val rest = initial.state.messages.mapIndexed { index, message -> message.copy(id = "rest-session-1-$index") }
         val repeated =
             ChatWsEventReducer.reduce(
@@ -971,8 +1232,7 @@ class ChatWsEventReducerTest {
     @Test
     fun testToolStart_withInterimText_sealsOrphanAndTracksIt() {
         // Issue #842: interim commentary BEFORE a tool call is sealed as its
-        // own bubble (desktop parity) and its id tracked in streamingState so
-        // message.complete can strip the repeated prefix from the final text.
+        // own bubble (desktop parity) and its identity tracked in streamingState.
         val state = ChatUiState(currentSessionId = "session-1")
         val streaming =
             StreamingState(
@@ -1001,7 +1261,7 @@ class ChatWsEventReducerTest {
         assertFalse(result.state.messages[0].isStreaming)
         assertEquals("thinking...", result.state.messages[0].reasoningText)
         assertEquals(MessageRole.TOOL, result.state.messages[1].role)
-        // Stream tail cleared, orphan id tracked for the complete-strip.
+        // Stream tail cleared, sealed identity retained.
         assertEquals(null, result.streamingState.streamingMessage)
         assertEquals(listOf(result.state.messages[0].id), result.streamingState.sealedOrphanIds)
         // Reasoning preserved for the post-tool message.
@@ -1010,12 +1270,9 @@ class ChatWsEventReducerTest {
 
     @Test
     fun testMultiToolCommentaryTurn_noDuplicateInterimText() {
-        // Regression for issue #842 (m57 repro, 2026-08-08): a turn where the
-        // agent narrates commentary before EACH tool call, and the final
-        // message.complete text repeats that commentary as a prefix. Each
-        // commentary line used to render TWICE — once as the sealed orphan
-        // bubble, once inside the final bubble. Now the final bubble strips
-        // the sealed prefix: every line appears exactly once.
+        // Commentary before each tool remains separate from a streamed final.
+        // The backend's explicit response_reused flag proves delivery; an
+        // aggregate prose prefix alone does not establish segment identity.
         val state = ChatUiState(currentSessionId = "session-1")
         val start =
             ChatWsEventReducer.reduce(state, StreamingState(), WsEvent.MessageStart("session-1"), "session-1")
@@ -1024,9 +1281,6 @@ class ChatWsEventReducerTest {
         val line2 = "context's clear — patching all 4 spots now:"
         val line3 = "all 4 patches landed ✅ — final verification sweep to make sure zero sandalwood survives anywhere:"
         val answer = "Done — zero sandalwood left. 🫡"
-        // The final row is the concatenation of the streamed text — the same
-        // characters the sealed orphans hold (no extra separators).
-        val fullText = line1 + line2 + line3 + answer
 
         // Token accumulation is ViewModel-side; the reducer sees flushed content.
         // After a tool.start seals the orphan, post-tool deltas recreate the
@@ -1077,18 +1331,18 @@ class ChatWsEventReducerTest {
         assertEquals(3, result.state.messages.count { it.role == MessageRole.TOOL })
         assertEquals(orphans.map { it.id }, result.streamingState.sealedOrphanIds)
 
-        // 4. message.complete repeats the commentary as a prefix → the final
-        //    bubble strips it and shows only the answer.
+        // 4. The final streams after the tools, then complete explicitly marks
+        //    that body as already delivered. Its stream id is finalized once.
         result =
             ChatWsEventReducer.reduce(
                 result.state,
-                result.streamingState,
-                WsEvent.MessageComplete(text = fullText, sessionId = "session-1"),
+                withContent(answer, result.streamingState),
+                WsEvent.MessageComplete(text = answer, sessionId = "session-1", responseReused = true),
                 "session-1",
             )
         val allAssistant = result.state.messages.filter { it.role == MessageRole.ASSISTANT }
         assertEquals(
-            "each commentary line exactly once (sealed bubble) + the stripped answer",
+            "each commentary line exactly once (sealed bubble) + the delivered final",
             listOf(line1, line2, line3, answer),
             allAssistant.map { it.content },
         )

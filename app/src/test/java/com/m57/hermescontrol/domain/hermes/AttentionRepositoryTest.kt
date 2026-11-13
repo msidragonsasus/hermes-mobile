@@ -27,6 +27,48 @@ class AttentionRepositoryTest {
             .status
 
     @Test
+    fun round1AuthoritativeStringLockSurvivesThreeGenerations() =
+        runTest {
+            assertThreeGenerationLock("server answer")
+        }
+
+    @Test
+    fun round1AuthoritativeNullLockSurvivesThreeGenerations() =
+        runTest {
+            assertThreeGenerationLock(null)
+        }
+
+    private suspend fun assertThreeGenerationLock(answer: String?) {
+        val first = ref.copy(questionId = "qid", serverRequestId = "outer")
+        val item = AttentionItem(first, AttentionKind.CLARIFICATION, "Synthetic question")
+        repository.observe(item)
+        var sends = 0
+        repository.respond(first, first.scope, true, 0) {
+            sends++
+            SubmissionResult.Unknown
+        }
+        val second = first.copy(scope = scope.copy(generation = 2))
+        repository.observe(item.copy(ref = second, clarificationLock = ClarificationLock(answer)))
+        val third = first.copy(scope = scope.copy(generation = 3))
+        val replay = repository.observe(item.copy(ref = third))
+        assertEquals(ClarificationLock(answer), replay.clarificationLock)
+        assertEquals(AttentionStatus.CONFIRMED, replay.status)
+        assertEquals(false, repository.actionable(third, third.scope))
+        for (target in listOf(first, second, third)) {
+            repository.respond(target, target.scope, true, 0) {
+                sends++
+                SubmissionResult.Unknown
+            }
+        }
+        assertEquals(1, sends)
+        assertEquals(AttentionStatus.UNKNOWN, status(first))
+        val separateOuter = third.copy(serverRequestId = "different-outer")
+        val separateQid = third.copy(questionId = "different-qid")
+        assertEquals(null, repository.observe(item.copy(ref = separateOuter)).clarificationLock)
+        assertEquals(null, repository.observe(item.copy(ref = separateQid)).clarificationLock)
+    }
+
+    @Test
     fun exactCardWaitsForAckAndRejectsDuplicateTap() =
         runTest {
             val other = ref.copy(requestId = "other")

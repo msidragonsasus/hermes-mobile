@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,7 +43,6 @@ import com.m57.hermescontrol.ui.chat.components.ClarifyBubble
 import com.m57.hermescontrol.ui.chat.components.ReasoningCard
 import com.m57.hermescontrol.ui.chat.components.ThinkingIndicator
 import com.m57.hermescontrol.ui.chat.nativeUiKey
-import com.m57.hermescontrol.ui.chat.toolCallMilestones
 import com.m57.hermescontrol.ui.common.EmptyState
 import kotlinx.coroutines.flow.first
 
@@ -87,9 +87,15 @@ fun FullBleedChatList(
     onImageClick: (ImageViewerModel) -> Unit = {},
     sessionKey: String? = null,
     showThinkingIndicator: Boolean = false,
+    replyLifecycle: ReplyLifecycle = ReplyLifecycle(),
 ) {
     var expandedTurns by remember(sessionKey) { mutableStateOf(emptySet<String>()) }
+    val planningCache = remember(viewModel) { RenderPlanningCache() }
+    DisposableEffect(planningCache) {
+        onDispose { planningCache.clear() }
+    }
     if (messages.isEmpty() && !isLoading) {
+        planningCache.clear()
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center,
@@ -100,18 +106,22 @@ fun FullBleedChatList(
             )
         }
     } else {
-        val toolMilestones = toolCallMilestones(messages)
-        val turns =
-            remember(messages, streamingMessage) {
-                groupIntoTurnsWithStreaming(messages, streamingMessage)
-            }
+        val plan =
+            planningCache.plan(
+                messages = messages,
+                streamingMessage = streamingMessage,
+                lifecycle = replyLifecycle,
+                scope = sessionKey to viewModel.renderPlanningScope(),
+                leadingItems = if (isLoadingOlder) 1 else 0,
+                expandedTurns = expandedTurns,
+            )
+        val toolMilestones = plan.milestones
+        val turns = plan.turns
+        val replyFooters = plan.replyFooters
         // messageId → LazyColumn item index. The lazy list has EXTRA items
-        // vs the message list (reasoning hoists, tool rows), so search-match
-        // scrolling must resolve the lazy index, not use the message index.
-        val lazyIndexById =
-            remember(turns, isLoadingOlder, expandedTurns) {
-                messageIdToLazyIndex(turns, leadingItems = if (isLoadingOlder) 1 else 0, expandedTurns = expandedTurns)
-            }
+        // vs the message list (reasoning hoists, tool rows, reply footers), so
+        // search-match scrolling must resolve the lazy index, not the message index.
+        val lazyIndexById = plan.messageIdToLazyIndex
 
         val searchTarget = messages.getOrNull(searchState.matchIndices.getOrNull(searchState.currentIndex) ?: -1)
         // Identity token, not an equal-by-value key: A→B→A must acknowledge a fresh layout.
@@ -175,7 +185,7 @@ fun FullBleedChatList(
 
                 var entryIndex = 0
                 var nativeTurnAnchor = "leading"
-                turns.forEach { turn ->
+                turns.forEachIndexed { turnIndex, turn ->
                     when (turn) {
                         is ChatTurn.User -> {
                             // Eager captures: item lambda reads these at
@@ -222,6 +232,8 @@ fun FullBleedChatList(
 
                         is ChatTurn.Agent -> {
                             var firstProseSeen = false
+                            val replyFooter = replyFooters.getOrNull(turnIndex)
+                            val lastEntry = turn.entries.last()
                             val hasActivity = turn.hasActivity()
                             val turnKey = if (hasActivity) turn.tabKey() else ""
                             val activityExpanded = turnKey in expandedTurns
@@ -245,6 +257,7 @@ fun FullBleedChatList(
                                         AssistantTurnHeader(
                                             timestamp = headerMessage.timestamp,
                                             modifier = Modifier.padding(horizontal = 16.dp),
+                                            showTimestamp = false,
                                         )
                                         AgentTurnActivityRow(
                                             expanded = activityExpanded,
@@ -299,9 +312,18 @@ fun FullBleedChatList(
                                         val showTurnHeader = !firstProseSeen && !hasActivity
                                         val hoistedReasoning = hasActivity
                                         val milestone = toolMilestones[entryIndex]
+                                        // The response footer sits right under the answer it closes.
+                                        val bottomPadding =
+                                            if (replyFooter != null &&
+                                                entry === lastEntry
+                                            ) {
+                                                0.dp
+                                            } else {
+                                                12.dp
+                                            }
                                         item(key = "prose-${proseMessage.id}") {
                                             CompositionLocalProvider(LocalNativeUiMessage provides nativeIdentity) {
-                                                Column(modifier = Modifier.padding(bottom = 12.dp)) {
+                                                Column(modifier = Modifier.padding(bottom = bottomPadding)) {
                                                     if (proseMessage.isStreaming && typingEffectEnabled &&
                                                         !NativeUiProtocol.hasFence(proseMessage.content)
                                                     ) {
@@ -337,6 +359,8 @@ fun FullBleedChatList(
                                                             openingAttachmentPath = openingAttachmentPath,
                                                             canSaveAttachment = savingAttachmentPath == null,
                                                             onImageClick = onImageClick,
+                                                            showTimestamp = false,
+                                                            showFooter = false,
                                                         )
                                                     }
                                                     milestone?.let { count ->
@@ -386,7 +410,23 @@ fun FullBleedChatList(
                                                         },
                                                         onDismiss = { viewModel.dismissClarify(clarify) },
                                                     )
-                                                } else if (sysMessage.displayKind != null) {
+                                                } else if (sysMessage.role == MessageRole.USER &&
+                                                    sysMessage.displayKind == "steer"
+                                                ) {
+                                                    renderChatBubble(
+                                                        message = sysMessage,
+                                                        searchQuery =
+                                                            if (searchState.isActive) searchState.query else "",
+                                                        isCurrentMatch = searchState.currentMatchId == sysMessage.id,
+                                                        onOpenAttachment = viewModel::openAttachment,
+                                                        onSaveAttachment = onSaveAttachment,
+                                                        savingAttachmentPath = savingAttachmentPath,
+                                                        openingAttachmentPath = openingAttachmentPath,
+                                                        onImageClick = onImageClick,
+                                                    )
+                                                } else if (sysMessage.displayKind != null &&
+                                                    sysMessage.displayKind != "model_switch_request"
+                                                ) {
                                                     // Timeline marker (issue #904):
                                                     // model/personality switches and
                                                     // auto-continues render as a chip.
@@ -401,6 +441,16 @@ fun FullBleedChatList(
                                         }
                                         entryIndex++
                                     }
+                                }
+                            }
+                            if (replyFooter != null) {
+                                val footerKey = replyFooter.responseId
+                                item(key = "reply-footer-$footerKey") {
+                                    ReplyFooterRow(
+                                        text = replyFooter.text,
+                                        finishedAt = replyFooter.finishedAt,
+                                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                                    )
                                 }
                             }
                         }

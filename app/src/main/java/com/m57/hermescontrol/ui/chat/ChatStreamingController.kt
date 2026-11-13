@@ -26,8 +26,21 @@ class ChatStreamingController(
     private val streamingState: MutableStateFlow<StreamingState>,
     private val isCurrentSession: (String?) -> Boolean,
     private val isTestEnvironment: () -> Boolean,
+    private val tokenClock: () -> Long = System::currentTimeMillis,
 ) {
     private val streamingBuffer = java.lang.StringBuilder()
+    internal val pendingTokenCount: Int
+        get() =
+            (
+                streamingBuffer.length - (
+                    streamingState.value.streamingMessage
+                        ?.content
+                        ?.length ?: 0
+                )
+            ).coerceAtLeast(
+                0,
+            )
+
     private var lastFlushMs = 0L
 
     private val thinkingBuffer = java.lang.StringBuilder()
@@ -133,7 +146,7 @@ class ChatStreamingController(
         if (streamingState.value.turnEnded) return
 
         streamingBuffer.append(event.token)
-        val now = System.currentTimeMillis()
+        val now = tokenClock()
 
         // Always flush in tests, or if enough time has passed
         val shouldFlush = (now - lastFlushMs >= 33L) || lastFlushMs == 0L || isTestEnvironment()
@@ -160,6 +173,7 @@ class ChatStreamingController(
                         ChatMessage(
                             role = MessageRole.ASSISTANT,
                             content = currentContent,
+                            timestamp = now,
                             reasoningText = state.reasoningText,
                             isStreaming = true,
                         )

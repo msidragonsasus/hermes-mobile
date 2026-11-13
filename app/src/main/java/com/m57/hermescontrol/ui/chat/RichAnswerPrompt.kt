@@ -4,6 +4,9 @@ package com.m57.hermescontrol.ui.chat
 internal object RichAnswerPrompt {
     private const val MARKER = "\n\n<hermes-mobile-display-context>\n"
     private const val END = "\n</hermes-mobile-display-context>"
+
+    // Reserved wire provenance, not authentication; keep the descriptor and core suffix intact.
+    private const val GENERATED = "\n\n<!--hermes-mobile-generated-context:v1-->"
     private val contextStart = Regex("\\r?\\n\\r?\\n<hermes-mobile-display-context>\\r?\\n")
 
     // Keep this identifying preamble stable so changes to the appended guides do not expose old history.
@@ -43,7 +46,7 @@ internal object RichAnswerPrompt {
         if (text.isBlank() || text.trimStart().startsWith("/") || text.endsWith(END)) {
             text
         } else {
-            text + MARKER + instructions + END
+            text + GENERATED + MARKER + instructions + END
         }
 
     /** What the user wrote, for bubbles, copy, edit, search and titles. Model and server text are unchanged. */
@@ -56,7 +59,8 @@ internal object RichAnswerPrompt {
      * so history rows can show them as attachment cards. Anything else stays as typed.
      */
     fun displayText(text: String): DisplayedUserText {
-        var body = text
+        var body = stripLeadingDisplayContexts(text)
+        val hadLeadingContext = body != text
         var attachedRefs = emptySet<String>()
         val serverSections = stripServerSections(body)
         serverSections?.let { (rest, refs) ->
@@ -65,7 +69,9 @@ internal object RichAnswerPrompt {
         }
         val withoutContext = stripDisplayContext(body)
         // Without the app's block or the server's section this is plain user text: keep it whole.
-        if (withoutContext == null && serverSections == null) return DisplayedUserText(text, emptyList())
+        if (withoutContext == null && serverSections == null && !hadLeadingContext) {
+            return DisplayedUserText(text, emptyList())
+        }
         if (withoutContext != null) body = withoutContext
         return stripLeadingRefs(body, attachedRefs)
     }
@@ -75,23 +81,137 @@ internal object RichAnswerPrompt {
      * the app block or server section even when its end is missing, then drops leading refs.
      */
     fun previewText(text: String): String {
+        val projected = displayText(text).text
+        if (isTruncatedLeadingContext(projected)) return ""
+        val generatedPreview = truncatedGeneratedStart(projected)
         val cut =
             listOfNotNull(
-                previewBlockStart.find(text)?.range?.first,
-                previewSectionStart.find(text)?.range?.first,
+                generatedPreview,
+                previewBlockStart
+                    .findAll(projected)
+                    .firstOrNull { match ->
+                        val tail = projected.substring(match.range.first)
+                        "</hermes-mobile-display-context>" !in tail &&
+                            !insideCodeFence(projected.substring(0, match.range.first))
+                    }?.range
+                    ?.first,
+                previewSectionStart.find(projected)?.range?.first,
             ).minOrNull()
-        val head = if (cut != null) text.substring(0, cut) else text
+        val head = if (cut != null) projected.substring(0, cut) else projected
         // Previews may already be flattened to one line: "@file:/…/.hermes/… text".
         return previewRef.replace(stripLeadingRefs(head, emptySet()).text, "")
     }
 
+    private fun isTruncatedLeadingContext(text: String): Boolean {
+        val normalized = text.replace("\r\n", "\n")
+        val opening = "<hermes-mobile-display-context>\n"
+        if (normalized == opening.removeSuffix("\n")) return true
+        if (!normalized.startsWith(opening) || "</hermes-mobile-display-context>" in normalized) return false
+        return (NativeUiInstructions.previousDescriptors + listOf(instructions, legacyInstructions, imageInstructions))
+            .any { (opening + it + END).startsWith(normalized) }
+    }
+
+    // Preview-only reserved-envelope convention, including truncation inside the delimiter.
+    private fun truncatedGeneratedStart(text: String): Int? {
+        val normalized = text.replace("\r\n", "\n")
+        val full = normalized.lastIndexOf(GENERATED)
+        val start =
+            if (full >= 0) {
+                full
+            } else {
+                (GENERATED.length - 1 downTo 3).firstNotNullOfOrNull { length ->
+                    (normalized.length - length).takeIf {
+                        it >= 0 && normalized.endsWith(GENERATED.take(length))
+                    }
+                } ?: return null
+            }
+        if ("</hermes-mobile-display-context>" in normalized.substring(start)) return null
+        // Map normalized character offsets back without changing any human CRLF or whitespace.
+        var offset = 0
+        var count = 0
+        while (count < start) {
+            if (text.startsWith("\r\n", offset)) offset++
+            offset++
+            count++
+        }
+        return offset
+    }
+
     private fun stripDisplayContext(text: String): String? {
+        var body = text
+        while (true) {
+            val stripped = stripTrailingDisplayContext(body) ?: break
+            body = stripped
+        }
+        return body.takeIf { it != text }
+    }
+
+    // Prefixes have no preceding human text to establish an app suffix boundary. Require a
+    // complete released descriptor, not just the identifying sentence or a tag-shaped quote.
+    private fun stripLeadingDisplayContexts(text: String): String {
+        var rest = text
+        while (rest.startsWith("<hermes-mobile-display-context>\n") ||
+            rest.startsWith("<hermes-mobile-display-context>\r\n")
+        ) {
+            val close = rest.indexOf("</hermes-mobile-display-context>")
+            if (close < 0) break
+            val candidate =
+                rest
+                    .substring(0, close)
+                    .replace("\r\n", "\n")
+                    .removePrefix("<hermes-mobile-display-context>\n")
+                    .removeSuffix("\n")
+            if (candidate != instructions && candidate !in NativeUiInstructions.previousDescriptors &&
+                candidate != legacyInstructions && candidate != imageInstructions
+            ) {
+                break
+            }
+            val after = rest.substring(close + "</hermes-mobile-display-context>".length)
+            if (after.isNotEmpty() && !after.startsWith("\n") && !after.startsWith("\r\n")) break
+            rest = after
+            // Consume only the wrapper separator, never trim the human body's whitespace.
+            repeat(2) {
+                rest =
+                    when {
+                        rest.startsWith("\r\n") -> rest.substring(2)
+                        rest.startsWith("\n") -> rest.substring(1)
+                        else -> rest
+                    }
+            }
+        }
+        return rest
+    }
+
+    private fun insideCodeFence(text: String): Boolean {
+        var fence: String? = null
+        for (line in text.lineSequence()) {
+            val match = codeFence.matchEntire(line) ?: continue
+            val marker = match.groupValues[1]
+            val open = fence
+            if (open == null) {
+                fence = marker
+            } else if (marker.first() == open.first() && marker.length >= open.length &&
+                match.groupValues[2].isBlank()
+            ) {
+                fence = null
+            }
+        }
+        return fence != null
+    }
+
+    private val codeFence = Regex("^ {0,3}(`{3,}|~{3,})(.*)$")
+
+    private fun stripTrailingDisplayContext(text: String): String? {
         val trimmed = text.trimEnd()
         if (!trimmed.endsWith("</hermes-mobile-display-context>")) return null
         val start = contextStart.findAll(trimmed).lastOrNull() ?: return null
+        val prefix = text.substring(0, start.range.first)
+        val generated = prefix.endsWith(GENERATED) || prefix.endsWith(GENERATED.replace("\n", "\r\n"))
+        if (!generated && insideCodeFence(prefix)) return null
         val suffix = trimmed.substring(start.range.last + 1).replace("\r\n", "\n")
         if (!suffix.endsWith(END)) return null
         val body = suffix.removeSuffix(END)
+        if ("<hermes-mobile-display-context>" in body) return null
         // Recognize only the app's preamble, not an arbitrary user-authored tagged block. Every
         // catalog version, including unknown future ones, starts with the same first sentence.
         if (body != instructions &&
@@ -101,7 +221,18 @@ internal object RichAnswerPrompt {
         ) {
             return null
         }
-        return text.substring(0, start.range.first)
+        return if (generated) {
+            if (prefix.endsWith(
+                    GENERATED,
+                )
+            ) {
+                prefix.removeSuffix(GENERATED)
+            } else {
+                prefix.removeSuffix(GENERATED.replace("\n", "\r\n"))
+            }
+        } else {
+            prefix
+        }
     }
 
     /**

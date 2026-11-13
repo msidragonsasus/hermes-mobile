@@ -100,6 +100,54 @@ class AppUpdateViewModel(
     private val _state = MutableStateFlow<AppUpdateState>(AppUpdateState.Idle)
     val state: StateFlow<AppUpdateState> = _state.asStateFlow()
 
+    /** Home visibility is independent of the optional chat notice and its dismissal. */
+    private val _homeUpdateCandidate = MutableStateFlow<UpdateCandidate?>(null)
+    val homeUpdateCandidate: StateFlow<UpdateCandidate?> = _homeUpdateCandidate.asStateFlow()
+
+    /** Refresh on return, but never replace an owned transfer or replay installer handoff. */
+    fun onForeground() {
+        if (onConnectionSignal()) return
+        synchronized(lock) {
+            val candidate = pending
+            if (candidate != null && !isOfferValid(candidate)) resetForNewConnectionLocked()
+            refreshHomeCandidate()
+            if (_state.value is AppUpdateState.NeedsUnknownSourcesPermission) {
+                resumeInstallAfterPermission()
+                return
+            }
+            // A recoverable transfer error retains its confirmed offer for explicit retry.
+            if (isBusy() || (_state.value is AppUpdateState.Error && pending != null)) return
+        }
+        checkForUpdate()
+    }
+
+    /** Reopen the shared dialog; visibility is not permission to start another attempt. */
+    fun openUpdateDialog() {
+        onConnectionSignal()
+        synchronized(lock) {
+            if (pending?.let { !isOfferValid(it) } == true) resetForNewConnectionLocked()
+            refreshHomeCandidate()
+            AppUpdateCache.showDialog()
+        }
+    }
+
+    /** A check failure has no candidate. Only a retained transfer candidate may retry directly. */
+    fun retryUpdate() {
+        if (onConnectionSignal()) return
+        synchronized(lock) {
+            if (isBusy()) return
+            if (pending?.let { isOfferValid(it) } == true) {
+                if (_state.value is AppUpdateState.NeedsUnknownSourcesPermission) {
+                    resumeInstallAfterPermission()
+                } else {
+                    startUpdate()
+                }
+                return
+            }
+        }
+        checkForUpdate()
+    }
+
     private val _sourceInfo = MutableStateFlow(sourceInfoFor(scopes.source()))
     val sourceInfo: StateFlow<UpdateSourceInfo> = _sourceInfo.asStateFlow()
 
@@ -109,15 +157,20 @@ class AppUpdateViewModel(
     private var attempt: Attempt? = null
     private var pending: UpdateCandidate? = null
     private var lastScope: UpdateScope? = null
+    private var lastGeneration = AppUpdateCache.generation
+    private var checkId = 0L
+    private var cleared = false
 
     init {
         // Drop a cached result for another connection before adopting anything.
         UpdateConnectionWatcher.invalidateIfStale(scopes)
         lastScope = scopes.current(scopes.source())
+        lastGeneration = AppUpdateCache.generation
         val cached = AppUpdateCache.state.value
         if (isCurrentResult(cached)) {
             _state.value = cached
             pending = (cached as? AppUpdateState.UpdateAvailable)?.candidate
+            refreshHomeCandidate()
         } else {
             checkForUpdate()
         }
@@ -135,59 +188,83 @@ class AppUpdateViewModel(
         checkForUpdate()
     }
 
-    /** Manual check from the About row or dialog. */
+    /** Manual check from About/Home. Checking deliberately revokes old evidence. */
     fun checkForUpdate() {
-        if (isBusy()) return
-        val source = _sourceInfo.value.source
-        val scope = scopes.current(source)
-        if (scope == null) {
-            // No silent fallback to the public upstream when the server is unavailable.
-            _state.value = AppUpdateState.Error(UpdateFailure.NOT_CONNECTED)
-            return
-        }
-        val generation = AppUpdateCache.generation
-        checkGeneration = generation
-        _state.value = AppUpdateState.Checking
-        checkJob =
-            viewModelScope.launch(ioDispatcher) {
-                AuthManager.setUpdateCheckDoneForVersion(currentVersion)
-                AuthManager.setLastUpdateCheckTimestamp(System.currentTimeMillis())
-                val result = resolveUpdate(checker, scope, generation, inspector, expectedPackage, currentVersion)
-                synchronized(lock) {
-                    if (generation != AppUpdateCache.generation || scopes.current(source) != scope) return@launch
-                    val next =
-                        when (result) {
-                            is UpdateCheck.Available -> AppUpdateState.UpdateAvailable(result.candidate)
-                            is UpdateCheck.UpToDate -> AppUpdateState.UpToDate(result.versionName, scope)
-                            is UpdateCheck.Failed -> AppUpdateState.Error(result.failure)
+        synchronized(lock) {
+            if (cleared || isBusy()) return
+            val source = scopes.source()
+            val scope = scopes.current(source)
+            if (source != _sourceInfo.value.source || scope != lastScope) {
+                AppUpdateCache.invalidate()
+                resetForNewConnectionLocked()
+            }
+            pending = null
+            refreshHomeCandidate()
+            // A failed check must not leave a globally cached candidate installable.
+            AppUpdateCache.update(AppUpdateState.Idle)
+            if (scope == null) {
+                _state.value = AppUpdateState.Error(UpdateFailure.NOT_CONNECTED)
+                return
+            }
+            val generation = AppUpdateCache.generation
+            val ownCheck = ++checkId
+            checkGeneration = generation
+            _state.value = AppUpdateState.Checking
+            checkJob =
+                viewModelScope.launch(ioDispatcher) {
+                    AuthManager.setUpdateCheckDoneForVersion(currentVersion)
+                    AuthManager.setLastUpdateCheckTimestamp(System.currentTimeMillis())
+                    val result = resolveUpdate(checker, scope, generation, inspector, expectedPackage, currentVersion)
+                    synchronized(lock) {
+                        if (cleared || ownCheck != checkId || !isActive ||
+                            generation != AppUpdateCache.generation || scopes.source() != source ||
+                            scopes.current(source) != scope
+                        ) {
+                            return@launch
                         }
-                    pending = (next as? AppUpdateState.UpdateAvailable)?.candidate
-                    _state.value = next
-                    if (next !is AppUpdateState.Error) {
-                        // Keep the launch notice (issue #890) and the chat dialog in sync.
-                        AppUpdateCache.update(next)
-                        next.releaseTag()?.let { AuthManager.setLastKnownLatestTag(it) }
+                        val next =
+                            when (result) {
+                                is UpdateCheck.Available -> AppUpdateState.UpdateAvailable(result.candidate)
+                                is UpdateCheck.UpToDate -> AppUpdateState.UpToDate(result.versionName, scope)
+                                is UpdateCheck.Failed -> AppUpdateState.Error(result.failure)
+                            }
+                        pending = (next as? AppUpdateState.UpdateAvailable)?.candidate
+                        _state.value = next
+                        refreshHomeCandidate()
+                        if (next !is AppUpdateState.Error) {
+                            AppUpdateCache.update(next)
+                            next.releaseTag()?.let { AuthManager.setLastKnownLatestTag(it) }
+                        }
                     }
                 }
-            }
+        }
     }
 
     /** Download the APK, verify it, then open the system installer. Ignored while one is running. */
     fun startUpdate() {
-        val candidate =
-            (_state.value as? AppUpdateState.UpdateAvailable)?.candidate
-                ?: (AppUpdateCache.state.value as? AppUpdateState.UpdateAvailable)?.candidate
-                ?: pending
-                ?: return
         synchronized(lock) {
-            if (attempt?.job?.isActive == true) return
+            if (cleared || isBusy()) return
+            // No fallback to AppUpdateCache: it may predate a failed fresh check.
+            val candidate = pending ?: return
             if (!isCurrent(candidate)) {
                 AppUpdateCache.invalidate()
                 resetForNewConnectionLocked()
                 _state.value = AppUpdateState.Error(UpdateFailure.CONNECTION_CHANGED)
                 return
             }
+            if (!isOfferValid(candidate)) {
+                pending = null
+                refreshHomeCandidate()
+                _state.value = AppUpdateState.Error(UpdateFailure.NOT_NEWER)
+                return
+            }
             pending = candidate
+            refreshHomeCandidate()
+            if (attempt?.let { it.handedToInstaller && it.candidate == candidate } == true) {
+                // This is an explicit button action, not a lifecycle resume.
+                resumeInstallAfterPermission()
+                return
+            }
             if (!canRequestInstalls()) {
                 _state.value = AppUpdateState.NeedsUnknownSourcesPermission
                 return
@@ -227,20 +304,21 @@ class AppUpdateViewModel(
         AppUpdateCache.hideDialog()
     }
 
-    /**
-     * Resume after the Unknown Sources settings screen, or re-open the
-     * installer. The current attempt's file is re-verified first; without a
-     * matching verified file the APK is downloaded again.
-     */
+    /** Resume a requested permission wait, or explicitly reopen and re-verify an installer. */
     fun resumeInstallAfterPermission() {
-        if (!canRequestInstalls()) {
-            if (pending != null) _state.value = AppUpdateState.NeedsUnknownSourcesPermission
-            return
-        }
-        val candidate = pending ?: return
         synchronized(lock) {
+            if (cleared || isBusy()) return
             val current = attempt
-            if (current?.job?.isActive == true) return
+            val permissionWait = _state.value is AppUpdateState.NeedsUnknownSourcesPermission
+            val explicitReopen =
+                current?.handedToInstaller == true &&
+                    (_state.value is AppUpdateState.InstallerOpened || _state.value is AppUpdateState.UpdateAvailable)
+            if (!permissionWait && !explicitReopen) return
+            if (!canRequestInstalls()) {
+                _state.value = AppUpdateState.NeedsUnknownSourcesPermission
+                return
+            }
+            val candidate = pending ?: return
             if (!isCurrent(candidate)) {
                 AppUpdateCache.invalidate()
                 resetForNewConnectionLocked()
@@ -258,6 +336,7 @@ class AppUpdateViewModel(
                 attempt = null
                 _state.value = AppUpdateState.UpdateAvailable(candidate)
             } else {
+                current.handedToInstaller = false
                 _state.value = AppUpdateState.Verifying
                 current.job = viewModelScope.launch(ioDispatcher) { verifyAndInstall(current) }
                 return
@@ -268,6 +347,9 @@ class AppUpdateViewModel(
 
     override fun onCleared() {
         synchronized(lock) {
+            cleared = true
+            checkId++
+            _homeUpdateCandidate.value = null
             checkJob?.cancel()
             val current = attempt
             attempt = null
@@ -288,6 +370,8 @@ class AppUpdateViewModel(
             checker.download(own.candidate, own.file) { progress ->
                 if (isActive) postIfCurrent(own, AppUpdateState.Downloading(progress))
             }
+            // Include the cancellation boundary in cleanup even if a downloader returns late.
+            verifyAndInstall(own)
         } catch (e: CancellationException) {
             own.discard()
             throw e
@@ -298,7 +382,6 @@ class AppUpdateViewModel(
             failIfCurrent(own, UpdateFailure.DOWNLOAD_FAILED)
             return
         }
-        verifyAndInstall(own)
     }
 
     private fun CoroutineScope.verifyAndInstall(own: Attempt) {
@@ -331,26 +414,51 @@ class AppUpdateViewModel(
                 if (attempt !== own) own.discard()
                 return
             }
+            if (own.handedToInstaller) return
+            if (!canRequestInstalls()) {
+                _state.value = AppUpdateState.NeedsUnknownSourcesPermission
+                refreshHomeCandidate()
+                return
+            }
             _state.value = AppUpdateState.InstallerOpened(candidate.versionName)
             own.handedToInstaller = true
-            launchInstaller(file)
+            if (!launchInstaller(file)) {
+                own.handedToInstaller = false
+                failIfCurrent(own, UpdateFailure.INSTALLER_UNAVAILABLE)
+            }
         }
     }
 
-    private fun onConnectionSignal() {
+    /** Reconcile exact scope/generation before any action and on source/auth signals. */
+    private fun onConnectionSignal(): Boolean {
+        if (cleared) return false
         UpdateConnectionWatcher.invalidateIfStale(scopes)
-        synchronized(lock) {
-            val scope = scopes.current(_sourceInfo.value.source)
-            val staleCandidate = (attempt?.candidate ?: pending)?.let { !isCurrent(it) } == true
-            val staleCheck = checkJob?.isActive == true && checkGeneration != AppUpdateCache.generation
-            if (scope != lastScope || staleCandidate || staleCheck) resetForNewConnectionLocked()
-        }
+        val changed =
+            synchronized(lock) {
+                val source = scopes.source()
+                val scope = scopes.current(source)
+                val staleCandidate = (attempt?.candidate ?: pending)?.let { !isCurrent(it) } == true
+                val staleCheck = checkJob?.isActive == true && checkGeneration != AppUpdateCache.generation
+                if (source != _sourceInfo.value.source || scope != lastScope ||
+                    lastGeneration != AppUpdateCache.generation || staleCandidate || staleCheck
+                ) {
+                    // Also fence uncached in-flight checks when no watcher cache existed to invalidate.
+                    if (lastGeneration == AppUpdateCache.generation) AppUpdateCache.invalidate()
+                    resetForNewConnectionLocked()
+                    true
+                } else {
+                    false
+                }
+            }
+        if (changed && scopes.current(scopes.source()) != null) checkForUpdate()
+        return changed
     }
 
     private fun resetForNewConnection() = synchronized(lock) { resetForNewConnectionLocked() }
 
     /** Discard everything bound to the previous connection or source (caller holds [lock]). */
     private fun resetForNewConnectionLocked() {
+        checkId++
         checkJob?.cancel()
         checkJob = null
         val current = attempt
@@ -358,7 +466,9 @@ class AppUpdateViewModel(
         current?.job?.cancel()
         current?.discard()
         pending = null
+        _homeUpdateCandidate.value = null
         lastScope = scopes.current(scopes.source())
+        lastGeneration = AppUpdateCache.generation
         _sourceInfo.value = sourceInfoFor(scopes.source())
         _state.value = AppUpdateState.Idle
     }
@@ -367,7 +477,7 @@ class AppUpdateViewModel(
         own: Attempt,
         next: AppUpdateState,
     ) = synchronized(lock) {
-        if (attempt === own) _state.value = next
+        if (attempt === own && !cleared && isCurrent(own.candidate)) _state.value = next
     }
 
     private fun failIfCurrent(
@@ -377,6 +487,13 @@ class AppUpdateViewModel(
         own.discard()
         if (attempt === own) {
             attempt = null
+            if (failure !in setOf(UpdateFailure.NETWORK, UpdateFailure.DOWNLOAD_FAILED) ||
+                !isOfferValid(own.candidate)
+            ) {
+                pending = null
+                AppUpdateCache.update(AppUpdateState.Idle)
+            }
+            refreshHomeCandidate()
             _state.value = AppUpdateState.Error(failure)
         }
     }
@@ -389,15 +506,35 @@ class AppUpdateViewModel(
             attempt?.job?.isActive == true
     }
 
+    /** Re-read installed identity, not a persisted latest-tag or banner preference. */
+    private fun isOfferValid(candidate: UpdateCandidate): Boolean {
+        if (!isCurrent(candidate)) return false
+        return runCatching {
+            val installed = UpdatePolicy.requireInstalled(inspector.installed(), expectedPackage)
+            if (candidate.source == UpdateSource.CONNECTED_SERVER) {
+                candidate.versionCode != null && candidate.versionCode > installed.versionCode &&
+                    candidate.signerSha256 == installed.signerSha256
+            } else {
+                com.m57.hermescontrol.data.update
+                    .isNewerVersion(candidate.versionName, currentVersion)
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun refreshHomeCandidate() {
+        _homeUpdateCandidate.value = pending?.takeIf { isOfferValid(it) }
+    }
+
     private fun isCurrent(candidate: UpdateCandidate): Boolean =
-        candidate.generation == AppUpdateCache.generation &&
+        !cleared && scopes.source() == candidate.source &&
+            candidate.generation == AppUpdateCache.generation &&
             candidate.source == _sourceInfo.value.source &&
             candidate.scope == scopes.current(candidate.source)
 
     private fun isCurrentResult(state: AppUpdateState): Boolean =
         when (state) {
             is AppUpdateState.UpdateAvailable -> {
-                isCurrent(state.candidate)
+                isOfferValid(state.candidate)
             }
 
             is AppUpdateState.UpToDate -> {
@@ -435,7 +572,7 @@ class AppUpdateViewModel(
             false
         }
 
-    private fun launchInstaller(apkFile: File) {
+    private fun launchInstaller(apkFile: File): Boolean =
         try {
             val context = getApplication<Application>()
             val uri =
@@ -445,10 +582,10 @@ class AppUpdateViewModel(
                     apkFile,
                 )
             context.startActivity(installIntentFactory(uri))
+            true
         } catch (e: Exception) {
-            _state.value = AppUpdateState.Error(UpdateFailure.INSTALLER_UNAVAILABLE)
+            false
         }
-    }
 
     private companion object {
         /** Under the existing FileProvider `cache-path` root. */

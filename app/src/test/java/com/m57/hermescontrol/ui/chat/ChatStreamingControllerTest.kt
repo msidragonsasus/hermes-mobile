@@ -9,6 +9,23 @@ import org.junit.Test
 
 class ChatStreamingControllerTest {
     @Test
+    fun fallbackTokenSegmentKeepsExplicitAppendPosition() =
+        runTest {
+            val a1 =
+                ChatMessage(
+                    id = "sealed-a1",
+                    role = MessageRole.ASSISTANT,
+                    content = "A1",
+                    timestamp = Long.MAX_VALUE,
+                )
+            val ui = MutableStateFlow(ChatUiState(messages = listOf(a1)))
+            val stream = MutableStateFlow(StreamingState(sealedOrphanIds = listOf(a1.id)))
+            controller(this, ui, stream, isTestEnvironment = { true })
+                .handleMessageToken(WsEvent.MessageToken("A2", "session"))
+            org.junit.Assert.assertTrue(stream.value.streamingMessage!!.timestamp < a1.timestamp)
+        }
+
+    @Test
     fun flushPendingReasoning_flushesThrottledReasoningOnTransition() =
         runTest {
             // isTestEnvironment = false so the ~33ms throttle is live. The FIRST delta

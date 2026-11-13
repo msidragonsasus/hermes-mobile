@@ -19,12 +19,29 @@ data class AttentionDetails(
 sealed interface AttentionSignal {
     data class Requested(
         val items: List<AttentionItem>,
+        val ordinal: Long = 0,
     ) : AttentionSignal
 
     data class Expired(
         val scope: ConnectionScope,
         val runtimeId: String,
         val requestId: String,
+    ) : AttentionSignal
+
+    data class Cancelled(
+        val scope: ConnectionScope,
+        val runtimeId: String,
+        val serverRequestId: String,
+        val method: String?,
+        val reason: String?,
+    ) : AttentionSignal
+
+    data class Snapshot(
+        val scope: ConnectionScope,
+        val runtimeId: String,
+        val startedAt: Long,
+        val items: List<AttentionItem>,
+        val serverRequestIds: Set<String>,
     ) : AttentionSignal
 
     data class Resolved(

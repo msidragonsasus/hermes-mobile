@@ -53,6 +53,9 @@ sealed interface AgentEntry {
 private const val MAX_ITERATIONS_SYSTEM_MARKER =
     "You've reached the maximum number of tool-calling iterations allowed."
 
+private fun ChatMessage.isModelSwitchControl(): Boolean =
+    role == MessageRole.USER && (displayKind == "model_switch" || displayKind == "model_switch_request")
+
 private fun ChatMessage.isSyntheticSystemRow(): Boolean =
     role == MessageRole.USER &&
         displayKind == null &&
@@ -65,9 +68,26 @@ private fun ChatMessage.isSyntheticSystemRow(): Boolean =
  * turn; all non-user messages belong to the surrounding agent turn. A new
  * agent turn starts after each user turn or at the start of the list.
  */
-fun groupIntoTurns(messages: List<ChatMessage>): List<ChatTurn> {
+fun groupIntoTurns(
+    messages: List<ChatMessage>,
+    ledger: com.m57.hermescontrol.ui.chat.ResponseLedger =
+        com.m57.hermescontrol.ui.chat
+            .ResponseLedger(),
+): List<ChatTurn> = groupIntoTurnsForPresentation(messages, ledger)
+
+private fun groupIntoTurnsForPresentation(
+    messages: List<ChatMessage>,
+    ledger: com.m57.hermescontrol.ui.chat.ResponseLedger,
+    presentationOwners: Map<String, String> = emptyMap(),
+): List<ChatTurn> {
     val turns = mutableListOf<ChatTurn>()
     val agentEntries = mutableListOf<AgentEntry>()
+    val owners =
+        ledger.responses
+            .flatMap { response ->
+                (response.messageIds + response.userIds).map { it to response.id }
+            }.toMap()
+    var previousOwner: String? = null
 
     fun flushAgent() {
         if (agentEntries.isNotEmpty()) {
@@ -77,6 +97,13 @@ fun groupIntoTurns(messages: List<ChatMessage>): List<ChatTurn> {
     }
 
     messages.forEach { message ->
+        // A local configuration control has no response owner of its own.
+        // Keep its row without treating the absent owner as a new response.
+        val owner =
+            owners[message.id] ?: presentationOwners[message.id]
+                ?: previousOwner.takeIf { message.isModelSwitchControl() }
+        if (owner != previousOwner && (owner != null || previousOwner != null)) flushAgent()
+        previousOwner = owner
         when {
             // Timeline markers (display_kind) ride as role=user rows but are
             // NOT user turns — group them as system-style timeline entries so
@@ -129,19 +156,40 @@ fun groupIntoTurns(messages: List<ChatMessage>): List<ChatTurn> {
 fun groupIntoTurnsWithStreaming(
     messages: List<ChatMessage>,
     streamingMessage: ChatMessage?,
+    ledger: com.m57.hermescontrol.ui.chat.ResponseLedger =
+        com.m57.hermescontrol.ui.chat
+            .ResponseLedger(),
 ): List<ChatTurn> {
-    if (streamingMessage == null || messages.any { it.id == streamingMessage.id }) {
-        return groupIntoTurns(messages)
-    }
-    val turns = groupIntoTurns(messages).toMutableList()
-    val prose = AgentEntry.Prose(streamingMessage)
-    val last = turns.lastOrNull()
-    if (last is ChatTurn.Agent) {
-        turns[turns.lastIndex] = ChatTurn.Agent(last.entries + prose)
-    } else {
-        turns += ChatTurn.Agent(listOf(prose))
-    }
-    return turns
+    val rows =
+        if (streamingMessage == null || messages.any { it.id == streamingMessage.id }) {
+            messages
+        } else {
+            messages + streamingMessage
+        }
+    // The UI ledger does not yet own the live segment. Infer adjacency only for
+    // presentation; observing it in the ledger here would also grant copy authority.
+    val active = ledger.responses.singleOrNull { it.id == ledger.activeId }
+    val tail =
+        messages.lastOrNull { message ->
+            !message.isModelSwitchControl() ||
+                ledger.responses.any { message.id in it.messageIds || message.id in it.userIds }
+        }
+    val tailOwners =
+        ledger.responses.filter { tail?.id in it.messageIds || tail?.id in it.userIds }
+    val liveOwner =
+        active?.takeIf {
+            streamingMessage != null &&
+                streamingMessage.isStreaming && streamingMessage.role == MessageRole.ASSISTANT &&
+                messages.none { row -> row.id == streamingMessage.id } &&
+                ledger.responses.none { response ->
+                    streamingMessage.id in response.messageIds || streamingMessage.id in response.userIds
+                } &&
+                it.finishedAt == null && it.authority.terminals.isEmpty() &&
+                tail != null && tail.role != MessageRole.USER && tailOwners.singleOrNull()?.id == it.id
+        }
+    val presentationOwners =
+        if (liveOwner != null && streamingMessage != null) mapOf(streamingMessage.id to liveOwner.id) else emptyMap()
+    return groupIntoTurnsForPresentation(rows, ledger, presentationOwners)
 }
 
 /**
@@ -155,9 +203,11 @@ fun groupIntoTurnsWithStreaming(
  * rows precede the target — the classic "match is above/below the view" bug.
  *
  * Mirrors the item emission order in [FullBleedChatList] exactly:
- * user turn → 1 item; agent turn → optional reasoning item, then one item per
- * entry. [leadingItems] accounts for fixed items emitted before the turns
- * (e.g. the `loading-older` spinner when paging).
+ * user turn → 1 item; agent turn → optional activity row, expanded reasoning
+ * rows, visible entries, then one footer when [replyFooters] has a non-null value
+ * at that turn index. [leadingItems] accounts for fixed items emitted before
+ * the turns (e.g. the `loading-older` spinner when paging). The default empty
+ * footer plan preserves callers that do not emit response footer rows.
  *
  * @return messageId → LazyColumn item index of the message's content item
  *   (prose items for agent messages; user items for user messages).
@@ -166,10 +216,11 @@ fun messageIdToLazyIndex(
     turns: List<ChatTurn>,
     leadingItems: Int = 0,
     expandedTurns: Set<String> = emptySet(),
+    replyFooters: List<ReplyFooter?> = emptyList(),
 ): Map<String, Int> {
     val map = mutableMapOf<String, Int>()
     var itemIndex = leadingItems
-    turns.forEach { turn ->
+    turns.forEachIndexed { turnIndex, turn ->
         when (turn) {
             is ChatTurn.User -> {
                 map[turn.message.id] = itemIndex
@@ -210,6 +261,7 @@ fun messageIdToLazyIndex(
                         }
                     }
                 }
+                if (replyFooters.getOrNull(turnIndex) != null) itemIndex++
             }
         }
     }

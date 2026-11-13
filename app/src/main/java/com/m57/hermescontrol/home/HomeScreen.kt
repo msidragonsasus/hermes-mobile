@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.m57.hermescontrol.HermesControlApp
 import com.m57.hermescontrol.NavigationController
@@ -43,6 +44,7 @@ import com.m57.hermescontrol.navigation.AttentionDetailKey
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.OverviewHeading
+import com.m57.hermescontrol.ui.common.sharedAppUpdateViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -64,6 +66,8 @@ fun HomeScreen() {
     val attention by app.attentionRepository.items.collectAsState()
     val connection by app.runRepository.snapshot.collectAsState()
     val storageError by repository.error.collectAsState()
+    val updater = sharedAppUpdateViewModel()
+    val updateCandidate by updater.homeUpdateCandidate.collectAsStateWithLifecycle()
     val coroutine = rememberCoroutineScope()
     val lifecycle = LocalLifecycleOwner.current
     var error by remember(scope) { mutableStateOf<String?>(null) }
@@ -152,7 +156,11 @@ fun HomeScreen() {
         }
     }
     val results = items.filter { it.category == "result" }.sortedByDescending { it.updated_at }
-    HermesScaffold(title = { Text("ホーム") }, drawerGesturesEnabled = false) {
+    HermesScaffold(
+        title = { Text("ホーム") },
+        drawerGesturesEnabled = false,
+        actions = { HomeUpdateAction(updateCandidate?.versionName, updater::openUpdateDialog) },
+    ) {
         HomeFeedContent(
             scope = scope,
             actions = actions,
@@ -169,6 +177,7 @@ fun HomeScreen() {
             onRefresh = {
                 refresh++
                 if (today.settings?.enabled == true) coroutine.launch { today.refresh() }
+                updater.checkForUpdate()
             },
             onProviderChange = { id, enabled ->
                 coroutine.launch {

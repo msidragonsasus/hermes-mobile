@@ -219,6 +219,40 @@ class ServerUpdateTransportTest {
         assertEquals(1, serverA.requestCount)
     }
 
+    @Test
+    fun unavailableWithImmediateRetryAfter_retainsRawStatusAndDoesNotFollowUp() {
+        serverA.enqueue(MockResponse().setResponseCode(503).setHeader("Retry-After", "0"))
+        serverA.enqueue(MockResponse().setResponseCode(200))
+        val client = boundUpdateClient(scopes.bind(scopeA)!!, ambientBase)
+        client.newCall(Request.Builder().url(serverUpdatesUrl(scopeA, "latest")).build()).execute().use {
+            assertEquals(503, it.code)
+        }
+        assertEquals(1, serverA.requestCount)
+        assertEquals(0, serverB.requestCount)
+    }
+
+    @Test
+    fun unavailableMetadataWithImmediateRetryAfter_isTypedAndOneAttempt() {
+        serverA.enqueue(MockResponse().setResponseCode(503).setHeader("Retry-After", "0"))
+        serverA.enqueue(MockResponse().setBody(emptyLatest))
+        expectFailure(UpdateFailure.SERVER_UPDATES_DISABLED) { checker().fetchServerLatest(scopeA) }
+        assertEquals(1, serverA.requestCount)
+        assertEquals("Bearer token-A", serverA.takeRequest().getHeader("Authorization"))
+    }
+
+    @Test
+    fun unavailableApkWithImmediateRetryAfter_isTypedAndCleansAttempt() {
+        serverA.enqueue(MockResponse().setResponseCode(503).setHeader("Retry-After", "0"))
+        serverA.enqueue(MockResponse().setBody("test"))
+        val dest = File(dir, "unavailable.apk")
+        expectFailure(UpdateFailure.SERVER_UPDATES_DISABLED) {
+            checker().download(candidate("test".toByteArray()), dest) {}
+        }
+        assertEquals(1, serverA.requestCount)
+        assertFalse(dest.exists())
+        assertFalse(File(dest.path + ".part").exists())
+    }
+
     // ── Metadata endpoint ───────────────────────────────────────────────
 
     @Test

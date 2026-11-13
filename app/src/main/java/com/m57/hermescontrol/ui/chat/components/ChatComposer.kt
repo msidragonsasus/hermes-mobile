@@ -356,16 +356,16 @@ fun ChatInputBar(
 
                         val placeholderText =
                             inputPlaceholder ?: when {
+                                responseStatusUnknown -> {
+                                    stringResource(R.string.chat_input_placeholder_status_unknown)
+                                }
+
                                 queueOnSend -> {
                                     stringResource(R.string.draft_queue_placeholder)
                                 }
 
                                 !isConnected -> {
                                     stringResource(R.string.chat_input_placeholder_not_connected)
-                                }
-
-                                responseStatusUnknown -> {
-                                    stringResource(R.string.chat_input_placeholder_status_unknown)
                                 }
 
                                 onStop == null &&

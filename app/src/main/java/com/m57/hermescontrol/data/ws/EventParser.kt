@@ -60,12 +60,28 @@ object EventParser {
         return when (eventType) {
             "request.cancel" -> {
                 val id = payload?.get("id") as? String
-                if (payload?.get("method") != "clarify") {
-                    WsEvent.ServerRequestCancel(id, sessionId)
-                } else if (payload["reason"] == "resolved") {
-                    WsEvent.ClarifyResolved(id, sessionId)
-                } else {
-                    WsEvent.ClarifyExpire(id, sessionId)
+                when {
+                    payload?.get("method") != "clarify" -> {
+                        WsEvent.ServerRequestCancel(
+                            id,
+                            sessionId,
+                            payload?.get("method") as? String,
+                            payload?.get("reason") as? String,
+                        )
+                    }
+
+                    payload["reason"] == "resolved" -> {
+                        WsEvent.ClarifyResolved(id, sessionId)
+                    }
+
+                    else -> {
+                        WsEvent.ClarifyExpire(
+                            id,
+                            sessionId,
+                            serverRequestId = id,
+                            reason = payload["reason"] as? String,
+                        )
+                    }
                 }
             }
 
@@ -74,7 +90,11 @@ object EventParser {
             }
 
             "session.info" -> {
-                WsEvent.SessionInfo(payload)
+                if (params["session_id"] != null && payload?.get("session_id") != params["session_id"]) {
+                    WsEvent.Unknown(rawJson)
+                } else {
+                    WsEvent.SessionInfo(payload)
+                }
             }
 
             "message.start" -> {
@@ -125,7 +145,19 @@ object EventParser {
                     com.m57.hermescontrol.data.model
                         .messageContentText(value?.toJsonElement())
                 val reasoning = payload?.get("reasoning") as? String
-                WsEvent.MessageComplete(text, sessionId, reasoning)
+                WsEvent.MessageComplete(
+                    text,
+                    sessionId,
+                    reasoning,
+                    persistedTurn = PersistedTurn.parse(payload?.get("persisted_turn")),
+                    responseReused = payload?.get("response_reused") as? Boolean,
+                    responseTransformed = payload?.get("response_transformed") as? Boolean,
+                    status = payload?.get("status") as? String,
+                    partial = payload?.get("partial") as? Boolean,
+                    failureReason = payload?.get("failure_reason") as? String,
+                    responsePreviewed = payload?.get("response_previewed") as? Boolean,
+                    terminalAcceptance = TerminalAcceptance.parse(payload?.get("terminal_acceptance")),
+                )
             }
 
             "message.done" -> {
@@ -358,6 +390,10 @@ object EventParser {
         params: Map<*, *>?,
     ): WsEvent {
         val sessionId = params?.get("session_id") as? String
+
+        fun validId(value: String?): Boolean =
+            !value.isNullOrBlank() && value.length <= 512 && value.none(Char::isISOControl)
+        if (!validId(id) || !validId(sessionId)) return WsEvent.UnsupportedServerRequest(id)
         // Hermes Agent v0.22+ sends exec approvals as an `approval` server request. Show the normal card;
         // the answer goes through `approval.respond` with request_id, and the server then withdraws this frame.
         if (method == "approval") {
@@ -369,11 +405,76 @@ object EventParser {
                 } else {
                     parseApprovalRequest(params, sessionId)
                 }
-            return approval?.takeUnless { it.requestId.isNullOrBlank() } ?: WsEvent.UnsupportedServerRequest(id)
+            return approval?.takeIf { validId(it.requestId) }?.copy(serverRequestId = id)
+                ?: WsEvent.UnsupportedServerRequest(id)
         }
         if (method == "clarify") {
             if (id.isBlank() || sessionId.isNullOrBlank()) return WsEvent.UnsupportedServerRequest(id)
-            return parseClarifyServerRequest(id, sessionId, params)
+            if (!params.containsKey("questions")) return parseClarifyServerRequest(id, sessionId, params)
+            val raw = params["questions"] as? List<*> ?: return WsEvent.UnsupportedServerRequest(id)
+            if (raw.isEmpty() || raw.size > 100) return WsEvent.UnsupportedServerRequest(id)
+            val questions =
+                raw.map { entry ->
+                    val q = entry as? Map<*, *> ?: return WsEvent.UnsupportedServerRequest(id)
+                    val qid =
+                        (q["qid"] as? String)?.takeIf { validId(it) }
+                            ?: return WsEvent.UnsupportedServerRequest(id)
+                    val text =
+                        (q["question"] as? String)?.takeIf { it.isNotBlank() && it.length <= 32768 }
+                            ?: return WsEvent.UnsupportedServerRequest(id)
+                    val choices =
+                        if (q["choices"] != null) {
+                            val values = q["choices"] as? List<*> ?: return WsEvent.UnsupportedServerRequest(id)
+                            if (values.size > 100 ||
+                                values.any { it !is String }
+                            ) {
+                                return WsEvent.UnsupportedServerRequest(id)
+                            }
+                            values.filterIsInstance<String>()
+                        } else {
+                            emptyList()
+                        }
+                    if (q.containsKey("multi_select") &&
+                        q["multi_select"] !is Boolean
+                    ) {
+                        return WsEvent.UnsupportedServerRequest(id)
+                    }
+                    WsEvent.ClarifyQuestion(qid, text, choices, q["multi_select"] == true)
+                }
+            val qids = questions.map { it.qid }.toSet()
+            if (qids.size != questions.size) return WsEvent.UnsupportedServerRequest(id)
+            val answers =
+                if (params["answers"] != null) {
+                    val values = params["answers"] as? Map<*, *> ?: return WsEvent.UnsupportedServerRequest(id)
+                    if (values.any { (k, v) ->
+                            k !is String || (v != null && v !is String)
+                        }
+                    ) {
+                        return WsEvent.UnsupportedServerRequest(id)
+                    }
+                    values.entries.filter { it.key in qids }.associate { (k, v) -> (k as String) to (v as String?) }
+                } else {
+                    emptyMap()
+                }
+            return WsEvent.ClarifyRequest(
+                text =
+                    questions
+                        .mapIndexed {
+                            index,
+                            question,
+                            ->
+                            "${index + 1}. ${question.question}"
+                        }.joinToString("\n\n"),
+                options = questions.first().choices,
+                clarifyId = id,
+                sessionId = sessionId,
+                questionId = questions.first().qid,
+                multiSelect = questions.first().multiSelect,
+                questions = questions,
+                serverRequestId = id,
+                answers = answers,
+                lockedAnswers = answers,
+            )
         }
         val kind = VaultPromptKind.entries.firstOrNull { it.method == method }
         if (kind == null || id.isBlank() || sessionId.isNullOrBlank()) {
@@ -396,42 +497,19 @@ object EventParser {
         sessionId: String,
         params: Map<*, *>?,
     ): WsEvent {
-        val questions =
-            (params?.get("questions") as? List<*>).orEmpty().mapNotNull { item ->
-                val map = item as? Map<*, *> ?: return@mapNotNull null
-                val qid = (map["qid"] as? String)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                WsEvent.ClarifyQuestion(
-                    qid = qid,
-                    question = map["question"] as? String ?: "",
-                    choices = (map["choices"] as? List<*>)?.filterIsInstance<String>().orEmpty(),
-                    multiSelect = map["multi_select"] as? Boolean ?: false,
-                )
-            }
-        if (questions.isNotEmpty()) {
-            val rawAnswers = params?.get("answers") as? Map<*, *>
-            val lockedAnswers =
-                buildMap {
-                    questions.forEach { question ->
-                        val answer = rawAnswers?.get(question.qid)
-                        if (answer is String || (answer == null && rawAnswers?.containsKey(question.qid) == true)) {
-                            put(question.qid, answer)
-                        }
-                    }
-                }
-            return WsEvent.ClarifyRequest(
-                text = questions.mapIndexed { index, q -> "${index + 1}. ${q.question}" }.joinToString("\n\n"),
-                options = questions.first().choices,
-                clarifyId = id,
-                sessionId = sessionId,
-                questionId = questions.first().qid,
-                multiSelect = questions.first().multiSelect,
-                questions = questions,
-                lockedAnswers = lockedAnswers,
-            )
-        }
         val text = params?.get("question") as? String
-        val choices = (params?.get("choices") as? List<*>)?.filterIsInstance<String>().orEmpty()
-        if (text.isNullOrBlank() && choices.isEmpty()) return WsEvent.UnsupportedServerRequest(id)
+        val rawChoices = params?.get("choices")
+        if (rawChoices != null &&
+            (rawChoices !is List<*> || rawChoices.size > 100 || rawChoices.any { it !is String })
+        ) {
+            return WsEvent.UnsupportedServerRequest(id)
+        }
+        val choices = (rawChoices as? List<*>)?.filterIsInstance<String>().orEmpty()
+        if ((text.isNullOrBlank() && choices.isEmpty()) || (text?.length ?: 0) > 32768 ||
+            (params?.containsKey("multi_select") == true && params["multi_select"] !is Boolean)
+        ) {
+            return WsEvent.UnsupportedServerRequest(id)
+        }
         // Single question: no qid on the wire; the answer is the whole request result.
         return WsEvent.ClarifyRequest(
             text = text.orEmpty(),
@@ -440,6 +518,7 @@ object EventParser {
             sessionId = sessionId,
             questionId = null,
             multiSelect = params?.get("multi_select") as? Boolean ?: false,
+            serverRequestId = id,
         )
     }
 

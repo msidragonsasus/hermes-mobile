@@ -34,26 +34,46 @@ internal fun normalizeDashboardAttention(events: Flow<ScopedWsEvent>): Flow<Atte
                 emit(AttentionSignal.Gap(envelope.scope, envelope.gapSessionId))
             }
             previous = envelope
-            dashboardAttentionSignal(envelope.scope, envelope.event)?.let { emit(it) }
+            dashboardAttentionSignal(envelope.scope, envelope.event, envelope.ordinal)?.let { emit(it) }
         }
     }
 
 internal fun dashboardAttentionSignal(
     scope: ConnectionScope,
     event: WsEvent?,
+    ordinal: Long = 0,
 ): AttentionSignal? {
+    if (event is WsEvent.ServerRequestCancel) {
+        val runtimeId = event.sessionId?.takeIf(String::isNotBlank) ?: return null
+        val outer = event.requestId?.takeIf(String::isNotBlank) ?: return null
+        return AttentionSignal.Cancelled(scope, runtimeId, outer, event.method, event.reason)
+    }
+    if (event is WsEvent.OpenRequestsSnapshot) {
+        return AttentionSignal.Snapshot(
+            scope,
+            event.sessionId,
+            event.startedAt,
+            event.requests.flatMap { dashboardAttentionItems(scope, it) },
+            event.requestIds,
+        )
+    }
     if (event is WsEvent.ClarifyExpire) {
         val runtimeId = event.sessionId?.takeIf(String::isNotBlank) ?: return null
         val requestId = event.clarifyId?.takeIf(String::isNotBlank) ?: return null
-        return AttentionSignal.Expired(scope, runtimeId, requestId)
+        return if (event.serverRequestId != null) {
+            AttentionSignal.Cancelled(scope, runtimeId, event.serverRequestId, "clarify", event.reason)
+        } else {
+            AttentionSignal.Expired(scope, runtimeId, requestId)
+        }
     }
     if (event is WsEvent.ClarifyResolved) {
         val runtimeId = event.sessionId?.takeIf(String::isNotBlank) ?: return null
         val requestId = event.clarifyId?.takeIf(String::isNotBlank) ?: return null
-        return AttentionSignal.Resolved(scope, runtimeId, requestId)
+        // Withdrawal is not an ACK: only the exact already-sent attempt may confirm later.
+        return AttentionSignal.Cancelled(scope, runtimeId, requestId, "clarify", "resolved")
     }
     val items = dashboardAttentionItems(scope, event)
-    return items.takeIf { it.isNotEmpty() }?.let(AttentionSignal::Requested)
+    return items.takeIf { it.isNotEmpty() }?.let { AttentionSignal.Requested(it, ordinal) }
 }
 
 /** Also used by legacy Chat replay so it shares exact identity and description with the shell. */
@@ -80,7 +100,7 @@ internal fun dashboardAttentionItems(
             } else {
                 listOf(
                     AttentionItem(
-                        RequestRef(scope, SessionRef(runtimeId), requestId),
+                        RequestRef(scope, SessionRef(runtimeId), requestId, serverRequestId = event.serverRequestId),
                         AttentionKind.APPROVAL,
                         event.description ?: event.command ?: "実行内容は未提供です",
                         details =
@@ -129,13 +149,12 @@ internal fun dashboardAttentionItems(
                             SessionRef(runtimeId),
                             requestId,
                             if (event.questions.isEmpty()) event.questionId else question.qid,
+                            event.serverRequestId,
                         ),
                         AttentionKind.CLARIFICATION,
                         question.question,
                         status =
-                            if (question.qid in
-                                event.lockedAnswers
-                            ) {
+                            if (question.qid in event.answers || question.qid in event.lockedAnswers) {
                                 AttentionStatus.CONFIRMED
                             } else {
                                 AttentionStatus.PENDING
@@ -144,8 +163,15 @@ internal fun dashboardAttentionItems(
                             AttentionDetails(
                                 options = question.choices,
                                 multiSelect = question.multiSelect,
-                                lockedAnswer = event.lockedAnswers[question.qid],
+                                lockedAnswer = (event.answers + event.lockedAnswers)[question.qid],
                             ),
+                        clarificationLock =
+                            if (question.qid in event.answers || question.qid in event.lockedAnswers) {
+                                com.m57.hermescontrol.domain.hermes
+                                    .ClarificationLock((event.answers + event.lockedAnswers)[question.qid])
+                            } else {
+                                null
+                            },
                     )
                 }
             }

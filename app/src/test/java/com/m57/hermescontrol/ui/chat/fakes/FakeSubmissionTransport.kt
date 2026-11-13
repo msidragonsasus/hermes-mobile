@@ -17,6 +17,10 @@ class FakeSubmissionTransport : HermesSubmissionTransport {
     var nextAttachmentResult: SubmissionResult<String?>? = null
     var beforePrompt: (suspend () -> Unit)? = null
 
+    /** Opt-in fixture for tests that require two distinguishable server runs. */
+    var addressedPromptAcks = false
+    private var nextUserRow = 1000L
+
     override fun configuredScope() = scope
 
     override fun isReady(scope: ConnectionScope) = ready && this.scope == scope
@@ -36,8 +40,22 @@ class FakeSubmissionTransport : HermesSubmissionTransport {
             } else {
                 HermesWsClient.sendMessage(session.runtimeId, text, onSent = {}, queued = queued)
             }
+        val row =
+            if (addressedPromptAcks) {
+                nextUserRow += 10
+                nextUserRow
+            } else {
+                null
+            }
         return nextPromptResult
-            ?: SubmissionResult.Confirmed(id, if (redirect) PromptAcceptance.REDIRECTED else PromptAcceptance.STREAMING)
+            ?: SubmissionResult.Confirmed(
+                id,
+                if (redirect) PromptAcceptance.REDIRECTED else PromptAcceptance.STREAMING,
+                row?.let {
+                    com.m57.hermescontrol.domain.hermes
+                        .PromptEvidence(userRowId = it)
+                },
+            )
     }
 
     override suspend fun attach(

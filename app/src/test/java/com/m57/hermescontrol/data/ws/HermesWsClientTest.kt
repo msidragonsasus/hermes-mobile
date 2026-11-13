@@ -65,7 +65,164 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 class HermesWsClientTest {
+    @Test
+    fun integratedClarifyParserRetainsBothLockApisAndNullSkips() {
+        val event =
+            EventParser.parseServerRequest(
+                "outer-integrated",
+                "clarify",
+                mapOf(
+                    "session_id" to "runtime",
+                    "questions" to
+                        listOf(
+                            mapOf("qid" to "skip", "question" to "Skipped?"),
+                            mapOf("qid" to "open", "question" to "Open?"),
+                        ),
+                    "answers" to mapOf("skip" to null, "foreign" to "ignored"),
+                ),
+            ) as WsEvent.ClarifyRequest
+        assertEquals(mapOf("skip" to null), event.answers)
+        assertEquals(event.answers, event.lockedAnswers)
+        assertEquals("outer-integrated", event.serverRequestId)
+        val scope = ConnectionScope("server", null, null, "process", 1)
+        val items =
+            com.m57.hermescontrol.data.transport
+                .dashboardAttentionItems(scope, event)
+        assertEquals(listOf("skip", "open"), items.map { it.ref.questionId })
+        val repository =
+            com.m57.hermescontrol.domain.hermes
+                .AttentionRepository()
+        items.forEach(repository::observe)
+        val skipped = repository.items.value.first()
+        assertNotNull(skipped.clarificationLock)
+        assertNull(skipped.clarificationLock?.answer)
+        assertFalse(repository.actionable(skipped.ref, scope))
+        assertTrue(repository.actionable(items.last().ref, scope))
+    }
+
+    @Test
+    fun integratedResolvedCancellationBeforeRequestStillTombstonesTheModernBatch() {
+        val scope = ConnectionScope("server", null, null, "process", 1)
+        val cancelled =
+            EventParser.parseParams(
+                mapOf(
+                    "type" to "request.cancel",
+                    "session_id" to "runtime",
+                    "payload" to mapOf("id" to "outer-integrated", "method" to "clarify", "reason" to "resolved"),
+                ),
+            )
+        assertTrue(cancelled is WsEvent.ClarifyResolved)
+        val repository =
+            com.m57.hermescontrol.domain.hermes
+                .AttentionRepository()
+        repository.apply(
+            checkNotNull(
+                com.m57.hermescontrol.data.transport
+                    .dashboardAttentionSignal(scope, cancelled),
+            ),
+        )
+        val request =
+            EventParser.parseServerRequest(
+                "outer-integrated",
+                "clarify",
+                mapOf("session_id" to "runtime", "questions" to listOf(mapOf("qid" to "q", "question" to "Open?"))),
+            )
+        val item =
+            com.m57.hermescontrol.data.transport
+                .dashboardAttentionItems(scope, request)
+                .single()
+        repository.observe(item)
+        assertEquals(
+            com.m57.hermescontrol.domain.hermes.AttentionStatus.EXPIRED,
+            repository.items.value
+                .single()
+                .status,
+        )
+        assertFalse(repository.actionable(item.ref, scope))
+    }
+
+    @Test
+    fun integratedReplayGapMarksOnlyAffectedRuntimeUnknown() =
+        runBlocking {
+            val scope = ConnectionScope("server", null, null, "process", 1)
+            val repository =
+                com.m57.hermescontrol.domain.hermes
+                    .AttentionRepository()
+            val affected = RequestRef(scope, SessionRef("affected"), "request-a")
+            val other = RequestRef(scope, SessionRef("other"), "request-b")
+            for (ref in listOf(affected, other)) {
+                repository.observe(
+                    com.m57.hermescontrol.domain.hermes.AttentionItem(
+                        ref,
+                        com.m57.hermescontrol.domain.hermes.AttentionKind.CLARIFICATION,
+                        "Question?",
+                    ),
+                )
+            }
+            com.m57.hermescontrol.data.transport
+                .normalizeDashboardAttention(
+                    kotlinx.coroutines.flow.flowOf(
+                        ScopedWsEvent(scope, 1, null, gap = true, gapSessionId = "affected"),
+                    ),
+                ).collect { repository.apply(it) }
+            assertEquals(
+                com.m57.hermescontrol.domain.hermes.AttentionStatus.UNKNOWN,
+                repository.items.value
+                    .first { it.ref == affected }
+                    .status,
+            )
+            assertTrue(repository.actionable(other, scope))
+        }
+
+    @Test
+    fun integratedSingleClarificationUsesExplicitOuterRefAndClosedWireNullAnswer() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            every { AuthManager.getSelectedProfileId() } returns null
+            every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+            val frames = mutableListOf<JsonObject>()
+            every { socket.send(any<String>()) } answers {
+                val frame = Json.parseToJsonElement(firstArg<String>()).jsonObject
+                frames.add(frame)
+                listener.onMessage(socket, """{"id":${frame["id"]},"result":{"status":"expired"}}""")
+                true
+            }
+            val scope = checkNotNull(HermesWsClient.connectionScope.value)
+            val event =
+                EventParser.parseServerRequest(
+                    "arbitrary-outer",
+                    "clarify",
+                    mapOf("session_id" to "runtime", "question" to "Choose?", "choices" to listOf("A", "B")),
+                )
+            val item =
+                com.m57.hermescontrol.data.transport
+                    .dashboardAttentionItems(scope, event)
+                    .single()
+            assertEquals("arbitrary-outer", item.ref.serverRequestId)
+            assertNull(item.ref.questionId)
+            val result = DashboardRpcTransport().respondClarification(item.ref, null)
+            assertEquals(SubmissionResult.Expired, result)
+            val frame = frames.single()
+            assertEquals(WsMethods.REQUEST_ANSWER, frame["method"]?.jsonPrimitive?.content)
+            val params = frame["params"]!!.jsonObject
+            assertEquals(setOf("id", "result"), params.keys)
+            assertEquals(kotlinx.serialization.json.JsonNull, params["result"]!!.jsonObject["answer"])
+        }
+
     private lateinit var mockWebServer: MockWebServer
+
+    // Complete the real close handshake so bounded teardown does not wait for
+    // OkHttp's close timeout after a test has already passed its assertions.
+    private open class ClosingWebSocketListener : WebSocketListener() {
+        override fun onClosing(
+            webSocket: WebSocket,
+            code: Int,
+            reason: String,
+        ) {
+            webSocket.close(code, reason)
+        }
+    }
 
     @Before
     fun setUp() {
@@ -78,7 +235,7 @@ class HermesWsClientTest {
         every { Log.e(any<String>(), any<String>()) } returns 0
 
         mockWebServer = MockWebServer()
-        mockWebServer.start()
+        mockWebServer.start(java.net.InetAddress.getByName("127.0.0.1"), 0)
 
         mockkObject(AuthManager)
         every { AuthManager.wsUrl() } returns mockWebServer.url("/").toString().replace("http://", "ws://")
@@ -131,12 +288,14 @@ class HermesWsClientTest {
         // Wait a bit to allow internal OkHttp coroutines to clean up before shutting down MockWebServer
         // Increased from 100ms for OkHttp 5.x — needs more time for the WS close handshake
         Thread.sleep(500)
+        val stop = java.util.concurrent.FutureTask<Unit> { mockWebServer.shutdown() }
+        Thread(stop, "transport-test-server-shutdown").apply { isDaemon = true }.start()
         try {
-            mockWebServer.shutdown()
-        } catch (e: Throwable) {
-            e.printStackTrace()
+            stop.get(3, TimeUnit.SECONDS)
+            println("PROBE_CLEANUP server_shutdown_completed=true")
+        } finally {
+            unmockkAll()
         }
-        unmockkAll()
     }
 
     @Test
@@ -1275,6 +1434,58 @@ class HermesWsClientTest {
         }
 
     @Test
+    fun successor76_promptReceiptRetainsOnlyActualAuthorityFields() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val frames = mutableListOf<String>()
+            every { socket.send(any<String>()) } answers {
+                frames.add(firstArg())
+                true
+            }
+            val (scope, listener) = scopedWriteFixture(socket)
+            val transport = DashboardRpcTransport()
+            val rowOnly =
+                com.m57.hermescontrol.domain.hermes
+                    .PromptEvidence(userRowId = 41L)
+            val submissionOnly =
+                com.m57.hermescontrol.domain.hermes.PromptEvidence(
+                    submissionId = "synthetic-submission",
+                )
+            val both =
+                com.m57.hermescontrol.domain.hermes
+                    .PromptEvidence(41L, "synthetic-submission")
+            val cases =
+                listOf(
+                    "" to null,
+                    ",\"user_row_id\":null,\"submission_id\":null" to null,
+                    ",\"user_row_id\":\"41\",\"submission_id\":false" to null,
+                    ",\"user_row_id\":41" to rowOnly,
+                    ",\"submission_id\":\"synthetic-submission\"" to submissionOnly,
+                    ",\"user_row_id\":41,\"submission_id\":\"synthetic-submission\"" to both,
+                )
+            for ((fields, expected) in cases) {
+                val result =
+                    async(start = CoroutineStart.UNDISPATCHED) {
+                        transport.submitPrompt(scope, SessionRef("runtime", "saved"), "Synthetic receipt metadata")
+                    }
+                val requestId =
+                    Json
+                        .parseToJsonElement(frames.last())
+                        .jsonObject["id"]!!
+                        .jsonPrimitive.content
+                listener.onMessage(
+                    socket,
+                    """{"jsonrpc":"2.0","id":"$requestId","result":{"status":"streaming"$fields}}""",
+                )
+                assertEquals(
+                    SubmissionResult.Confirmed(requestId, PromptAcceptance.STREAMING, expected),
+                    withTimeout(5000) { result.await() },
+                )
+            }
+            verify(exactly = cases.size) { socket.send(any<String>()) }
+        }
+
+    @Test
     fun testScopedPromptConfirmsDelayedAckWithoutASecondWrite() =
         runBlocking {
             val socket = mockk<WebSocket>(relaxed = true)
@@ -1425,6 +1636,702 @@ class HermesWsClientTest {
         val field = HermesWsClient::class.java.getDeclaredField("messageQueue").apply { isAccessible = true }
         assertTrue((field.get(HermesWsClient) as java.util.Queue<*>).isEmpty())
     }
+
+    @Test
+    fun modernApprovalSnapshotReachesScopedCardPath() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            every { AuthManager.getSelectedProfileId() } returns null
+            every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+            val received = mutableListOf<ScopedWsEvent>()
+            val collector =
+                launch(start = CoroutineStart.UNDISPATCHED) { HermesWsClient.scopedEvents.collect { received.add(it) } }
+            listener.onMessage(
+                socket,
+                """{"method":"event","params":{"type":"session.info","payload":{"session_id":"synthetic-replay","open_requests":[{"id":"outer-replay","method":"approval","params":{"session_id":"synthetic-replay","request_id":"inner-replay","command":"synthetic fixture","choices":["once","deny"]}}]}}}""",
+            )
+            kotlinx.coroutines.yield()
+            val cards =
+                received.flatMap {
+                    com.m57.hermescontrol.data.transport.dashboardAttentionItems(
+                        it.scope,
+                        it.event,
+                    )
+                }
+            assertEquals(
+                "Expected restored actionable existing card",
+                "inner-replay",
+                cards.singleOrNull()?.ref?.requestId,
+            )
+            collector.cancel()
+        }
+
+    @Test
+    fun modernClarificationLiveReachesScopedFormPath() =
+        runBlocking {
+            every { AuthManager.getSelectedProfileId() } returns null
+            every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            val received = mutableListOf<ScopedWsEvent>()
+            val collector =
+                launch(start = CoroutineStart.UNDISPATCHED) { HermesWsClient.scopedEvents.collect { received.add(it) } }
+            listener.onMessage(
+                socket,
+                """{"id":"outer-clarify","method":"clarify","params":{"session_id":"synthetic-form","questions":[{"qid":"q-one","question":"Synthetic question?"}]}}""",
+            )
+            kotlinx.coroutines.yield()
+            val cards =
+                received.flatMap {
+                    com.m57.hermescontrol.data.transport.dashboardAttentionItems(
+                        it.scope,
+                        it.event,
+                    )
+                }
+            assertEquals("Expected modern existing form", "q-one", cards.singleOrNull()?.ref?.questionId)
+            collector.cancel()
+        }
+
+    @Test
+    fun modernClarificationUsesExactScopedSocketAndTypedAckWithNullSkip() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            every { AuthManager.getSelectedProfileId() } returns null
+            every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+            val sent = mutableListOf<kotlinx.serialization.json.JsonObject>()
+            every { socket.send(any<String>()) } answers {
+                val frame = Json.parseToJsonElement(firstArg<String>()).jsonObject
+                sent.add(frame)
+                listener.onMessage(socket, """{"id":${frame["id"]},"result":{"status":"ok","remaining":["q2"]}}""")
+                true
+            }
+            val ref =
+                RequestRef(
+                    HermesWsClient.connectionScope.value!!,
+                    SessionRef("synthetic-lock"),
+                    "outer-exact",
+                    "q1",
+                    "outer-exact",
+                )
+            val result = DashboardRpcTransport().lockClarification(ref, null, setOf("q1", "q2"))
+            assertTrue("Only typed locked ACK confirms", result is SubmissionResult.Confirmed)
+            assertEquals(
+                com.m57.hermescontrol.data.transport.ClarificationResult
+                    .Locked(listOf("q2")),
+                (result as SubmissionResult.Confirmed).value,
+            )
+            val frame = sent.single()
+            assertEquals("clarify.lock", frame["method"]?.jsonPrimitive?.content)
+            val params = frame["params"]!!.jsonObject
+            assertEquals("outer-exact", params["request_id"]?.jsonPrimitive?.content)
+            assertEquals("q1", params["question_id"]?.jsonPrimitive?.content)
+            // clarify.lock has a closed request/qid contract, not a wire session_id.
+            assertEquals(setOf("request_id", "question_id", "answer"), params.keys)
+            assertTrue(params.containsKey("answer"))
+            assertEquals(kotlinx.serialization.json.JsonNull, params["answer"])
+        }
+
+    @Test
+    fun modernClarifyKeepsLocalSessionFenceButUsesClosedWireContract() {
+        val socket = mockk<WebSocket>(relaxed = true)
+        val (scope, listener) = scopedWriteFixture(socket)
+        val params = mapOf("request_id" to "outer", "question_id" to "q", "answer" to null)
+        assertFalse(HermesWsClient.writeScoped(scope, "clarify.lock", params).accepted)
+        assertFalse(HermesWsClient.writeScoped(scope, "clarify.lock", params + ("session_id" to "")).accepted)
+        assertFalse(
+            HermesWsClient
+                .writeScoped(
+                    scope.copy(serverProfileId = "other"),
+                    "clarify.lock",
+                    params + ("session_id" to "runtime"),
+                ).accepted,
+        )
+        verify(exactly = 0) { socket.send(any<String>()) }
+        val sent = mutableListOf<kotlinx.serialization.json.JsonObject>()
+        every { socket.send(any<String>()) } answers {
+            sent.add(Json.parseToJsonElement(firstArg<String>()).jsonObject)
+            true
+        }
+        val call = HermesWsClient.writeScoped(scope, "clarify.lock", params + ("session_id" to "runtime"))
+        assertTrue(call.accepted)
+        assertEquals(setOf("request_id", "question_id", "answer", "profile"), sent.single()["params"]!!.jsonObject.keys)
+        assertEquals(
+            "profile-a",
+            sent
+                .single()["params"]!!
+                .jsonObject["profile"]
+                ?.jsonPrimitive
+                ?.content,
+        )
+        assertEquals(kotlinx.serialization.json.JsonNull, sent.single()["params"]!!.jsonObject["answer"])
+        listener.onOpen(socket, mockk(relaxed = true))
+        assertEquals("Accepted clarify answer is never replayed", 1, sent.size)
+    }
+
+    @Test
+    fun modernClarifyCancellationBeforeAckAndUnknownReceiptNeverResend() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val (scope, listener) = scopedWriteFixture(socket)
+            val repository =
+                com.m57.hermescontrol.domain.hermes
+                    .AttentionRepository()
+            val collected =
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    com.m57.hermescontrol.data.transport
+                        .normalizeDashboardAttention(
+                            HermesWsClient.scopedEvents,
+                        ).collect {
+                            repository.apply(it)
+                        }
+                }
+            val sent = mutableListOf<kotlinx.serialization.json.JsonObject>()
+            every { socket.send(any<String>()) } answers {
+                sent.add(Json.parseToJsonElement(firstArg<String>()).jsonObject)
+                true
+            }
+            try {
+                for (outcome in listOf("resolved", "timeout", "malformed", "error", "no-ack")) {
+                    val request =
+                        """{"id":"outer-$outcome","method":"clarify","params":{"session_id":"race","questions":[{"qid":"q","question":"Synthetic?"}]}}"""
+                    listener.onMessage(socket, request)
+                    kotlinx.coroutines.yield()
+                    val ref =
+                        repository.items.value
+                            .last()
+                            .ref
+                    val task =
+                        launch(start = CoroutineStart.UNDISPATCHED) {
+                            repository.respondClarification(ref, null, scope, true, 1, DashboardRpcTransport())
+                        }
+                    val write = sent.last()
+                    assertEquals("clarify.lock", write["method"]?.jsonPrimitive?.content)
+                    assertFalse(write["params"]!!.jsonObject.containsKey("session_id"))
+                    when (outcome) {
+                        "resolved", "timeout" -> {
+                            listener.onMessage(
+                                socket,
+                                """{"method":"event","params":{"type":"request.cancel","session_id":"race","payload":{"id":"outer-$outcome","method":"clarify","reason":"$outcome"}}}""",
+                            )
+                            kotlinx.coroutines.yield()
+                            listener.onMessage(
+                                socket,
+                                """{"id":${write["id"]},"result":{"status":"ok","remaining":[]}}""",
+                            )
+                        }
+
+                        "malformed" -> {
+                            listener.onMessage(socket, """{"id":${write["id"]},"result":{"status":"ok"}}""")
+                        }
+
+                        "error" -> {
+                            listener.onMessage(
+                                socket,
+                                """{"id":${write["id"]},"error":{"code":4000,"message":"invalid params"}}""",
+                            )
+                        }
+
+                        else -> {
+                            task.cancel()
+                        }
+                    }
+                    task.join()
+                    val expected =
+                        when (outcome) {
+                            "resolved" -> com.m57.hermescontrol.domain.hermes.AttentionStatus.CONFIRMED
+                            "timeout" -> com.m57.hermescontrol.domain.hermes.AttentionStatus.EXPIRED
+                            else -> com.m57.hermescontrol.domain.hermes.AttentionStatus.UNKNOWN
+                        }
+                    assertEquals(
+                        outcome,
+                        expected,
+                        repository.items.value
+                            .first { it.ref == ref }
+                            .status,
+                    )
+                    val before = sent.size
+                    listener.onMessage(socket, request)
+                    kotlinx.coroutines.yield()
+                    repository.respondClarification(ref, "duplicate", scope, true, 2, DashboardRpcTransport())
+                    assertEquals("No resend for $outcome", before, sent.size)
+                }
+                assertEquals(5, sent.size)
+            } finally {
+                collected.cancel()
+            }
+        }
+
+    @Test
+    fun modernAllSnapshotCarriersUseCapturedRuntimeAndReachRepository() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            every { AuthManager.getSelectedProfileId() } returns null
+            every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+            val repository =
+                com.m57.hermescontrol.domain.hermes
+                    .AttentionRepository()
+            val collected =
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    com.m57.hermescontrol.data.transport
+                        .normalizeDashboardAttention(
+                            HermesWsClient.scopedEvents,
+                        ).collect {
+                            repository.apply(it)
+                        }
+                }
+            val sent = mutableListOf<kotlinx.serialization.json.JsonObject>()
+            every { socket.send(any<String>()) } answers
+                {
+                    sent.add(Json.parseToJsonElement(firstArg<String>()).jsonObject)
+                    true
+                }
+            for ((index, method) in listOf("session.resume", "session.activate", "session.events.since").withIndex()) {
+                val call = HermesWsClient.request(method, mapOf("session_id" to "runtime-$index"))
+                val id = sent.last()["id"]
+                val sidField = if (method == "session.events.since") "" else "\"session_id\":\"runtime-$index\","
+                listener.onMessage(
+                    socket,
+                    """{"id":$id,"result":{$sidField"open_requests":[{"id":"outer-$index","method":"approval","params":{"session_id":"runtime-$index","request_id":"inner-$index","command":"synthetic"}}]}}""",
+                )
+                call.await()
+                kotlinx.coroutines.yield()
+                assertEquals(
+                    "inner-$index",
+                    repository.items.value
+                        .firstOrNull {
+                            it.ref.session.runtimeId ==
+                                "runtime-$index"
+                        }?.ref
+                        ?.requestId,
+                )
+            }
+            assertEquals(3, repository.items.value.size)
+            collected.cancel()
+        }
+
+    @Test
+    fun modernApprovalResolvedCancelBeforeSocketAckHasExactRaceSemantics() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            every { AuthManager.getSelectedProfileId() } returns null
+            every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+            val repository =
+                com.m57.hermescontrol.domain.hermes
+                    .AttentionRepository()
+            val collected =
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    com.m57.hermescontrol.data.transport
+                        .normalizeDashboardAttention(
+                            HermesWsClient.scopedEvents,
+                        ).collect {
+                            repository.apply(it)
+                        }
+                }
+            val sent = mutableListOf<kotlinx.serialization.json.JsonObject>()
+            every { socket.send(any<String>()) } answers
+                {
+                    sent.add(Json.parseToJsonElement(firstArg<String>()).jsonObject)
+                    true
+                }
+            val scope = HermesWsClient.connectionScope.value!!
+            for (reason in listOf("resolved", "timeout")) {
+                listener.onMessage(
+                    socket,
+                    """{"id":"outer-$reason","method":"approval","params":{"session_id":"race","request_id":"inner-$reason","choices":["once","deny"]}}""",
+                )
+                kotlinx.coroutines.yield()
+                val ref =
+                    repository.items.value
+                        .last()
+                        .ref
+                val task =
+                    launch(start = CoroutineStart.UNDISPATCHED) {
+                        repository.respond(ref, scope, true, 1) { DashboardRpcTransport().respondApproval(ref, "once") }
+                    }
+                val write = sent.last()
+                assertEquals("approval.respond", write["method"]?.jsonPrimitive?.content)
+                assertEquals("inner-$reason", write["params"]!!.jsonObject["request_id"]?.jsonPrimitive?.content)
+                assertEquals("false", write["params"]!!.jsonObject["all"]?.jsonPrimitive?.content)
+                listener.onMessage(
+                    socket,
+                    """{"method":"event","params":{"type":"request.cancel","session_id":"race","payload":{"id":"outer-$reason","method":"approval","reason":"$reason"}}}""",
+                )
+                kotlinx.coroutines.yield()
+                listener.onMessage(socket, """{"id":${write["id"]},"result":{"resolved":1}}""")
+                task.join()
+                assertEquals(
+                    if (reason ==
+                        "resolved"
+                    ) {
+                        com.m57.hermescontrol.domain.hermes.AttentionStatus.CONFIRMED
+                    } else {
+                        com.m57.hermescontrol.domain.hermes.AttentionStatus.EXPIRED
+                    },
+                    repository.items.value
+                        .first { it.ref == ref }
+                        .status,
+                )
+            }
+            collected.cancel()
+        }
+
+    @Test
+    fun modernMalformedAckIsUnknownExpiredIsTypedAndNeverLegacyFallback() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            every { AuthManager.getSelectedProfileId() } returns null
+            every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+            val ref =
+                RequestRef(HermesWsClient.connectionScope.value!!, SessionRef("synthetic-lock"), "outer", "q1", "outer")
+            var body = """{"status":"ok","remaining":["q1"]}"""
+            var sends = 0
+            every { socket.send(any<String>()) } answers {
+                val frame = Json.parseToJsonElement(firstArg<String>()).jsonObject
+                assertEquals("clarify.lock", frame["method"]?.jsonPrimitive?.content)
+                sends++
+                listener.onMessage(socket, """{"id":${frame["id"]},"result":$body}""")
+                true
+            }
+            val transport = DashboardRpcTransport()
+            for (invalid in listOf(
+                """{"status":"ok","remaining":["q1"]}""",
+                """{"status":"ok","remaining":["q2","q2"]}""",
+                """{"status":"ok","remaining":["foreign"]}""",
+                """{"status":"ok"}""",
+                """{"status":"ok","remaining":[2]}""",
+            )) {
+                body = invalid
+                assertEquals(SubmissionResult.Unknown, transport.lockClarification(ref, "A", setOf("q1", "q2")))
+            }
+            body = """{"status":"expired"}"""
+            val expired = transport.lockClarification(ref, "A", setOf("q1", "q2")) as SubmissionResult.Confirmed
+            assertEquals(com.m57.hermescontrol.data.transport.ClarificationResult.Expired, expired.value)
+            assertEquals(6, sends)
+            assertEquals(SubmissionResult.NotSent, transport.respondClarification(ref, "must not fallback"))
+            assertEquals(6, sends)
+            every { socket.send(any<String>()) } returns false
+            assertEquals(SubmissionResult.NotSent, transport.lockClarification(ref, null, setOf("q1", "q2")))
+        }
+
+    @Test
+    fun modernSnapshotAbsenceUsesRequestStartAndMalformedOrMissingIsUnknown() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            every { AuthManager.getSelectedProfileId() } returns null
+            every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+            val repository =
+                com.m57.hermescontrol.domain.hermes
+                    .AttentionRepository()
+            val collected =
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    com.m57.hermescontrol.data.transport
+                        .normalizeDashboardAttention(
+                            HermesWsClient.scopedEvents,
+                        ).collect {
+                            repository.apply(it)
+                        }
+                }
+            val sent = mutableListOf<kotlinx.serialization.json.JsonObject>()
+            every { socket.send(any<String>()) } answers
+                {
+                    sent.add(Json.parseToJsonElement(firstArg<String>()).jsonObject)
+                    true
+                }
+
+            fun approval(id: String) =
+                """{"id":"outer-$id","method":"approval","params":{"session_id":"ordering","request_id":"inner-$id"}}"""
+            listener.onMessage(socket, approval("old"))
+            kotlinx.coroutines.yield()
+            val inFlight = HermesWsClient.request("session.events.since", mapOf("session_id" to "ordering"))
+            val requestId = sent.last()["id"]
+            listener.onMessage(socket, approval("new"))
+            kotlinx.coroutines.yield()
+            listener.onMessage(socket, """{"id":$requestId,"result":{"open_requests":[]}}""")
+            inFlight.await()
+            kotlinx.coroutines.yield()
+            assertEquals(
+                com.m57.hermescontrol.domain.hermes.AttentionStatus.EXPIRED,
+                repository.items.value
+                    .first {
+                        it.ref.requestId ==
+                            "inner-old"
+                    }.status,
+            )
+            assertEquals(
+                com.m57.hermescontrol.domain.hermes.AttentionStatus.PENDING,
+                repository.items.value
+                    .first {
+                        it.ref.requestId ==
+                            "inner-new"
+                    }.status,
+            )
+            for (unknown in listOf(
+                "{}",
+                """{"open_requests":[null]}""",
+                """{"open_requests":[{"id":"bad","method":"approval","params":{"session_id":"foreign","request_id":"x"}}]}""",
+            )) {
+                val call = HermesWsClient.request("session.events.since", mapOf("session_id" to "ordering"))
+                listener.onMessage(socket, """{"id":${sent.last()["id"]},"result":$unknown}""")
+                call.await()
+                kotlinx.coroutines.yield()
+                assertEquals(
+                    com.m57.hermescontrol.domain.hermes.AttentionStatus.PENDING,
+                    repository.items.value
+                        .first {
+                            it.ref.requestId ==
+                                "inner-new"
+                        }.status,
+                )
+            }
+            listener.onMessage(
+                socket,
+                """{"method":"event","params":{"type":"request.cancel","session_id":"ordering","payload":{"id":"outer-cancel-first","method":"approval","reason":"timeout"}}}""",
+            )
+            kotlinx.coroutines.yield()
+            listener.onMessage(socket, approval("cancel-first"))
+            kotlinx.coroutines.yield()
+            assertEquals(
+                com.m57.hermescontrol.domain.hermes.AttentionStatus.EXPIRED,
+                repository.items.value
+                    .first {
+                        it.ref.requestId ==
+                            "inner-cancel-first"
+                    }.status,
+            )
+            collected.cancel()
+        }
+
+    @Test
+    fun modernFormUsesSharedTransportLocksOnlySubmittedQidAndRetainsSkippedLocksOnExpiry() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            every { AuthManager.getSelectedProfileId() } returns null
+            every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+            val repository =
+                com.m57.hermescontrol.domain.hermes
+                    .AttentionRepository()
+            val collected =
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    com.m57.hermescontrol.data.transport
+                        .normalizeDashboardAttention(
+                            HermesWsClient.scopedEvents,
+                        ).collect {
+                            repository.apply(it)
+                        }
+                }
+            listener.onMessage(
+                socket,
+                """{"method":"event","params":{"type":"session.info","payload":{"session_id":"form","open_requests":[{"id":"outer-form","method":"clarify","params":{"session_id":"form","questions":[{"qid":"skip","question":"Skipped?"},{"qid":"answer","question":"Answer?"},{"qid":"remaining","question":"Remaining?"}],"answers":{"skip":null}}}]}}}""",
+            )
+            kotlinx.coroutines.yield()
+            val scope = HermesWsClient.connectionScope.value!!
+            val sent = mutableListOf<kotlinx.serialization.json.JsonObject>()
+            var body = """{"status":"ok","remaining":["remaining"]}"""
+            every { socket.send(any<String>()) } answers {
+                val frame = Json.parseToJsonElement(firstArg<String>()).jsonObject
+                sent.add(frame)
+                listener.onMessage(socket, """{"id":${frame["id"]},"result":$body}""")
+                true
+            }
+            val transport = DashboardRpcTransport()
+            val skip =
+                repository.items.value
+                    .first { it.ref.questionId == "skip" }
+                    .ref
+            repository.respondClarification(skip, "never", scope, true, 1, transport)
+            assertTrue(sent.isEmpty())
+            val answer = skip.copy(questionId = "answer")
+            repository.respondClarification(answer, "Synthetic answer", scope, true, 1, transport)
+            assertEquals(
+                com.m57.hermescontrol.domain.hermes
+                    .ClarificationLock("Synthetic answer"),
+                repository.items.value
+                    .first {
+                        it.ref ==
+                            answer
+                    }.clarificationLock,
+            )
+            assertEquals(
+                com.m57.hermescontrol.domain.hermes.AttentionStatus.PENDING,
+                repository.items.value
+                    .first {
+                        it.ref.questionId ==
+                            "remaining"
+                    }.status,
+            )
+            assertEquals("clarify.lock", sent.single()["method"]?.jsonPrimitive?.content)
+            assertEquals(
+                "Synthetic answer",
+                sent
+                    .single()["params"]!!
+                    .jsonObject["answer"]
+                    ?.jsonPrimitive
+                    ?.content,
+            )
+            body = """{"status":"expired"}"""
+            repository.respondClarification(skip.copy(questionId = "remaining"), null, scope, true, 1, transport)
+            assertEquals(kotlinx.serialization.json.JsonNull, sent.last()["params"]!!.jsonObject["answer"])
+            assertEquals(
+                com.m57.hermescontrol.domain.hermes.AttentionStatus.EXPIRED,
+                repository.items.value
+                    .first {
+                        it.ref.questionId ==
+                            "remaining"
+                    }.status,
+            )
+            assertEquals(
+                com.m57.hermescontrol.domain.hermes
+                    .ClarificationLock(null),
+                repository.items.value
+                    .first {
+                        it.ref ==
+                            skip
+                    }.clarificationLock,
+            )
+            assertEquals(
+                com.m57.hermescontrol.domain.hermes.AttentionStatus.CONFIRMED,
+                repository.items.value
+                    .first {
+                        it.ref ==
+                            skip
+                    }.status,
+            )
+            repository.respondClarification(skip.copy(questionId = "remaining"), "late", scope, true, 1, transport)
+            assertEquals(2, sent.size)
+            collected.cancel()
+        }
+
+    @Test
+    fun modernClarificationOfficialNullableOptionalFieldsRemainAUsableForm() =
+        runBlocking {
+            every { AuthManager.getSelectedProfileId() } returns null
+            every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            val received = mutableListOf<ScopedWsEvent>()
+            val collector =
+                launch(start = CoroutineStart.UNDISPATCHED) { HermesWsClient.scopedEvents.collect { received.add(it) } }
+            listener.onMessage(
+                socket,
+                """{"id":"outer-null-options","method":"clarify","params":{"session_id":"nullable","questions":[{"qid":"q","question":"Free text?","choices":null,"multi_select":false}],"answers":null}}""",
+            )
+            kotlinx.coroutines.yield()
+            val item =
+                received
+                    .flatMap {
+                        com.m57.hermescontrol.data.transport
+                            .dashboardAttentionItems(it.scope, it.event)
+                    }.singleOrNull()
+            assertEquals("q", item?.ref?.questionId)
+            assertEquals(emptyList<String>(), item?.details?.options)
+            collector.cancel()
+        }
+
+    @Test
+    fun round1GenericClarifyLockNeverWritesWithoutOriginalRef() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            diagnosticListener(socket)
+            every { AuthManager.getSelectedProfileId() } returns null
+            every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+            every { socket.send(any<String>()) } returns true
+            for (params in listOf(
+                emptyMap(),
+                mapOf("request_id" to "outer", "question_id" to "q", "answer" to "synthetic"),
+                mapOf(
+                    "session_id" to "runtime",
+                    "request_id" to "outer",
+                    "question_id" to "q",
+                    "answer" to "synthetic",
+                ),
+            )) {
+                HermesWsClient.send("clarify.lock", params)
+                val result = HermesWsClient.request("clarify.lock", params)
+                assertTrue("Generic clarify.lock must be definitely NotSent", result.isCancelled)
+                val error = runCatching { result.await() }.exceptionOrNull() as? HermesWsClient.HermesRpcException
+                assertEquals(OfflineSendPolicy.NOT_SENT, error?.code)
+            }
+            verify(exactly = 0) { socket.send(any<String>()) }
+        }
+
+    @Test
+    fun round1MalformedVaultAndUnknownSnapshotsNeverAuthorizeAbsence() =
+        runBlocking {
+            val socket = mockk<WebSocket>(relaxed = true)
+            val listener = diagnosticListener(socket)
+            every { AuthManager.getSelectedProfileId() } returns null
+            every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+            val repository =
+                com.m57.hermescontrol.domain.hermes
+                    .AttentionRepository()
+            val received = mutableListOf<ScopedWsEvent>()
+            val collected =
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    HermesWsClient.scopedEvents.collect {
+                        received.add(it)
+                        com.m57.hermescontrol.data.transport
+                            .dashboardAttentionSignal(
+                                it.scope,
+                                it.event,
+                                it.ordinal,
+                            )?.let(repository::apply)
+                    }
+                }
+            val sent = mutableListOf<kotlinx.serialization.json.JsonObject>()
+            every { socket.send(any<String>()) } answers
+                {
+                    sent.add(Json.parseToJsonElement(firstArg<String>()).jsonObject)
+                    true
+                }
+            listener.onMessage(
+                socket,
+                """{"id":"outer-A","method":"approval","params":{"session_id":"runtime","request_id":"inner-A"}}""",
+            )
+            kotlinx.coroutines.yield()
+            val scope = HermesWsClient.connectionScope.value!!
+            val ref =
+                repository.items.value
+                    .single()
+                    .ref
+            for (entry in listOf(
+                """{"id":"bad\u0001","method":"vault.code","params":{"session_id":"runtime"}}""",
+                """{"id":"bad\u0001","method":"future.request","params":{"session_id":"runtime"}}""",
+                """{"id":"${"x".repeat(513)}","method":"vault.save_login","params":{"session_id":"runtime"}}""",
+                """{"id":"valid-unknown","method":"future.request","params":{"session_id":"bad\u0001"}}""",
+            )) {
+                received.clear()
+                val call = HermesWsClient.request("session.events.since", mapOf("session_id" to "runtime"))
+                listener.onMessage(socket, """{"id":${sent.last()["id"]},"result":{"open_requests":[$entry]}}""")
+                call.await()
+                kotlinx.coroutines.yield()
+                assertTrue(
+                    "Malformed snapshot cannot become authoritative: $entry",
+                    received.none {
+                        it.event is WsEvent.OpenRequestsSnapshot
+                    },
+                )
+                assertTrue(repository.actionable(ref, scope))
+            }
+            val call = HermesWsClient.request("session.events.since", mapOf("session_id" to "runtime"))
+            listener.onMessage(socket, """{"id":${sent.last()["id"]},"result":{"open_requests":[]}}""")
+            call.await()
+            kotlinx.coroutines.yield()
+            assertEquals(
+                com.m57.hermescontrol.domain.hermes.AttentionStatus.EXPIRED,
+                repository.items.value
+                    .single()
+                    .status,
+            )
+            assertTrue(received.any { it.event is WsEvent.OpenRequestsSnapshot })
+            collected.cancel()
+        }
 
     @Test
     fun clarifySnapshotRestoresLocksAndScopedWritesUseTheServerContract() =
@@ -2174,7 +3081,7 @@ class HermesWsClientTest {
             val socketField = HermesWsClient::class.java.getDeclaredField("webSocket")
             socketField.isAccessible = true
             socketField.set(HermesWsClient, oldSocket)
-            mockWebServer.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+            mockWebServer.enqueue(MockResponse().withWebSocketUpgrade(object : ClosingWebSocketListener() {}))
 
             HermesWsClient.connect()
 
@@ -2541,7 +3448,7 @@ class HermesWsClientTest {
 
         mockWebServer.enqueue(
             MockResponse().withWebSocketUpgrade(
-                object : WebSocketListener() {
+                object : ClosingWebSocketListener() {
                     override fun onOpen(
                         webSocket: WebSocket,
                         response: okhttp3.Response,
@@ -2555,7 +3462,7 @@ class HermesWsClientTest {
 
         mockWebServer.enqueue(
             MockResponse().withWebSocketUpgrade(
-                object : WebSocketListener() {
+                object : ClosingWebSocketListener() {
                     override fun onOpen(
                         webSocket: WebSocket,
                         response: okhttp3.Response,
@@ -2650,7 +3557,7 @@ class HermesWsClientTest {
         val serverLatch = CountDownLatch(1)
         mockWebServer.enqueue(
             MockResponse().withWebSocketUpgrade(
-                object : WebSocketListener() {
+                object : ClosingWebSocketListener() {
                     override fun onOpen(
                         ws: WebSocket,
                         response: okhttp3.Response,
@@ -2782,7 +3689,7 @@ class HermesWsClientTest {
         val connectLatch = CountDownLatch(1)
         mockWebServer.enqueue(
             MockResponse().withWebSocketUpgrade(
-                object : WebSocketListener() {
+                object : ClosingWebSocketListener() {
                     override fun onOpen(
                         ws: WebSocket,
                         response: okhttp3.Response,
@@ -2796,7 +3703,7 @@ class HermesWsClientTest {
         // Enqueue a second response for reconnect attempt
         mockWebServer.enqueue(
             MockResponse().withWebSocketUpgrade(
-                object : WebSocketListener() {
+                object : ClosingWebSocketListener() {
                     override fun onOpen(
                         ws: WebSocket,
                         response: okhttp3.Response,
@@ -3313,5 +4220,306 @@ class HermesWsClientTest {
         assertNotNull(HermesWsClient.lastLatencyMs.value)
         assertEquals(latency, HermesWsClient.lastLatencyMs.value)
         assertTrue(HermesWsClient.lastPongTimestamp > 0)
+    }
+
+    // Localhost transport regressions carried forward from transport-probe/run-03.
+    // Historical bug-asserting diagnostic remains only in transport-probe, not this suite.
+    private fun configureUpgradeProbe() {
+        mockkObject(DashboardSessionTokenRefresher)
+        every { DashboardSessionTokenRefresher.fetch(any(), any()) } returns null
+        every { AuthManager.baseUrl() } returns mockWebServer.url("/").toString()
+        every { AuthManager.getBaseUrl() } returns mockWebServer.url("/").toString()
+        every { AuthManager.getSelectedProfileId() } returns null
+        every { AuthManager.activeProfileId } returns MutableStateFlow("probe-default")
+        every { AuthManager.isAutoReconnect() } returns true
+        assertTrue(NetworkMonitor.isConnected.value)
+        val http = com.m57.hermescontrol.data.remote.OkHttpProvider.websocket
+        // Record, rather than require, zero timeouts: a future finite callTimeout
+        // is a valid candidate and must be able to make the behavior regression green.
+        println(
+            "PROBE_CONFIG readTimeoutMillis=${http.readTimeoutMillis} callTimeoutMillis=${http.callTimeoutMillis} " +
+                "connectTimeoutMillis=${http.connectTimeoutMillis} writeTimeoutMillis=${http.writeTimeoutMillis} " +
+                "pingIntervalMillis=${http.pingIntervalMillis} autoReconnect=true networkAvailable=true",
+        )
+    }
+
+    private fun probeField(name: String): Any? =
+        HermesWsClient::class.java.getDeclaredField(name).let {
+            it.isAccessible = true
+            it.get(HermesWsClient)
+        }
+
+    private fun probeSocket(): WebSocket? = probeField("webSocket") as? WebSocket
+
+    private fun cancelProbeSockets(original: WebSocket?) {
+        val active = probeSocket()
+        // Fence callbacks before cancellation. close() before upgrade is not enough.
+        HermesWsClient.disconnect(clearPendingMessages = true)
+        original?.cancel()
+        if (active !== original) active?.cancel()
+        println("PROBE_CLEANUP original_cancelled=${original != null} active_cancelled=${active != null}")
+    }
+
+    private data class UpgradeObservation(
+        val elapsedMillis: Long,
+        val requestCount: Int,
+        val status: ConnectionStatus,
+        val connected: Boolean,
+        val sameSocket: Boolean,
+        val healthJobActive: Boolean,
+        val healthJobAbsent: Boolean,
+        val reconnectJobActive: Boolean,
+        val generationUnchanged: Boolean,
+        val healthPasses: Int,
+        val repeatedConnects: Int,
+    )
+
+    private fun observeSilentUpgrade(): UpgradeObservation {
+        configureUpgradeProbe()
+        mockWebServer.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE))
+        // If opening recovery exists, its next attempt can genuinely upgrade.
+        mockWebServer.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+        var original: WebSocket? = null
+        try {
+            HermesWsClient.connect()
+            original = probeSocket()
+            assertNotNull("The actual client must own an opening socket", original)
+            val request = mockWebServer.takeRequest(5, TimeUnit.SECONDS)
+            assertNotNull("Server must receive HTTP upgrade before observation", request)
+            assertEquals("websocket", request!!.getHeader("Upgrade")?.lowercase())
+            assertEquals("GET", request.method)
+            assertNull("Probe has no query credentials", request.requestUrl?.query)
+            assertNull("Probe has no Authorization", request.getHeader("Authorization"))
+            assertNull("Probe has no Cookie", request.getHeader("Cookie"))
+            val generation = (probeField("connectionGeneration") as AtomicInteger).get()
+            val started = System.nanoTime()
+            var healthPasses = 0
+            var repeatedConnects = 0
+            val end = started + TimeUnit.SECONDS.toNanos(20)
+            while (System.nanoTime() < end && !HermesWsClient.isConnected) {
+                // Backdates only last-pong age, NOT elapsed opening time.
+                // Do not stale/cancel a just-opened healthy replacement in a race.
+                synchronized(probeField("outboundLock")!!) {
+                    if (!HermesWsClient.isConnected) {
+                        HermesWsClient.forceHealthCheckForTest(120_000L)
+                        healthPasses++
+                    }
+                }
+                HermesWsClient.connect()
+                repeatedConnects++
+                Thread.sleep(250)
+            }
+            val result =
+                UpgradeObservation(
+                    elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started),
+                    requestCount = mockWebServer.requestCount,
+                    status = HermesWsClient.connectionStatus.value,
+                    connected = HermesWsClient.isConnected,
+                    sameSocket = original === probeSocket(),
+                    healthJobActive = (probeField("healthJob") as? Job)?.isActive == true,
+                    healthJobAbsent = probeField("healthJob") == null,
+                    reconnectJobActive = (probeField("reconnectJob") as? Job)?.isActive == true,
+                    generationUnchanged = generation == (probeField("connectionGeneration") as AtomicInteger).get(),
+                    healthPasses = healthPasses,
+                    repeatedConnects = repeatedConnects,
+                )
+            println("PROBE_SILENT $result")
+            return result
+        } finally {
+            cancelProbeSockets(original)
+        }
+    }
+
+    @Test(timeout = 40_000L)
+    fun probeSilentUpgradeShouldRecoverToHealthyReplacementWithin20Seconds() {
+        val result = observeSilentUpgrade()
+        assertTrue(
+            "Missing opening recovery: within proposed 20s budget a silent upgrade must be cancelled " +
+                "and replaced by the queued healthy upgrade; observed $result",
+            result.connected && result.status == ConnectionStatus.CONNECTED &&
+                result.requestCount >= 2 && !result.sameSocket,
+        )
+    }
+
+    @Test(timeout = 15_000L)
+    fun probeSuccessfulUpgradeControlConnectsAndStartsHealthTracking() {
+        configureUpgradeProbe()
+        mockWebServer.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+        var original: WebSocket? = null
+        try {
+            HermesWsClient.connect()
+            original = probeSocket()
+            runBlocking {
+                withTimeout(5_000L) { HermesWsClient.connectionStatus.first { it == ConnectionStatus.CONNECTED } }
+            }
+            assertNotNull(original)
+            assertTrue(HermesWsClient.isConnected)
+            runBlocking {
+                withTimeout(5_000L) {
+                    while ((probeField("healthJob") as? Job)?.isActive != true) delay(10)
+                }
+            }
+            assertTrue((probeField("healthJob") as? Job)?.isActive == true)
+            repeat(5) { HermesWsClient.connect() }
+            assertSame(original, probeSocket())
+            assertEquals(1, mockWebServer.requestCount)
+            println("PROBE_HEALTHY status=CONNECTED requests=1 healthJobActive=true repeatedConnects=5 sameSocket=true")
+        } finally {
+            cancelProbeSockets(original)
+        }
+    }
+
+    @Test(timeout = 25_000L)
+    fun openingDisconnectCancelsExactPendingSocketWithoutReconnect() {
+        configureUpgradeProbe()
+        mockWebServer.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE))
+        mockWebServer.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+        var original: WebSocket? = null
+        try {
+            HermesWsClient.connect()
+            original = probeSocket()
+            assertNotNull(original)
+            assertNotNull(mockWebServer.takeRequest(5, TimeUnit.SECONDS))
+            assertFalse(HermesWsClient.isConnected)
+            val call =
+                original!!.javaClass.getDeclaredField("call").let {
+                    it.isAccessible = true
+                    it.get(original) as okhttp3.Call
+                }
+            HermesWsClient.disconnect(clearPendingMessages = true)
+            assertTrue("Pending disconnect must cancel the exact opening Call, not queue close", call.isCanceled())
+            // Observe beyond both the opening deadline and normal initial retry delay.
+            Thread.sleep(16_000L)
+            assertEquals(ConnectionStatus.DISCONNECTED, HermesWsClient.connectionStatus.value)
+            assertFalse(HermesWsClient.isConnected)
+            assertNull(probeSocket())
+            assertFalse((probeField("reconnectJob") as? Job)?.isActive == true)
+            assertEquals(1, mockWebServer.requestCount)
+            println("FIX_PENDING cancelled=true requests=1 disconnected_after_ms=16000")
+        } finally {
+            cancelProbeSockets(original)
+        }
+    }
+
+    @Test(timeout = 25_000L)
+    fun healthyUpgradeSurvivesOpeningDeadline() {
+        configureUpgradeProbe()
+        val received = CountDownLatch(1)
+        mockWebServer.enqueue(
+            MockResponse().withWebSocketUpgrade(
+                object : WebSocketListener() {
+                    override fun onMessage(
+                        webSocket: WebSocket,
+                        text: String,
+                    ) {
+                        if (text == "opening-bound-control") received.countDown()
+                    }
+                },
+            ),
+        )
+        var original: WebSocket? = null
+        try {
+            HermesWsClient.connect()
+            original = probeSocket()
+            runBlocking {
+                withTimeout(5_000L) { HermesWsClient.connectionStatus.first { it == ConnectionStatus.CONNECTED } }
+            }
+            val started = System.nanoTime()
+            Thread.sleep(16_000L)
+            assertTrue(HermesWsClient.isConnected)
+            assertEquals(ConnectionStatus.CONNECTED, HermesWsClient.connectionStatus.value)
+            assertSame(original, probeSocket())
+            assertTrue(original!!.send("opening-bound-control"))
+            assertTrue(
+                "Established socket must still deliver data after setup deadline",
+                received.await(2, TimeUnit.SECONDS),
+            )
+            assertEquals(1, mockWebServer.requestCount)
+            println(
+                "FIX_HEALTHY elapsed_ms=${TimeUnit.NANOSECONDS.toMillis(
+                    System.nanoTime() - started,
+                )} same_socket=true delivered=true",
+            )
+        } finally {
+            cancelProbeSockets(original)
+        }
+    }
+
+    @Test(timeout = 15_000L)
+    fun cancelledOpeningCallbacksCannotMutateHealthyReplacement() {
+        configureUpgradeProbe()
+        mockWebServer.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE))
+        mockWebServer.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+        var original: WebSocket? = null
+        try {
+            HermesWsClient.connect()
+            original = probeSocket()
+            assertNotNull(original)
+            assertNotNull(mockWebServer.takeRequest(5, TimeUnit.SECONDS))
+            val listener =
+                original!!.javaClass.getDeclaredField("listener").let {
+                    it.isAccessible = true
+                    it.get(original) as WebSocketListener
+                }
+            HermesWsClient.disconnect(clearPendingMessages = true)
+            HermesWsClient.connect()
+            runBlocking {
+                withTimeout(5_000L) { HermesWsClient.connectionStatus.first { it == ConnectionStatus.CONNECTED } }
+            }
+            val replacement = probeSocket()
+            val scope = HermesWsClient.connectionScope.value
+            val generation = (probeField("connectionGeneration") as AtomicInteger).get()
+            // CONNECTED is published before onOpen installs its health job. Wait
+            // for that baseline before attributing changes to stale callbacks.
+            runBlocking {
+                withTimeout(5_000L) {
+                    while ((probeField("healthJob") as? Job)?.isActive != true) delay(10L)
+                }
+            }
+            val healthJob = probeField("healthJob")
+            assertNotNull(healthJob)
+            assertTrue(original !== replacement)
+            listener.onFailure(original, IOException("synthetic stale opening failure"), null)
+            listener.onClosing(original, 1000, "stale")
+            listener.onClosed(original, 1000, "stale")
+            listener.onOpen(original, mockk(relaxed = true))
+            assertSame(replacement, probeSocket())
+            assertEquals(scope, HermesWsClient.connectionScope.value)
+            assertEquals(generation, (probeField("connectionGeneration") as AtomicInteger).get())
+            assertSame(healthJob, probeField("healthJob"))
+            assertTrue(HermesWsClient.isConnected)
+            assertEquals(ConnectionStatus.CONNECTED, HermesWsClient.connectionStatus.value)
+            assertFalse((probeField("reconnectJob") as? Job)?.isActive == true)
+            assertEquals(2, mockWebServer.requestCount)
+            println("FIX_STALE callbacks=onFailure,onClosing,onClosed,onOpen replacement_unchanged=true")
+        } finally {
+            cancelProbeSockets(original)
+        }
+    }
+
+    @Test
+    fun establishedDisconnectRetainsGracefulClose() {
+        val original = mockk<WebSocket>(relaxed = true)
+        diagnosticListener(original)
+        try {
+            HermesWsClient.disconnect(clearPendingMessages = true)
+            verify(exactly = 1) { original.close(1000, "Client closed") }
+            verify(exactly = 0) { original.cancel() }
+            assertFalse(HermesWsClient.isConnected)
+        } finally {
+            original.cancel()
+        }
+    }
+
+    @Test
+    fun openingDeadlineIsWebSocketOnly() {
+        val provider = com.m57.hermescontrol.data.remote.OkHttpProvider
+        assertEquals(15_000, provider.websocket.callTimeoutMillis)
+        assertEquals(0, provider.websocket.readTimeoutMillis)
+        assertEquals(30_000, provider.websocket.pingIntervalMillis)
+        assertEquals(0, provider.base.callTimeoutMillis)
+        assertEquals(0, provider.probe.callTimeoutMillis)
+        assertEquals(30_000, provider.base.readTimeoutMillis)
+        assertEquals(5_000, provider.probe.readTimeoutMillis)
     }
 }

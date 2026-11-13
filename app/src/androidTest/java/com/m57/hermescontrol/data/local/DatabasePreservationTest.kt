@@ -95,9 +95,9 @@ class DatabasePreservationTest {
     }
 
     @Test
-    fun versionsTwoThroughSevenPreserveExistingRows() =
+    fun versionsTwoThroughEightPreserveExistingRows() =
         runBlocking {
-            for (version in 2..7) {
+            for (version in 2..8) {
                 val file = fixture(version)
                 val database = HermesDatabase.build(context, file.path, SQLCipherDriver(key, null, null))
                 try {
@@ -113,6 +113,127 @@ class DatabasePreservationTest {
                 } finally {
                     database.close()
                 }
+            }
+        }
+
+    @Test
+    fun transcriptV9MigrationAndReopenPreserveBodiesOrderProofAndOtherScopes() =
+        runBlocking {
+            val file = fixture(8)
+            SQLCipherDriver(key, null, null).open(file.path).use {
+                it.execSQL("INSERT INTO outgoing_drafts VALUES ('old-draft','old-scope',123,'preserved')")
+                it.execSQL("INSERT INTO home_items VALUES ('old-scope','chat','item','home-body')")
+                it.execSQL("INSERT INTO home_reads VALUES ('old-scope','chat:item','v1')")
+            }
+            val migrated = HermesDatabase.build(context, file.path, SQLCipherDriver(key, null, null))
+            val repository =
+                com.m57.hermescontrol.ui.chat
+                    .ChatPersistenceRepository(migrated.chatMessageDao())
+            val (owner, legacy) = repository.openTranscript("target-A", "session")
+            assertEquals(
+                "unknown",
+                legacy.payload.provenance.values
+                    .single(),
+            )
+            assertEquals(emptyList<com.m57.hermescontrol.ui.chat.ResponseRecord>(), legacy.payload.ledger.responses)
+            val rows =
+                listOf(
+                    com.m57.hermescontrol.ui.chat.ChatMessage(
+                        id = "same-local-id",
+                        role = com.m57.hermescontrol.ui.chat.MessageRole.USER,
+                        content = "question",
+                        timestamp = 100,
+                    ),
+                    com.m57.hermescontrol.ui.chat.ChatMessage(
+                        id = "answer",
+                        role = com.m57.hermescontrol.ui.chat.MessageRole.ASSISTANT,
+                        content = "  **answer**\n",
+                        timestamp = 100,
+                    ),
+                    com.m57.hermescontrol.ui.chat.ChatMessage(
+                        id = "next",
+                        role = com.m57.hermescontrol.ui.chat.MessageRole.USER,
+                        content = "next",
+                        timestamp = 0,
+                    ),
+                )
+            val ledger =
+                com.m57.hermescontrol.ui.chat.ResponseLedger(
+                    listOf(
+                        com.m57.hermescontrol.ui.chat.ResponseRecord(
+                            id = "response",
+                            messageIds = listOf("answer"),
+                            userIds = listOf("same-local-id"),
+                            finishedAt = 77,
+                        ),
+                    ),
+                )
+            val oldWrite = repository.prepare(owner, rows.map { it.copy(content = "stale") }, ledger)
+            org.junit.Assert.assertTrue(repository.save(repository.prepare(owner, rows, ledger)))
+            val (other, _) = repository.openTranscript("target-B", "session")
+            org.junit.Assert.assertTrue(
+                repository.save(
+                    repository.prepare(
+                        other,
+                        listOf(rows[0].copy(content = "foreign")),
+                        com.m57.hermescontrol.ui.chat
+                            .ResponseLedger(),
+                    ),
+                ),
+            )
+            migrated.close()
+            val reopened = HermesDatabase.build(context, file.path, SQLCipherDriver(key, null, null))
+            try {
+                val repo =
+                    com.m57.hermescontrol.ui.chat
+                        .ChatPersistenceRepository(reopened.chatMessageDao())
+                val (_, restored) = repo.openTranscript("target-A", "session")
+                assertEquals(rows.map { it.id }, restored.messages.map { it.id })
+                assertEquals(rows.map { it.content }, restored.messages.map { it.content })
+                assertEquals(ledger, restored.payload.ledger)
+                assertFalse(repo.save(oldWrite))
+                assertEquals(
+                    rows.map { it.content },
+                    repo.readTranscript("target-A", "session").messages.map { it.content },
+                )
+                assertEquals(
+                    "foreign",
+                    repo
+                        .readTranscript("target-B", "session")
+                        .messages
+                        .single()
+                        .content,
+                )
+                assertEquals(
+                    "SYNTHETIC_PRIVATE_本文",
+                    reopened
+                        .chatMessageDao()
+                        .getMessagesForSession("session")
+                        .single {
+                            it.id ==
+                                "row"
+                        }.content,
+                )
+                assertEquals(
+                    "preserved",
+                    reopened
+                        .outgoingDraftDao()
+                        .observe("old-scope")
+                        .first()
+                        .single()
+                        .payload,
+                )
+                assertEquals(
+                    "v1",
+                    reopened
+                        .homeDao()
+                        .reads("old-scope")
+                        .first()
+                        .single()
+                        .version,
+                )
+            } finally {
+                reopened.close()
             }
         }
 

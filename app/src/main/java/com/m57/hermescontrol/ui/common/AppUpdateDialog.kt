@@ -50,8 +50,12 @@ fun AppUpdateDialog(
     onNeverAskAgain: () -> Unit,
     onOpenSettings: () -> Unit,
     sourceLabel: String? = null,
+    onRetry: () -> Unit = onStartUpdate,
+    onCheckUpdate: () -> Unit = onRetry,
 ) {
     val tag = state.releaseTag().orEmpty()
+    // Only a release that is actually offered gets the "Update to …" title.
+    val offersRelease = state is AppUpdateState.UpdateAvailable || state is AppUpdateState.InstallerOpened
     val available = state as? AppUpdateState.UpdateAvailable
     val sizeMb =
         available?.let {
@@ -99,7 +103,12 @@ fun AppUpdateDialog(
                     Spacer(modifier = Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = stringResource(R.string.update_dialog_title, tag),
+                            text =
+                                if (offersRelease && tag.isNotBlank()) {
+                                    stringResource(R.string.update_dialog_title, tag)
+                                } else {
+                                    stringResource(R.string.settings_about_update)
+                                },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface,
@@ -245,7 +254,7 @@ fun AppUpdateDialog(
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Button(
-                                onClick = onStartUpdate,
+                                onClick = onRetry,
                                 modifier = Modifier.fillMaxWidth(),
                                 shapes = ButtonDefaults.shapes(),
                             ) {
@@ -254,8 +263,38 @@ fun AppUpdateDialog(
                         }
                     }
 
-                    else -> {
-                        // UpdateAvailable or Idle
+                    is AppUpdateState.Checking -> {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = stringResource(R.string.settings_about_update_checking),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+
+                    is AppUpdateState.Idle -> {
+                        // No confirmed release yet: offer a check, never an install.
+                        OutlinedButton(
+                            onClick = onCheckUpdate,
+                            modifier = Modifier.fillMaxWidth(),
+                            shapes = ButtonDefaults.shapes(),
+                        ) {
+                            Text(stringResource(R.string.settings_about_update_check))
+                        }
+                    }
+
+                    is AppUpdateState.UpToDate -> {
+                        Text(
+                            text = stringResource(R.string.settings_about_update_uptodate, tag.trimStart('v')),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+
+                    is AppUpdateState.UpdateAvailable -> {
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Button(
                                 onClick = onStartUpdate,

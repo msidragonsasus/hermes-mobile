@@ -46,6 +46,8 @@ object OkHttpProvider {
         base
             .newBuilder()
             .cookieJar(resolveCookieJar())
+            // OkHttp exits the call timeout on upgrade; established sockets stay unbounded.
+            .callTimeout(15, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .pingInterval(30, TimeUnit.SECONDS)
             .build()

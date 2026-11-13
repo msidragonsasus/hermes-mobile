@@ -17,36 +17,48 @@ class AttentionCoordinator(
     fun start(scope: CoroutineScope) =
         scope.launch {
             source.attentionSignals.collect { signal ->
-                when (signal) {
-                    is AttentionSignal.Gap -> {
-                        repository.markScopeUnknown(signal.scope, signal.runtimeId)
-                    }
-
-                    is AttentionSignal.Requested -> {
-                        signal.items
-                            .filter {
-                                it.ref.scope == connection.configuredScope() && connection.isReady(it.ref.scope)
-                            }.forEach(repository::observe)
-                    }
-
-                    is AttentionSignal.Expired -> {
-                        repository.settleClarification(
-                            signal.scope,
-                            signal.runtimeId,
-                            signal.requestId,
-                            resolved = false,
-                        )
-                    }
-
-                    is AttentionSignal.Resolved -> {
-                        repository.settleClarification(
-                            signal.scope,
-                            signal.runtimeId,
-                            signal.requestId,
-                            resolved = true,
-                        )
-                    }
+                if (signal is AttentionSignal.Requested) {
+                    repository.apply(
+                        signal.copy(
+                            items =
+                                signal.items.filter {
+                                    it.ref.scope == connection.configuredScope() && connection.isReady(it.ref.scope)
+                                },
+                        ),
+                    )
+                } else if (signal is AttentionSignal.Gap || signalScope(signal) == connection.configuredScope()) {
+                    repository.apply(signal)
                 }
+            }
+        }
+
+    private fun signalScope(signal: AttentionSignal): ConnectionScope? =
+        when (signal) {
+            is AttentionSignal.Requested -> {
+                signal.items
+                    .firstOrNull()
+                    ?.ref
+                    ?.scope
+            }
+
+            is AttentionSignal.Expired -> {
+                signal.scope
+            }
+
+            is AttentionSignal.Resolved -> {
+                signal.scope
+            }
+
+            is AttentionSignal.Cancelled -> {
+                signal.scope
+            }
+
+            is AttentionSignal.Snapshot -> {
+                signal.scope
+            }
+
+            is AttentionSignal.Gap -> {
+                signal.scope
             }
         }
 
@@ -65,12 +77,17 @@ class AttentionCoordinator(
 
     suspend fun respondClarification(
         ref: RequestRef,
-        answer: String,
+        answer: String?,
     ) {
-        if (answer.isBlank()) return
+        if (answer != null && answer.isBlank()) return
         if (repository.items.value.none { it.ref == ref && it.kind == AttentionKind.CLARIFICATION }) return
-        repository.respond(ref, connection.configuredScope(), isReady(ref), now()) {
-            transport.respondClarification(ref, answer.trim())
-        }
+        repository.respondClarification(
+            ref,
+            answer?.trim(),
+            connection.configuredScope(),
+            isReady(ref),
+            now(),
+            transport,
+        )
     }
 }

@@ -12,12 +12,13 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
 @Database(
     entities = [
         ChatMessageEntity::class,
+        ChatTranscriptState::class,
         OutgoingDraftEntity::class,
         com.m57.hermescontrol.home.HomeRow::class,
         com.m57.hermescontrol.home.HomeRead::class,
         com.m57.hermescontrol.home.HomeProviderRow::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = true,
 )
 abstract class HermesDatabase : RoomDatabase() {
@@ -106,6 +107,18 @@ abstract class HermesDatabase : RoomDatabase() {
                 }
             }
 
+        val MIGRATION_8_9: Migration =
+            object : Migration(8, 9) {
+                override suspend fun migrate(connection: SQLiteConnection) {
+                    connection.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `chat_transcript_state` " +
+                            "(`target_key` TEXT NOT NULL, `saved_session_id` TEXT NOT NULL, " +
+                            "`write_epoch` INTEGER NOT NULL, `revision` INTEGER NOT NULL, " +
+                            "`payload` TEXT NOT NULL, PRIMARY KEY(`target_key`, `saved_session_id`))",
+                    )
+                }
+            }
+
         fun get(context: Context): HermesDatabase =
             instance ?: synchronized(this) {
                 instance?.let { return@synchronized it }
@@ -135,7 +148,7 @@ abstract class HermesDatabase : RoomDatabase() {
             if (DatabaseProtection.inspect(file)) {
                 driver.open(file.path).use { connection ->
                     connection.prepare("PRAGMA user_version").use { statement ->
-                        if (!statement.step() || statement.getLong(0) !in 2L..8L) {
+                        if (!statement.step() || statement.getLong(0) !in 2L..9L) {
                             throw StorageUnavailableException(StorageFailure.OPEN_OR_MIGRATION_FAILED)
                         }
                     }
@@ -154,6 +167,7 @@ abstract class HermesDatabase : RoomDatabase() {
                     MIGRATION_5_6,
                     MIGRATION_6_7,
                     MIGRATION_7_8,
+                    MIGRATION_8_9,
                 ).build()
         }
 

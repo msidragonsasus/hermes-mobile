@@ -48,6 +48,7 @@ import com.m57.hermescontrol.domain.hermes.DraftState
 import com.m57.hermescontrol.domain.hermes.OutgoingDraft
 import com.m57.hermescontrol.domain.hermes.RequestRef
 import com.m57.hermescontrol.domain.hermes.SessionRef
+import com.m57.hermescontrol.domain.hermes.SubmissionProofSource
 import com.m57.hermescontrol.domain.hermes.SubmissionResult
 import com.m57.hermescontrol.domain.hermes.draftTargetKey
 import com.m57.hermescontrol.ui.common.ActionProgressController
@@ -62,6 +63,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -247,7 +250,14 @@ internal fun dedupeCachedMessages(messages: List<ChatMessage>): List<ChatMessage
     val nonRest = messages.filterNot { it.id.startsWith("rest-") }
     if (nonRest.isEmpty()) return messages
     val keepRest = rest.filter { restMsg -> nonRest.none { sameLogicalMessage(it, restMsg) } }
-    return (nonRest + keepRest).sortedBy { it.timestamp }
+    // A canonical steer tag must survive warm-cache dedupe too. Ambiguous user
+    // echoes retain REST identities rather than assigning tags by repeated text.
+    val users =
+        mergeTranscriptWithLive(
+            rest.filter { it.role == MessageRole.USER },
+            nonRest.filter { it.role == MessageRole.USER },
+        )
+    return ((nonRest + keepRest).filterNot { it.role == MessageRole.USER } + users).sortedBy { it.timestamp }
 }
 
 /**
@@ -272,14 +282,39 @@ internal fun mergeTranscriptWithLive(
     // User rows can carry live/cache-only metadata (for example whether the
     // bubble continues the active turn). Keep that richer copy when REST
     // returns the same logical row.
-    val currentUsers = dedupedCurrent.filter { it.role == MessageRole.USER }.toMutableList()
+    val originalUsers = dedupedCurrent.filter { it.role == MessageRole.USER }
+    val currentUsers = originalUsers.toMutableList()
     val mergedRest =
         dedupedRest.map { rest ->
             if (rest.role != MessageRole.USER) return@map rest
+            val exactIndex = currentUsers.indexOfFirst { it.id == rest.id }
             val matchIndex =
-                currentUsers.indexOfFirst { it.id == rest.id }.takeIf { it >= 0 }
-                    ?: currentUsers.indexOfFirst { sameLogicalMessage(rest, it) }
-            if (matchIndex >= 0) currentUsers.removeAt(matchIndex) else rest
+                if (exactIndex >= 0) {
+                    exactIndex
+                } else {
+                    // Content is only an echo match when unique on BOTH sides. The
+                    // same words can be a normal question and a different accepted steer.
+                    val candidates = originalUsers.filter { sameLogicalMessage(rest, it) }
+                    val unique =
+                        candidates.singleOrNull()?.takeIf { candidate ->
+                            dedupedRest.count { it.role == MessageRole.USER && sameLogicalMessage(it, candidate) } == 1
+                        }
+                    currentUsers.indexOfFirst { it.id == unique?.id }
+                }
+            if (matchIndex >= 0) {
+                currentUsers.removeAt(matchIndex).let { local ->
+                    preferServerDisplayProjection(
+                        rest,
+                        if (rest.displayKind == null || rest.displayKind == local.displayKind) {
+                            local
+                        } else {
+                            local.copy(displayKind = rest.displayKind)
+                        },
+                    )
+                }
+            } else {
+                rest
+            }
         }
     val restIds = dedupedRest.map { it.id }.toSet()
     val liveTail =
@@ -322,6 +357,9 @@ internal fun canSendNativeAction(state: ChatUiState): Boolean =
 
 data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
+    val responseLedger: ResponseLedger = ResponseLedger(),
+    /** Canonical rows awaiting exhaustive response coverage are persisted but not double-rendered. */
+    val stagedCanonicalMessages: List<ChatMessage> = emptyList(),
     val currentSessionId: String? = null,
     val sessions: List<SessionUi> = emptyList(),
     val chatTitle: String = "Hermes",
@@ -329,6 +367,8 @@ data class ChatUiState(
     val isAgentTyping: Boolean = false,
     /** A lost socket cannot establish whether the server still runs this turn. */
     val responseStatusUnknown: Boolean = false,
+    /** Restored cache can predate canonical steer tags; wait for authoritative transcript boundaries. */
+    val replyBoundariesReady: Boolean = true,
     val isThinking: Boolean = false,
     val thinkingText: String = "",
     val isLoading: Boolean = false,
@@ -453,11 +493,13 @@ data class ClarifyUi(
     val questions: List<ClarifyQuestionUi> = emptyList(),
     val ref: RequestRef? = null,
     val questionStates: Map<String, com.m57.hermescontrol.domain.hermes.AttentionStatus> = emptyMap(),
+    val questionLocks: Map<String, com.m57.hermescontrol.domain.hermes.ClarificationLock> = emptyMap(),
     val responseEnabled: Boolean = false,
     val lockedAnswers: Map<String, String> = emptyMap(),
 ) {
     fun canRespond(qid: String): Boolean =
-        responseEnabled && questionStates[qid] == com.m57.hermescontrol.domain.hermes.AttentionStatus.PENDING
+        responseEnabled && qid !in questionLocks && qid !in lockedAnswers &&
+            questionStates[qid] == com.m57.hermescontrol.domain.hermes.AttentionStatus.PENDING
 
     /**
      * Normalized list of questions to display. Guarantees at least one question
@@ -549,6 +591,9 @@ class ChatViewModel(
     private val attentionTransport: HermesAttentionTransport = DashboardRpcTransport(),
     private val attentionRepository: AttentionRepository =
         (application as? com.m57.hermescontrol.HermesControlApp)?.attentionRepository ?: AttentionRepository(),
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val streamingTestEnvironment: (() -> Boolean)? = null,
+    private val streamingTokenClock: () -> Long = System::currentTimeMillis,
 ) : AndroidViewModel(application) {
     constructor(application: Application) : this(application, startCleanup = true)
 
@@ -566,11 +611,13 @@ class ChatViewModel(
         val sessionId: String? = null,
         val scope: ConnectionScope? = null,
         val streamVersion: Long = -1L,
+        val snapshotStartedAt: Long = 0L,
         val resync: Boolean = false,
     )
 
     private val sessionRequestById = ConcurrentHashMap<String, SessionRequest>()
     private var sessionGeneration = 0L
+    private val todoHistoryMemo = TodoHistoryMemo()
 
     private data class ActiveModelSwitch(
         val spec: String,
@@ -625,6 +672,10 @@ class ChatViewModel(
     /** Runtime TUI session returned by session.resume; Desktop storage keeps the original ID. */
     private var runtimeSessionId: String? = null
     private var sessionScope: ConnectionScope? = null
+        set(value) {
+            if (field != value) todoHistoryMemo.clear()
+            field = value
+        }
     private var subagentSnapshotJob: Job? = null
     private var subagentSnapshotFailures = 0
     private var subagentSnapshotOwner: Pair<ConnectionScope, String>? = null
@@ -649,6 +700,7 @@ class ChatViewModel(
         val queued: Boolean,
         val redirect: Boolean,
         val generation: Long,
+        val opening: TurnOpening,
     )
 
     private var pendingInitialPrompt: PendingPrompt? = null
@@ -656,6 +708,76 @@ class ChatViewModel(
     private var pendingPromptTimeout: Job? = null
     private val activePromptIntents = ConcurrentHashMap<String, OutgoingDraft>()
     private var hasObservedActiveResponse = false
+    private var transcriptOwner: TranscriptOwner? = null
+    private var transcriptOpening = false
+    private var terminalCommitPending = false
+    private var terminalCommitResponseId: String? = null
+    private var observedTranscriptScope: ConnectionScope? = null
+    private var observedTranscriptOrdinal: Long? = null
+
+    private data class PendingTerminal(
+        val event: WsEvent.MessageComplete,
+        val observedAt: Long,
+        val generation: Long,
+        val scope: ConnectionScope,
+        val responseId: String,
+        val ordinal: Long,
+    )
+
+    private val pendingTerminals = mutableListOf<PendingTerminal>()
+
+    // Collector completion is distinct from admission and from exact terminal evidence.
+    // Only the ordered collector advances the stream cursor; a retained proof never does.
+    private var completedTranscriptOrdinal: Long? = null
+    private val scopedProcessingVersion = MutableStateFlow(0L)
+
+    private fun terminalAlreadyHandled(original: com.m57.hermescontrol.data.ws.ScopedWsEvent): Boolean {
+        val event = original.event as? WsEvent.MessageComplete ?: return false
+        return pendingTerminals.any {
+            it.scope == original.scope && it.generation == sessionGeneration &&
+                it.ordinal == original.ordinal && it.event == event
+        } ||
+            _uiState.value.responseLedger.responses.any { response ->
+                response.authority.opening?.observationProcessId == original.scope.processId &&
+                    response.authority.terminals.any {
+                        it.observation == original.ordinal && it.connectionGeneration == original.scope.generation &&
+                            it.rowIds == event.persistedTurn?.rowIds &&
+                            it.userRowId == event.persistedTurn?.userRowId &&
+                            it.finalRowId == event.persistedTurn?.finalAssistantRowId
+                    }
+            }
+    }
+
+    /** Stream admission only: later ordinals do not prove that an earlier terminal was handled. */
+    private fun admitScopedObservation(observation: com.m57.hermescontrol.data.ws.ScopedWsEvent): Boolean {
+        if (observation.scope != submissionTransport.configuredScope()) return false
+        if (observation.scope != observedTranscriptScope) {
+            pendingTerminals.clear()
+            observedTranscriptScope = observation.scope
+            observedTranscriptOrdinal = null
+            completedTranscriptOrdinal = null
+            scopedProcessingVersion.value++
+        }
+        val previous = observedTranscriptOrdinal
+        if (previous != null && observation.ordinal <= previous) return false
+        observedTranscriptOrdinal = observation.ordinal
+        if (observation.gap || (previous != null && observation.ordinal != previous + 1)) {
+            _uiState.update { it.copy(responseLedger = it.responseLedger.gap()) }
+            persistTranscript()
+        }
+        return true
+    }
+
+    private data class TranscriptCommit(
+        val write: TranscriptWrite,
+        val generation: Long,
+        val terminalResponseId: String?,
+    )
+
+    private enum class TranscriptBarrier { ACCEPTED_INPUT, TERMINAL, SEALED_SEGMENT, NAVIGATION_FLUSH }
+
+    private var transcriptOpenJob: Job? = null
+    private val transcriptOperations = OrderedTranscriptOperations(viewModelScope)
 
     /** A fresh prompt put on the wire for this session generation. */
     private data class PendingAdmission(
@@ -671,6 +793,9 @@ class ChatViewModel(
         val version: Long,
         val streamVersion: Long,
         val wasEnded: Boolean,
+        val responseId: String? = null,
+        val continuationId: String? = null,
+        val ordinary: Boolean = false,
     )
 
     private val turnLifecycleVersion =
@@ -725,6 +850,10 @@ class ChatViewModel(
     private var resumeRetrySessionId: String? = null
     private var resumeRetryAttempt = 0
     private var resumeRetryJob: Job? = null
+
+    // Main-owned, exact-request deadline; never shared with other RPC methods.
+    private var resumeDeadlineId: String? = null
+    private var resumeDeadlineJob: Job? = null
     val streamingState: StateFlow<StreamingState> = _streamingState.asStateFlow()
 
     /** Tracks the auto-clear coroutine for reaction animations. */
@@ -778,10 +907,19 @@ class ChatViewModel(
             uiState = _uiState,
             streamingState = _streamingState,
             isCurrentSession = { sessionId -> isCurrentSession(sessionId) },
-            isTestEnvironment = { isTestEnvironment() },
+            isTestEnvironment = streamingTestEnvironment ?: { isTestEnvironment() },
+            tokenClock = streamingTokenClock,
         )
 
+    /** Read-only diagnostic; does not force VM/controller state or bypass stream admission. */
+    internal fun pendingStreamingTokenCount(): Int = streamingController.pendingTokenCount
+
     // ── Public state ─────────────────────────────────────────────────────
+
+    /** Identifiers only; Main-thread render memo keys must follow selection and connection epochs. */
+    internal fun renderPlanningScope(): Any =
+        _uiState.value.currentSessionId to
+            Triple(sessionGeneration, sessionScope, submissionTransport.configuredScope())
 
     /**
      * Combined UI state: merges internal state with the WS connection status
@@ -816,12 +954,40 @@ class ChatViewModel(
                 drainOutgoingQueue()
             }
         }
+        viewModelScope.launch {
+            fun durableRows(rows: List<ChatMessage>): List<ChatMessage> =
+                rows.map {
+                    // These fields are deliberately transient in ChatMessageMapper.
+                    it.copy(
+                        approvalInfo = null,
+                        clarifyInfo = null,
+                        attachments = null,
+                        toolOutputRiskData = null,
+                        progressPreview = null,
+                    )
+                }
+            var last: Triple<List<ChatMessage>, ResponseLedger, List<ChatMessage>>? = null
+            _uiState.collect { state ->
+                val structural =
+                    Triple(
+                        durableRows(state.messages),
+                        state.responseLedger,
+                        durableRows(state.stagedCanonicalMessages),
+                    )
+                if (structural != last) {
+                    last = structural
+                    persistTranscript()
+                }
+            }
+        }
+        observeStreamingCheckpoints()
         refreshSettings()
         refreshMaxToolCallsPerTurn()
 
         connectWebSocket(setLoading = false)
         viewModelScope.launch {
             wsClient.events.collect { event ->
+                if (isTranscriptEvent(event)) return@collect
                 try {
                     handleWsEvent(event)
                 } catch (e: Exception) {
@@ -833,68 +999,98 @@ class ChatViewModel(
         viewModelScope.launch {
             wsClient.scopedEvents.collect { observation ->
                 val event = observation.event
-                if (observation.scope != submissionTransport.configuredScope()) return@collect
+                if (!admitScopedObservation(observation)) return@collect
                 observation.gapSessionId?.let { resyncAfterReplayGap(observation.scope, it) }
-                when (event) {
-                    is WsEvent.VaultRequest -> {
-                        val request = event.request
-                        if (isCurrentSession(request.sessionId) &&
-                            (request.kind != VaultPromptKind.LOGIN || request.origin?.let(::vaultOrigin) != null)
+                run {
+                    com.m57.hermescontrol.data.transport
+                        .dashboardAttentionSignal(
+                            observation.scope,
+                            event,
+                            observation.ordinal,
+                        )?.let(attentionRepository::apply)
+                    if (isTranscriptEvent(event)) {
+                        if (sessionScope == observation.scope && event != null &&
+                            !(event is WsEvent.MessageComplete && terminalAlreadyHandled(observation))
                         ) {
-                            _uiState.update { state ->
-                                if (state.vaultPrompt?.request == request &&
-                                    state.vaultPrompt.scope == observation.scope
-                                ) {
-                                    state
-                                } else {
-                                    state.copy(
-                                        vaultPrompt = VaultPromptUi(observation.scope, request),
-                                        isAgentTyping = false,
-                                    )
+                            handleWsEvent(event, eventOrdinal = observation.ordinal)
+                        }
+                        return@run
+                    }
+                    when (event) {
+                        is WsEvent.VaultRequest -> {
+                            val request = event.request
+                            if (isCurrentSession(request.sessionId) &&
+                                (request.kind != VaultPromptKind.LOGIN || request.origin?.let(::vaultOrigin) != null)
+                            ) {
+                                _uiState.update { state ->
+                                    if (state.vaultPrompt?.request == request &&
+                                        state.vaultPrompt.scope == observation.scope
+                                    ) {
+                                        state
+                                    } else {
+                                        state.copy(
+                                            vaultPrompt = VaultPromptUi(observation.scope, request),
+                                            isAgentTyping = false,
+                                        )
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    is WsEvent.ServerRequestCancel -> {
-                        _uiState.update { state ->
-                            val prompt = state.vaultPrompt
-                            if (prompt?.scope == observation.scope && prompt.request.id == event.requestId &&
-                                prompt.request.sessionId == event.sessionId
-                            ) {
-                                state.copy(vaultPrompt = null)
-                            } else {
-                                state
+                        is WsEvent.ServerRequestCancel -> {
+                            _uiState.update { state ->
+                                val prompt = state.vaultPrompt
+                                if (prompt?.scope == observation.scope && prompt.request.id == event.requestId &&
+                                    prompt.request.sessionId == event.sessionId
+                                ) {
+                                    state.copy(vaultPrompt = null)
+                                } else {
+                                    state
+                                }
                             }
                         }
-                    }
 
-                    is WsEvent.ApprovalRequest -> {
-                        if (isCurrentSession(event.sessionId)) handleApprovalRequest(event, observation.scope)
-                    }
-
-                    is WsEvent.ClarifyRequest -> {
-                        if (isCurrentSession(event.sessionId)) handleClarifyRequest(event, observation.scope)
-                    }
-
-                    is WsEvent.ClarifyExpire -> {
-                        settleClarification(event.sessionId, event.clarifyId, observation.scope, resolved = false)
-                    }
-
-                    is WsEvent.ClarifyResolved -> {
-                        settleClarification(event.sessionId, event.clarifyId, observation.scope, resolved = true)
-                    }
-
-                    is WsEvent.SessionInfo -> {
-                        val runtimeId = event.data?.get("session_id") as? String
-                        val approval = event.data?.get("pending_approval") as? Map<*, *>
-                        if (runtimeId != null && isCurrentSession(runtimeId) && approval != null) {
-                            handleApprovalRequest(parseApprovalMap(approval, runtimeId), observation.scope)
+                        is WsEvent.ApprovalRequest -> {
+                            if (isCurrentAttentionSession(
+                                    event.sessionId,
+                                    observation.scope,
+                                )
+                            ) {
+                                handleApprovalRequest(event, observation.scope)
+                            }
                         }
-                    }
 
-                    else -> {}
+                        is WsEvent.ClarifyRequest -> {
+                            if (isCurrentAttentionSession(
+                                    event.sessionId,
+                                    observation.scope,
+                                )
+                            ) {
+                                handleClarifyRequest(event, observation.scope)
+                            }
+                        }
+
+                        is WsEvent.ClarifyExpire -> {
+                            settleClarification(event.sessionId, event.clarifyId, observation.scope, resolved = false)
+                        }
+
+                        is WsEvent.ClarifyResolved -> {
+                            settleClarification(event.sessionId, event.clarifyId, observation.scope, resolved = true)
+                        }
+
+                        is WsEvent.SessionInfo -> {
+                            val runtimeId = event.data?.get("session_id") as? String
+                            val approval = event.data?.get("pending_approval") as? Map<*, *>
+                            if (isCurrentAttentionSession(runtimeId, observation.scope) && approval != null) {
+                                handleApprovalRequest(parseApprovalMap(approval, runtimeId), observation.scope)
+                            }
+                        }
+
+                        else -> {}
+                    }
                 }
+                completedTranscriptOrdinal = observation.ordinal
+                scopedProcessingVersion.value++
             }
         }
         viewModelScope.launch {
@@ -902,6 +1098,8 @@ class ChatViewModel(
         }
         viewModelScope.launch {
             wsClient.connectionScope.collect { scope ->
+                scopedProcessingVersion.value++
+                todoHistoryMemo.clear()
                 refreshDrafts()
                 _uiState.update { state ->
                     if (state.vaultPrompt != null &&
@@ -915,6 +1113,7 @@ class ChatViewModel(
                 refreshAttentionStates()
             }
         }
+
         // B7 (Jun 30 2026, kanban t_connection_loading): clear loading state on connection failure or status change
         viewModelScope.launch {
             wsClient.connectionStatus.collect { status ->
@@ -933,6 +1132,7 @@ class ChatViewModel(
                                 it.responseStatusUnknown ||
                                     (it.isAgentTyping && hasObservedActiveResponse) ||
                                     activePromptIntents.values.any { draft -> draft.state == DraftState.UNKNOWN },
+                            responseLedger = it.responseLedger.gap(),
                         )
                     }
                     // The runtime session id is only valid while the socket
@@ -946,6 +1146,7 @@ class ChatViewModel(
                     replayResyncOwner = null
                     runtimeSessionId = null
                     activeResumeRequestSequence = ++resumeRequestSequence
+                    cancelResumeDeadline()
                     releasePendingInitialPrompt()
                     // Fail any in-flight awaited RPCs so callers don't hang
                     // across the disconnect (delegated to HermesWsClient, issue #526).
@@ -1044,6 +1245,7 @@ class ChatViewModel(
     // ── WS Event Handling ────────────────────────────────────────────────
 
     private fun handleGatewayReady() {
+        todoHistoryMemo.clear()
         queueExecutionIdle = false
         // A definitely-unsent queue entry may retry on a fresh binding, never UNKNOWN.
         // Claims for possibly-delivered requests survive reconnects.
@@ -1086,7 +1288,71 @@ class ChatViewModel(
         }
     }
 
-    private fun handleWsEvent(event: WsEvent) {
+    private fun correlatedResponses(event: WsEvent.MessageComplete): List<ResponseRecord> =
+        event.persistedTurn
+            ?.let { proof ->
+                _uiState.value.responseLedger.responses.filter { response ->
+                    val facts = response.authority
+                    val submissions =
+                        listOfNotNull(facts.opening?.submissionId, facts.queued?.submissionId) +
+                            facts.controls.mapNotNull { it.submissionId }
+                    val rows = listOfNotNull(facts.opening?.userRowId) + facts.controls.mapNotNull { it.userRowId }
+                    (proof.submissionId != null && proof.submissionId in submissions) ||
+                        (listOfNotNull(proof.userRowId) + proof.userRowIds.orEmpty()).any { it in rows } ||
+                        (
+                            facts.opening == null && facts.queued?.userRowId != null &&
+                                facts.queued.userRowId == proof.userRowId
+                        )
+                }
+            }.orEmpty()
+
+    private fun correlatedResponse(event: WsEvent.MessageComplete): ResponseRecord? =
+        correlatedResponses(event).singleOrNull()
+
+    private fun terminalEvidence(
+        event: WsEvent,
+        time: Long,
+        ordinal: Long,
+    ): TerminalEvidence {
+        val complete = event as? WsEvent.MessageComplete
+        val receipt = complete?.persistedTurn
+        return TerminalEvidence(
+            time,
+            ordinal,
+            receipt?.rowIds.orEmpty(),
+            receipt?.userRowId,
+            receipt?.finalAssistantRowId,
+            receipt?.submissionId,
+            receipt?.complete,
+            complete?.partial,
+            complete?.responseTransformed,
+            complete?.status,
+            sessionScope?.generation,
+        )
+    }
+
+    private fun retryPendingTerminals() {
+        val pending = pendingTerminals.toList()
+        pendingTerminals.clear()
+        for (terminal in pending) {
+            if (terminal.generation != sessionGeneration || terminal.scope != sessionScope ||
+                !submissionTransport.isReady(terminal.scope) || !isCurrentSession(terminal.event.sessionId)
+            ) {
+                continue
+            }
+            if (correlatedResponse(terminal.event) != null) {
+                handleWsEvent(terminal.event, terminal.observedAt, terminal.ordinal)
+            } else if (terminal.responseId in _uiState.value.responseLedger.pendingSubmissions.values) {
+                pendingTerminals.add(terminal)
+            }
+        }
+    }
+
+    private fun handleWsEvent(
+        event: WsEvent,
+        observedAt: Long = clock(),
+        eventOrdinal: Long = observedTranscriptOrdinal ?: 0L,
+    ) {
         if (event is WsEvent.SessionUsage && isCurrentSession(event.sessionId)) {
             // A push is newer than any meter request already in flight.
             contextUsageRevision.incrementAndGet()
@@ -1110,6 +1376,176 @@ class ChatViewModel(
                 else -> null
             }
         if (!isCurrentSession(transitionSessionId)) return
+        if (event is WsEvent.MessageStart &&
+            (
+                _uiState.value.responseLedger.activeId == null ||
+                    _uiState.value.responseLedger.responses.any {
+                        it.id == _uiState.value.responseLedger.activeId &&
+                            it.finishedAt != null
+                    }
+            )
+        ) {
+            // A remotely observed run has identity, but no invented exhaustive historical coverage.
+            _uiState.update { it.copy(responseLedger = it.responseLedger.open().gap()) }
+        }
+        val receipt = (event as? WsEvent.MessageComplete)?.persistedTurn
+        var currentLedger = _uiState.value.responseLedger
+        val matches = (event as? WsEvent.MessageComplete)?.let(::correlatedResponses).orEmpty()
+        if (matches.size > 1) {
+            _uiState.update { state ->
+                state.copy(
+                    responseLedger =
+                        state.responseLedger.copy(
+                            responses =
+                                state.responseLedger.responses.map {
+                                    if (it.id in
+                                        matches.map { match -> match.id }
+                                    ) {
+                                        it.copy(
+                                            authority =
+                                                it.authority.revoke(
+                                                    "terminal-binding",
+                                                    matches
+                                                        .map { match ->
+                                                            match.id
+                                                        }.sorted()
+                                                        .toString(),
+                                                ),
+                                        )
+                                    } else {
+                                        it
+                                    }
+                                },
+                        ),
+                )
+            }
+            persistTranscript()
+            return
+        }
+        val correlated = matches.singleOrNull()
+        val queuedExecution =
+            correlated?.authority?.queued != null && correlated.finishedAt == null &&
+                currentLedger.responses.none {
+                    it.id != correlated.id && it.authority.opening != null &&
+                        it.finishedAt == null
+                }
+        if (queuedExecution) {
+            currentLedger = currentLedger.copy(activeId = correlated!!.id)
+            _uiState.update { it.copy(responseLedger = currentLedger) }
+        }
+        val freshOpening =
+            currentLedger.responses
+                .singleOrNull { it.id == currentLedger.activeId }
+                ?.authority
+                ?.opening
+        val compatibleFirstTerminal =
+            !currentLedger.requiresCorrelation && freshOpening != null &&
+                freshOpening.disposition == "STREAMING" &&
+                freshOpening.connectionGeneration == sessionScope?.generation &&
+                freshOpening.observationProcessId == sessionScope?.processId
+
+        val canonicalWindowAllowed =
+            event is WsEvent.MessageComplete && receipt?.finalAssistantRowId != null &&
+                event.partial != true && event.responseTransformed != true &&
+                (event.status == null || event.status == "complete")
+        if (!currentLedger.requiresCorrelation && freshOpening == null && correlated == null &&
+            event is WsEvent.MessageComplete &&
+            event.sessionId != null && sessionScope != null &&
+            currentLedger.activeId in currentLedger.pendingSubmissions.values &&
+            (receipt?.submissionId != null || receipt?.userRowId != null || !receipt?.userRowIds.isNullOrEmpty())
+        ) {
+            pendingTerminals.add(
+                PendingTerminal(
+                    event,
+                    observedAt,
+                    sessionGeneration,
+                    sessionScope!!,
+                    currentLedger.activeId!!,
+                    eventOrdinal,
+                ),
+            )
+        }
+        if ((event is WsEvent.MessageComplete || event is WsEvent.MessageDone) &&
+            currentLedger.requiresCorrelation && correlated == null
+        ) {
+            val scope = sessionScope
+            val responseId = currentLedger.activeId
+            if (event is WsEvent.MessageComplete && event.sessionId != null && scope != null &&
+                scope == submissionTransport.configuredScope() && responseId != null &&
+                responseId in currentLedger.pendingSubmissions.values &&
+                (receipt?.submissionId != null || receipt?.userRowId != null || !receipt?.userRowIds.isNullOrEmpty())
+            ) {
+                // The worker may finish before prompt.submit returns its admission IDs.
+                // Retain only explicitly addressed evidence in this exact observation lifetime.
+                pendingTerminals.add(
+                    PendingTerminal(event, observedAt, sessionGeneration, scope, responseId, eventOrdinal),
+                )
+                return
+            }
+            // A no-key server queue cannot open a reply, but its observed final prose must not disappear.
+            val unboundQueuedBody =
+                (event as? WsEvent.MessageComplete)
+                    ?.takeIf { complete ->
+                        complete.text.isNotBlank() && complete.responseReused != true &&
+                            currentLedger.responses.any { it.authority.queued != null && it.authority.opening == null }
+                    }?.let { ChatMessage(role = MessageRole.ASSISTANT, content = it.text, timestamp = observedAt) }
+            _uiState.update {
+                it.copy(
+                    responseStatusUnknown = true,
+                    responseLedger = it.responseLedger.gap(),
+                    messages = it.messages + listOfNotNull(unboundQueuedBody),
+                )
+            }
+            persistTranscript()
+            return
+        }
+        val terminalReplay =
+            correlated ?: currentLedger.responses.singleOrNull {
+                // Reuse only the fresh-first compatibility attribution, before any
+                // later send/start. Safety enrichment must bypass reducer/queue effects.
+                event is WsEvent.MessageComplete && receipt == null &&
+                    (
+                        event.partial == true || event.responseTransformed == true ||
+                            (event.status != null && event.status != "complete")
+                    ) &&
+                    compatibleFirstTerminal && _streamingState.value.turnEnded &&
+                    freshOpening?.observation == sessionGeneration &&
+                    !_uiState.value.responseStatusUnknown &&
+                    it.id == currentLedger.activeId && it.finishedAt != null &&
+                    // Terminal safety attribution does not depend on current body coverage.
+                    it.authority.terminals.isNotEmpty() && !currentLedger.blocksAuthority(it.id)
+            }
+        if (terminalReplay != null && (
+                terminalReplay.id != currentLedger.activeId ||
+                    terminalReplay.finishedAt != null
+            )
+        ) {
+            // An attributed old terminal cannot finalize, flush or overwrite the current stream.
+            _uiState.update {
+                it.copy(
+                    responseLedger =
+                        it.responseLedger
+                            .update(terminalReplay.id) { old ->
+                                old.admitTerminal(terminalEvidence(event, observedAt, eventOrdinal)).copy(
+                                    canonicalRowIds =
+                                        if (receipt?.complete ==
+                                            true
+                                        ) {
+                                            receipt.rowIds
+                                        } else {
+                                            (old.canonicalRowIds + receipt?.rowIds.orEmpty()).distinct()
+                                        },
+                                    canonicalFinalAssistantRowId =
+                                        old.canonicalFinalAssistantRowId ?: receipt?.finalAssistantRowId,
+                                    canonicalComplete = receipt?.complete ?: old.canonicalComplete,
+                                    canonicalWindowAllowed = old.canonicalWindowAllowed || canonicalWindowAllowed,
+                                )
+                            }.revokeExclusiveClaims(),
+                )
+            }
+            persistTranscript()
+            return
+        }
         // Actionable questions must retain the socket observation's original identity.
         if (event is WsEvent.ClarifyRequest || event is WsEvent.ClarifyExpire ||
             event is WsEvent.ClarifyResolved
@@ -1158,12 +1594,13 @@ class ChatViewModel(
         // Frames of an ended turn stay fenced until a legitimate send/start.
         val lateFrame = _streamingState.value.turnEnded && event !is WsEvent.MessageStart
         // First, let the reducer compute the new state and any effects
-        val result =
+        var result =
             ChatWsEventReducer.reduce(
                 _uiState.value,
                 _streamingState.value,
                 event,
                 runtimeSessionId ?: _uiState.value.currentSessionId,
+                hydrateTodos = todoHistoryMemo::hydrate,
             )
 
         // Optimistic local input is not evidence that a remote response is running.
@@ -1189,16 +1626,162 @@ class ChatViewModel(
                 (event is WsEvent.MessageComplete || event is WsEvent.MessageDone)
         if (queueTurnEnded) queueTurnObserved = false
         // Apply the new state
-        _uiState.update { result.state }
+        val ownedIds = newNonUserMemberIds(_uiState.value.messages, result.state.messages)
+        var ledger = _uiState.value.responseLedger.observe(ownedIds)
+        if ((event is WsEvent.MessageComplete || event is WsEvent.MessageDone) && !lateFrame) {
+            ledger =
+                ledger.update(ledger.activeId) {
+                    (
+                        if (correlated != null ||
+                            compatibleFirstTerminal
+                        ) {
+                            it.admitTerminal(terminalEvidence(event, observedAt, eventOrdinal))
+                        } else {
+                            it.copy(
+                                finishedAt = it.finishedAt ?: observedAt,
+                                coverage = false,
+                                authority = it.authority.copy(local = null, deliveryGap = true),
+                            )
+                        }
+                    ).copy(
+                        canonicalRowIds =
+                            if (receipt?.complete ==
+                                true
+                            ) {
+                                receipt.rowIds
+                            } else {
+                                (it.canonicalRowIds + receipt?.rowIds.orEmpty()).distinct()
+                            },
+                        canonicalFinalAssistantRowId = it.canonicalFinalAssistantRowId ?: receipt?.finalAssistantRowId,
+                        canonicalWindowAllowed = it.canonicalWindowAllowed || canonicalWindowAllowed,
+                        canonicalComplete = receipt?.complete ?: it.canonicalComplete,
+                        userRowIds =
+                            (
+                                it.userRowIds +
+                                    listOfNotNull(
+                                        receipt?.userRowId,
+                                    ) + receipt?.userRowIds.orEmpty()
+                            ).distinct(),
+                    )
+                }
+        }
+        // A new member or an explicitly selected previewed interim can identify the terminal row.
+        // Fully sealed/reused prose without that delivery proof must remain unbound.
+        val finalRow = receipt?.finalAssistantRowId
+        val finalized = result.streamingState.finalizedMessage
+        val finalOwner = ledger.responses.singleOrNull { it.id == ledger.activeId }
+        val finalFacts = finalOwner?.authority
+        val finalOpening = finalFacts?.opening
+        // Selection differs; binding and lossless collision handling do not. An ordinary
+        // terminal must have created this member, whereas preview needs its observed identity.
+        val selectedFinal =
+            finalized != null &&
+                (
+                    finalized.id in ownedIds ||
+                        (
+                            event is WsEvent.MessageComplete && event.responsePreviewed == true &&
+                                finalized.id == _streamingState.value.previewedFinalCandidateId
+                        )
+                )
+        val safeFinalBinding =
+            selectedFinal && finalized != null && finalRow != null && finalRow in receipt?.rowIds.orEmpty() &&
+                finalOpening != null && finalFacts != null && sessionScope != null &&
+                finalized.id in finalOwner.messageIds &&
+                result.state.messages.count { it.id == finalized.id && it.role == MessageRole.ASSISTANT } == 1 &&
+                ledger.responses.count { finalized.id in it.messageIds } == 1 &&
+                finalOpening.target == sessionScope?.draftTargetKey() &&
+                finalOpening.session == _uiState.value.currentSessionId &&
+                finalOpening.connectionGeneration == sessionScope?.generation &&
+                finalOpening.observationProcessId == sessionScope?.processId &&
+                finalFacts.terminals.isNotEmpty() &&
+                finalFacts.terminals.all { it.safe } && finalFacts.revocations.isEmpty() &&
+                ledger
+                    .revokeExclusiveClaims()
+                    .responses
+                    .singleOrNull { it.id == finalOwner.id }
+                    ?.authority
+                    ?.revocations
+                    ?.isEmpty() == true &&
+                ledger.aliases.none { (row, member) -> row != finalRow.toString() && member == finalized.id } &&
+                ledger.responses.none { other ->
+                    other.id != finalOwner.id &&
+                        (
+                            finalRow in other.canonicalRowIds || other.canonicalFinalAssistantRowId == finalRow ||
+                                other.authority.terminals.any { finalRow in it.rowIds || it.finalRowId == finalRow }
+                        )
+                }
+        if (!lateFrame && canonicalWindowAllowed && event is WsEvent.MessageComplete &&
+            event.responseReused != true && correlated?.id == ledger.activeId && safeFinalBinding &&
+            finalRow != null && finalized != null && finalOpening != null &&
+            (ledger.aliases[finalRow.toString()] == null || ledger.aliases[finalRow.toString()] == finalized.id)
+        ) {
+            val canonicalFinalId = canonicalMessageId(finalOpening.target, finalOpening.session, finalRow)
+            val collision =
+                canonicalFinalId != finalized.id &&
+                    (result.state.messages + result.state.stagedCanonicalMessages).any { it.id == canonicalFinalId }
+            val fold =
+                if (collision) {
+                    foldPreviewedFinalCollision(
+                        result.state.messages,
+                        result.state.stagedCanonicalMessages,
+                        ledger,
+                        finalized.id,
+                        canonicalFinalId,
+                    )
+                } else {
+                    null
+                }
+            if (!collision || fold != null) {
+                if (fold != null) {
+                    result =
+                        result.copy(
+                            state =
+                                result.state.copy(
+                                    messages = fold.messages,
+                                    stagedCanonicalMessages = fold.stagedMessages,
+                                ),
+                            streamingState = result.streamingState.copy(finalizedMessage = fold.finalizedMessage),
+                        )
+                }
+                ledger = ledger.copy(aliases = ledger.aliases + (finalRow.toString() to finalized.id))
+            }
+        }
+        // Install the requirement before publishing state or admitting work: either collector
+        // or the writer may run immediately on Main.immediate.
+        if (!lateFrame && ledger.activeId != null &&
+            (event is WsEvent.MessageComplete || event is WsEvent.MessageDone)
+        ) {
+            terminalCommitPending = true
+            terminalCommitResponseId = ledger.activeId
+        }
+        _uiState.update { result.state.copy(responseLedger = ledger.revokeExclusiveClaims()) }
         _streamingState.update { result.streamingState }
+        if (event !is WsEvent.MessageToken && event !is WsEvent.ThinkingDelta &&
+            event !is WsEvent.ReasoningDelta && event !is WsEvent.ToolProgress
+        ) {
+            when (event) {
+                is WsEvent.MessageComplete, is WsEvent.MessageDone -> {
+                    commitTranscript(TranscriptBarrier.TERMINAL)
+                }
+
+                is WsEvent.MessageInterim, is WsEvent.MessageSegmentEnd -> {
+                    commitTranscript(
+                        TranscriptBarrier.SEALED_SEGMENT,
+                    )
+                }
+
+                else -> {
+                    persistTranscript()
+                }
+            }
+        }
 
         // Process side-effects from the reducer
         for (effect in result.effects) {
             when (effect) {
+                // Saved above as one structural snapshot, never independently row-first.
                 is ReducerEffect.PersistMessage -> {
-                    viewModelScope.launch(ioDispatcher) {
-                        repo.persistMessage(effect.message, effect.sessionId)
-                    }
+                    Unit
                 }
 
                 is ReducerEffect.CreateNewSession -> {
@@ -1310,13 +1893,11 @@ class ChatViewModel(
             }
 
             is WsEvent.MessageComplete -> {
-                if (queueTurnEnded) queueExecutionIdle = true
                 // Buffers cleared before reduce; ViewModel resets them after
                 streamingController.resetStreaming()
             }
 
             is WsEvent.MessageDone -> {
-                if (queueTurnEnded) queueExecutionIdle = true
                 streamingController.resetStreaming()
             }
 
@@ -1431,6 +2012,13 @@ class ChatViewModel(
      * Checks if an incoming WS event belongs to the currently active
      * session. Returns true if the event should be processed.
      */
+    private fun isCurrentAttentionSession(
+        eventSessionId: String?,
+        scope: ConnectionScope?,
+    ): Boolean =
+        !eventSessionId.isNullOrBlank() && eventSessionId == runtimeSessionId &&
+            scope != null && scope == sessionScope && scope == submissionTransport.configuredScope()
+
     private fun isCurrentSession(eventSessionId: String?): Boolean {
         // If the event has no session ID, process it (legacy compatibility)
         if (eventSessionId == null) return true
@@ -1444,6 +2032,7 @@ class ChatViewModel(
         id: String,
         result: Any?,
     ) {
+        cancelResumeDeadline(id)
         val method = idToMethod.remove(id) ?: return
         val request = sessionRequestById.remove(id)
         if (request != null && isStaleSessionRequest(request)) return
@@ -1485,6 +2074,7 @@ class ChatViewModel(
                 // session-scoped RPCs. See ActiveSessionHolder.
                 ActiveSessionHolder.setScoped(runtimeId, storageId, sessionScope)
                 _streamingState.update { StreamingState() }
+                openTranscriptCache(storageId, sessionGeneration, load = false)
                 addSystemMessage("Session created", persist = true)
                 loadSessions()
                 fetchContextUsage()
@@ -1512,6 +2102,7 @@ class ChatViewModel(
                 ActiveSessionHolder.setScoped(runtimeId, storageId, sessionScope)
                 sessionHasServerPresence = false
                 sessionGoneRecoveryInFlight = false
+                openTranscriptCache(storageId, generation, load = false)
                 addSystemMessage("Session branched", persist = true)
                 loadSessionMessages(storageId, generation)
                 loadSessions()
@@ -1739,7 +2330,7 @@ class ChatViewModel(
         ActiveSessionHolder.setScoped(runtimeSessionId ?: sessionId, sessionId, sessionScope)
         request?.scope?.let {
             if (request.resync) wsClient.adoptReplaySnapshot(it, runtimeId, resultMap)
-            wsClient.restoreOpenPrompts(it, resultMap)
+            wsClient.restoreVaultPrompts(it, resultMap, runtimeId, request.snapshotStartedAt)
         }
         if (request?.resync != true) addSystemMessage("Session resumed")
         fetchContextUsage()
@@ -1762,6 +2353,7 @@ class ChatViewModel(
         id: String,
         error: Any?,
     ) {
+        cancelResumeDeadline(id)
         val method = idToMethod.remove(id) ?: return
         pendingReasoningSelections.remove(id)
         val failedModelSwitch = pendingModelSwitchRequests.remove(id)
@@ -1887,9 +2479,17 @@ class ChatViewModel(
         }
         val queueNewInput = state.responseStatusUnknown || (wasStreaming && !knownActive)
         val message =
-            ChatMessage(role = MessageRole.USER, content = text, attachments = attachments.takeIf { it.isNotEmpty() })
+            ChatMessage(
+                role = MessageRole.USER,
+                content = text,
+                timestamp = clock(),
+                attachments =
+                    attachments.takeIf {
+                        it.isNotEmpty()
+                    },
+            )
         clearAttachments()
-        val turnOpening = openTurnLifecycle(awaitsAdmission = !wasStreaming)
+        val turnOpening = openTurnLifecycle(awaitsAdmission = !knownActive)
         _uiState.update { it.copy(messages = it.messages + message, isAgentTyping = true) }
         stagePrompt(
             text,
@@ -1924,7 +2524,7 @@ class ChatViewModel(
         ) {
             return false
         }
-        val message = ChatMessage(role = MessageRole.USER, content = text)
+        val message = ChatMessage(role = MessageRole.USER, content = text, timestamp = clock())
         val turnOpening = openTurnLifecycle(awaitsAdmission = true)
         _uiState.update { it.copy(messages = it.messages + message, isAgentTyping = true) }
         stagePrompt(text, emptyList(), false, message, turnOpening, useEditingDraft = false)
@@ -1938,11 +2538,24 @@ class ChatViewModel(
      * until a stream frame proves the gateway admitted it.
      */
     private fun openTurnLifecycle(awaitsAdmission: Boolean): TurnOpening {
+        val continuation =
+            _uiState.value.responseLedger.let { ledger ->
+                ledger.responses
+                    .singleOrNull {
+                        it.id ==
+                            ledger.activeId &&
+                            it.finishedAt == null
+                    }?.id
+            }
+        if (awaitsAdmission) _uiState.update { it.copy(responseLedger = it.responseLedger.open()) }
         val opening =
             TurnOpening(
                 turnLifecycleVersion.incrementAndGet(),
                 streamObservationVersion.get(),
                 _streamingState.value.turnEnded,
+                _uiState.value.responseLedger.activeId,
+                continuation,
+                awaitsAdmission,
             )
         if (awaitsAdmission) {
             admissionUnproven = true
@@ -2090,6 +2703,7 @@ class ChatViewModel(
             ChatMessage(
                 role = MessageRole.USER,
                 content = draft.text,
+                timestamp = clock(),
                 attachments = draft.attachments.takeIf { it.isNotEmpty() },
             )
         val turnOpening = openTurnLifecycle(awaitsAdmission = true)
@@ -2197,6 +2811,18 @@ class ChatViewModel(
             )
         val generation = sessionGeneration
         activePromptIntents[draft.id] = draft
+        _uiState.update { state ->
+            state.copy(
+                responseLedger =
+                    state.responseLedger.copy(
+                        pendingInputs =
+                            state.responseLedger.pendingInputs +
+                                listOfNotNull(message?.id?.let { it to (turnOpening.responseId ?: "") }).toMap(),
+                        pendingSubmissions =
+                            state.responseLedger.pendingSubmissions + (draft.id to (turnOpening.responseId ?: "")),
+                    ),
+            )
+        }
         _uiState.update { it.copy(activeDraftIds = it.activeDraftIds + draft.id) }
         viewModelScope.launch {
             try {
@@ -2209,6 +2835,7 @@ class ChatViewModel(
                 return@launch
             }
             if (generation != sessionGeneration || !submissionTransport.isReady(scope)) {
+                forgetUnsentAuthority(draft.id, message?.id, generation)
                 removeUnsentBubble(message, wasStreaming, generation)
                 finishDraftAttempt(draft.id)
                 return@launch
@@ -2219,7 +2846,15 @@ class ChatViewModel(
                 // Session creation may finish while the durable save is suspended. Recheck above;
                 // only this same connected scope may dispatch after its creation ACK.
                 val pending =
-                    PendingPrompt(draft, wasStreaming, message, effectiveQueued, effectiveRedirect, generation)
+                    PendingPrompt(
+                        draft,
+                        wasStreaming,
+                        message,
+                        effectiveQueued,
+                        effectiveRedirect,
+                        generation,
+                        turnOpening,
+                    )
                 if (pendingInitialPrompt == null) {
                     pendingInitialPrompt = pending
                     pendingPromptTimeout =
@@ -2233,6 +2868,7 @@ class ChatViewModel(
                 return@launch
             }
             if (sessionScope != scope) {
+                forgetUnsentAuthority(draft.id, message?.id, generation)
                 removeUnsentBubble(message, wasStreaming, generation)
                 finishDraftAttempt(draft.id)
                 return@launch
@@ -2263,10 +2899,48 @@ class ChatViewModel(
         turnOpening: TurnOpening,
     ) {
         val outgoing = draft.copy(savedSessionId = storageSessionId, runtimeSessionId = agentSessionId)
-        val session = SessionRef(agentSessionId, storageSessionId)
+        _uiState.update { state ->
+            val capturedId = turnOpening.responseId
+            val ledger =
+                if (turnOpening.ordinary && capturedId != null &&
+                    state.responseLedger.responses.none { it.id == capturedId }
+                ) {
+                    state.responseLedger.copy(
+                        responses = state.responseLedger.responses + ResponseRecord(id = capturedId),
+                        activeId = capturedId,
+                        requiresCorrelation =
+                            state.responseLedger.requiresCorrelation || state.responseLedger.responses.isNotEmpty(),
+                    )
+                } else {
+                    state.responseLedger
+                }
+            state.copy(
+                responseLedger =
+                    ledger.copy(
+                        pendingInputs =
+                            ledger.pendingInputs +
+                                listOfNotNull(userMessage?.id?.let { it to (turnOpening.responseId ?: "") }).toMap(),
+                        pendingSubmissions =
+                            state.responseLedger.pendingSubmissions + (draft.id to (turnOpening.responseId ?: "")),
+                        possibleContinuations =
+                            state.responseLedger.possibleContinuations +
+                                listOfNotNull(turnOpening.continuationId?.let { draft.id to it }).toMap(),
+                    ),
+            )
+        }
+        val session =
+            SessionRef(
+                agentSessionId,
+                // v1 uses the existing current-generation guarded resume binding, never create's runtime fallback.
+                storageSessionId.takeIf {
+                    resumedGeneration == sessionGeneration && sessionHasServerPresence &&
+                        outgoing.attachments.isEmpty() && turnOpening.ordinary
+                },
+            )
         var streamVersion = streamObservationVersion.get()
         var canRollbackOpening = false
         val unknownBeforeAttempt = _uiState.value.responseStatusUnknown
+        val idleBeforeAttempt = queueExecutionIdle
         viewModelScope.launch(ioDispatcher) {
             val prepared = mutableListOf<PreparedAttachment>()
             var attempted = false
@@ -2334,6 +3008,7 @@ class ChatViewModel(
                     pendingAdmission = PendingAdmission(dispatchGeneration, agentSessionId)
                 }
                 attempted = true
+                queueExecutionIdle = false
                 val fileRefs = mutableListOf<String>()
                 for ((attachment, file) in prepared) {
                     val dataUrl = "data:${attachment.mimeType};base64,${file.readText(Charsets.US_ASCII)}"
@@ -2377,26 +3052,142 @@ class ChatViewModel(
                     is SubmissionResult.Confirmed -> {
                         // The durable draft already protected the content before sending. Cache only
                         // confirmed user messages so a definitely-unsent draft cannot reappear as sent.
-                        if (userMessage != null) repo.persistMessage(userMessage, storageSessionId)
+                        val acceptedMessage =
+                            userMessage?.let { message ->
+                                when (result.value) {
+                                    com.m57.hermescontrol.domain.hermes.PromptAcceptance.STEERED,
+                                    com.m57.hermescontrol.domain.hermes.PromptAcceptance.REDIRECTED,
+                                    -> message.copy(displayKind = "steer")
+
+                                    else -> message
+                                }
+                            }
+
+                        val committed =
+                            withContext(Dispatchers.Main.immediate) {
+                                transcriptOpenJob?.join()
+                                if (dispatchGeneration == sessionGeneration &&
+                                    submissionTransport.isReady(outgoing.scope) &&
+                                    (
+                                        result.proofSource !=
+                                            SubmissionProofSource.TERMINAL_RECEIPT ||
+                                            (
+                                                result.terminalAuthenticationEpoch != null &&
+                                                    result.terminalAuthenticationEpoch % 2L == 0L &&
+                                                    result.terminalAuthenticationEpoch ==
+                                                    AuthManager.connectionEpoch.value
+                                            )
+                                    )
+                                ) {
+                                    _uiState.update { state ->
+                                        state.copy(
+                                            responseLedger =
+                                                state.responseLedger.acceptInput(
+                                                    outgoing.id,
+                                                    turnOpening.responseId,
+                                                    turnOpening.continuationId,
+                                                    turnOpening.ordinary,
+                                                    result.requestId,
+                                                    result.value.name,
+                                                    outgoing.scope.draftTargetKey(),
+                                                    storageSessionId,
+                                                    dispatchGeneration,
+                                                    acceptedMessage?.id,
+                                                    result.promptEvidence?.userRowId,
+                                                    result.promptEvidence?.submissionId,
+                                                    outgoing.scope.generation,
+                                                    outgoing.scope.processId,
+                                                    result.proofSource,
+                                                ),
+                                            messages =
+                                                state.messages.map {
+                                                    if (it.id ==
+                                                        acceptedMessage?.id
+                                                    ) {
+                                                        acceptedMessage
+                                                    } else {
+                                                        it
+                                                    }
+                                                },
+                                        )
+                                    }
+                                    if (streamVersion == streamObservationVersion.get() &&
+                                        result.value != com.m57.hermescontrol.domain.hermes.PromptAcceptance.QUEUED
+                                    ) {
+                                        hasObservedActiveResponse = true
+                                        _uiState.update { it.copy(responseStatusUnknown = false) }
+                                    }
+                                    if (result.proofSource ==
+                                        SubmissionProofSource.TERMINAL_RECEIPT
+                                    ) {
+                                        val original = result.terminalObservation ?: return@withContext null
+
+                                        fun validOwner() =
+                                            dispatchGeneration == sessionGeneration &&
+                                                original.scope == sessionScope &&
+                                                submissionTransport.isReady(outgoing.scope) &&
+                                                result.terminalAuthenticationEpoch == AuthManager.connectionEpoch.value
+                                        // The retained event stays in this one active dispatch coroutine. Never
+                                        // advance the stream fence to make its unprocessed predecessors disappear.
+                                        combine(
+                                            scopedProcessingVersion,
+                                            AuthManager.connectionEpoch,
+                                        ) { _, _ -> Unit }.first {
+                                            !validOwner() || terminalAlreadyHandled(original) ||
+                                                (
+                                                    observedTranscriptScope == original.scope &&
+                                                        (completedTranscriptOrdinal ?: -1L) >= original.ordinal - 1L
+                                                )
+                                        }
+                                        if (!validOwner() ||
+                                            original.event !is WsEvent.MessageComplete
+                                        ) {
+                                            return@withContext null
+                                        }
+                                        if (!terminalAlreadyHandled(original)) {
+                                            if (original.gap) {
+                                                _uiState.update {
+                                                    it.copy(
+                                                        responseLedger = it.responseLedger.gap(),
+                                                    )
+                                                }
+                                            }
+                                            // Original ordinal is safety order, even when a later collector
+                                            // observation established a real gap. Never invent local coverage.
+                                            handleWsEvent(original.event, eventOrdinal = original.ordinal)
+                                        }
+                                    }
+                                    ActiveSessionHolder.setScoped(agentSessionId, storageSessionId, outgoing.scope)
+                                    retryPendingTerminals()
+                                    commitTranscript(TranscriptBarrier.ACCEPTED_INPUT)
+                                } else {
+                                    null
+                                }
+                            }
+                        if (committed == null ||
+                            !committed.await()
+                        ) {
+                            throw IllegalStateException("Transcript commit was rejected")
+                        }
                         draftStore.delete(outgoing.scope, outgoing.id)
                         unsavedDrafts.remove(outgoing.id)
                         draftOperationErrors.remove(outgoing.id)
-                        withContext(Dispatchers.Main.immediate) {
-                            if (dispatchGeneration == sessionGeneration &&
-                                submissionTransport.isReady(outgoing.scope)
-                            ) {
-                                if (streamVersion == streamObservationVersion.get() &&
-                                    result.value != com.m57.hermescontrol.domain.hermes.PromptAcceptance.QUEUED
-                                ) {
-                                    hasObservedActiveResponse = true
-                                    _uiState.update { it.copy(responseStatusUnknown = false) }
-                                }
-                                ActiveSessionHolder.setScoped(agentSessionId, storageSessionId, outgoing.scope)
-                            }
-                        }
                     }
 
                     SubmissionResult.NotSent -> {
+                        withContext(
+                            Dispatchers.Main.immediate,
+                        ) {
+                            forgetUnsentAuthority(
+                                outgoing.id,
+                                userMessage?.id,
+                                dispatchGeneration,
+                                retireProvisional =
+                                    canRollbackOpening && turnOpening.ordinary && !remoteAttachment &&
+                                        turnOpening.version == turnLifecycleVersion.get() &&
+                                        streamVersion == streamObservationVersion.get(),
+                            )
+                        }
                         if (!remoteAttachment) {
                             draftStore.save(outgoing)
                             queueClaims.remove(outgoing.id)
@@ -2411,13 +3202,14 @@ class ChatViewModel(
                         ) {
                             pendingAdmission = null
                             admissionUnproven = false
+                            queueExecutionIdle = idleBeforeAttempt
                             _streamingState.update { it.copy(turnEnded = turnOpening.wasEnded) }
                             _uiState.update { it.copy(responseStatusUnknown = unknownBeforeAttempt) }
                         }
                     }
 
                     SubmissionResult.Expired, SubmissionResult.Unknown -> {
-                        restoreTypingState(wasStreaming, dispatchGeneration, streamVersion)
+                        restorePromptUncertainty(outgoing, turnOpening, wasStreaming, dispatchGeneration, streamVersion)
                     }
                 }
             } catch (e: Exception) {
@@ -2432,8 +3224,86 @@ class ChatViewModel(
                     restoreTypingState(wasStreaming, dispatchGeneration, streamVersion)
                 }
             } finally {
+                if (!attempted) {
+                    withContext(Dispatchers.Main.immediate) {
+                        forgetUnsentAuthority(outgoing.id, userMessage?.id, dispatchGeneration)
+                    }
+                }
                 prepared.forEach { it.encodedFile.delete() }
                 finishDraftAttempt(outgoing.id)
+            }
+        }
+    }
+
+    private fun forgetUnsentAuthority(
+        attemptUid: String,
+        userId: String?,
+        generation: Long,
+        retireProvisional: Boolean = false,
+    ) {
+        if (generation != sessionGeneration) return
+        _uiState.update { state ->
+            val provisionalId = state.responseLedger.pendingSubmissions[attemptUid]
+            val ledger =
+                state.responseLedger.copy(
+                    pendingSubmissions = state.responseLedger.pendingSubmissions - attemptUid,
+                    pendingInputs = state.responseLedger.pendingInputs - listOfNotNull(userId).toSet(),
+                    possibleContinuations = state.responseLedger.possibleContinuations - attemptUid,
+                )
+            state.copy(
+                messages = state.messages.filterNot { it.id == userId },
+                responseLedger =
+                    if (retireProvisional) ledger.retireUnusedProvisional(provisionalId) else ledger,
+            )
+        }
+        persistTranscript()
+    }
+
+    /**
+     * Pending receipt is evidence of uncertainty, NOT an accepted terminal. Inspect mutable
+     * candidates and publish the flag together on Main, fenced to this ordinary dispatch.
+     */
+    private suspend fun restorePromptUncertainty(
+        outgoing: OutgoingDraft,
+        opening: TurnOpening,
+        wasStreaming: Boolean,
+        generation: Long,
+        streamVersion: Long,
+    ) {
+        withContext(Dispatchers.Main.immediate) {
+            if (generation != sessionGeneration) return@withContext
+            if (streamVersion == streamObservationVersion.get()) {
+                restoreTypingState(wasStreaming, generation, streamVersion)
+                return@withContext
+            }
+            val responseId = opening.responseId ?: return@withContext
+            val state = _uiState.value
+            val response = state.responseLedger.responses.singleOrNull { it.id == responseId } ?: return@withContext
+            if (!opening.ordinary || outgoing.queued || opening.version != turnLifecycleVersion.get() ||
+                state.responseLedger.activeId != responseId ||
+                state.responseLedger.pendingSubmissions[outgoing.id] != responseId ||
+                response.finishedAt != null || response.authority.terminals.isNotEmpty() ||
+                _streamingState.value.turnEnded ||
+                outgoing.savedSessionId != state.currentSessionId || outgoing.runtimeSessionId != runtimeSessionId ||
+                outgoing.scope != sessionScope || outgoing.scope != submissionTransport.configuredScope() ||
+                !submissionTransport.isReady(outgoing.scope)
+            ) {
+                return@withContext
+            }
+            val hasPendingTerminal =
+                pendingTerminals.any { pending ->
+                    val receipt = pending.event.persistedTurn
+                    pending.responseId == responseId && pending.generation == generation &&
+                        pending.scope == outgoing.scope && pending.event.sessionId != null &&
+                        pending.event.sessionId in listOf(outgoing.savedSessionId, outgoing.runtimeSessionId) &&
+                        (
+                            receipt?.submissionId != null || receipt?.userRowId != null ||
+                                !receipt?.userRowIds.isNullOrEmpty()
+                        )
+                }
+            if (hasPendingTerminal) {
+                // Do not roll typing back, seal the partial, clear pending evidence, or release work.
+                _uiState.value = state.copy(responseStatusUnknown = true)
             }
         }
     }
@@ -2562,7 +3432,7 @@ class ChatViewModel(
             ) {
                 val wasStreaming = _uiState.value.isAgentTyping
                 val redirect = pending.redirect && wasStreaming && !_uiState.value.responseStatusUnknown
-                val turnOpening = openTurnLifecycle(awaitsAdmission = !wasStreaming)
+                val turnOpening = pending.opening
                 _uiState.update { it.copy(isAgentTyping = true) }
                 dispatchPrompt(
                     pending.draft,
@@ -2881,16 +3751,20 @@ class ChatViewModel(
 
         val displayContent =
             if (result is SlashResult.QueuePrompt) result.displayContent else command
-        val userMsg = ChatMessage(role = MessageRole.USER, content = displayContent)
+        val userMsg =
+            ChatMessage(
+                role = MessageRole.USER,
+                content = displayContent,
+                // A requested configuration change is not a successful-switch event or a new prompt.
+                displayKind = if (result is SlashResult.ModelSwitch) "model_switch_request" else null,
+            )
         val sessionId = _uiState.value.currentSessionId
 
         _uiState.update { it.copy(messages = it.messages + userMsg) }
 
         // Persist — OUTSIDE update{}
         if (sessionId != null) {
-            viewModelScope.launch(ioDispatcher) {
-                repo.persistMessage(userMsg, sessionId)
-            }
+            persistTranscript()
         }
 
         if (result is SlashResult.Undo) {
@@ -3291,7 +4165,7 @@ class ChatViewModel(
     ) {
         if (text.isBlank()) return
         val wasStreaming = _uiState.value.isAgentTyping
-        val turnOpening = openTurnLifecycle(awaitsAdmission = !wasStreaming)
+        val turnOpening = openTurnLifecycle(awaitsAdmission = !redirect)
         _uiState.update { it.copy(isAgentTyping = true) }
         stagePrompt(text, emptyList(), wasStreaming, null, turnOpening, queued, redirect)
     }
@@ -3303,9 +4177,7 @@ class ChatViewModel(
         // Persist — OUTSIDE update{}
         val sessionId = _uiState.value.currentSessionId
         if (sessionId != null) {
-            viewModelScope.launch(ioDispatcher) {
-                repo.persistMessage(msg, sessionId)
-            }
+            persistTranscript()
         }
     }
 
@@ -3361,12 +4233,30 @@ class ChatViewModel(
                 else -> "↶ Rewound"
             }
         if (storageSessionId != null) {
-            val generation = sessionGeneration
-            viewModelScope.launch {
-                withContext(ioDispatcher) {
-                    repo.clearMessagesForSession(storageSessionId)
-                }
-                _uiState.update { it.copy(messages = emptyList()) }
+            val generation = ++sessionGeneration
+            todoHistoryMemo.clear()
+            pendingTerminals.clear()
+            scopedProcessingVersion.value++
+            transcriptOwner?.valid = false
+            transcriptOwner = null
+            transcriptOpening = true
+            terminalCommitPending = false
+            queueExecutionIdle = false
+            streamingController.resetStreaming()
+            _streamingState.value = StreamingState(turnEnded = true)
+            _uiState.update {
+                it.copy(
+                    messages = emptyList(),
+                    stagedCanonicalMessages = emptyList(),
+                    responseLedger = ResponseLedger(requiresCorrelation = true),
+                )
+            }
+            openTranscriptCache(
+                storageSessionId,
+                generation,
+                load = false,
+                emptyLedger = _uiState.value.responseLedger,
+            ) {
                 loadSessionMessages(storageSessionId, generation)
                 addSystemMessage(feedback, persist = true)
                 fetchContextUsage()
@@ -3863,9 +4753,12 @@ class ChatViewModel(
     }
 
     fun switchSession(sessionId: String) {
-        if (sessionId == _uiState.value.currentSessionId) {
-            // Confirming the selected conversation must refresh its binding, without
-            // resetting partial text, interrupting a job, or replaying stored drafts.
+        val requestedTarget = submissionTransport.configuredScope()?.draftTargetKey()
+        val selectedTarget = sessionScope?.draftTargetKey()
+        if (sessionId == _uiState.value.currentSessionId && requestedTarget == selectedTarget) {
+            // The same saved ID on another server/profile is a different transcript.
+            // A socket-generation change within the same durable target still preserves
+            // the current partial text while refreshing its runtime binding.
             if (submissionTransport.configuredScope()?.let(submissionTransport::isReady) == true) {
                 resumeSession(sessionId, sessionGeneration)
             }
@@ -3885,12 +4778,16 @@ class ChatViewModel(
                 .find { it.id == sessionId }
                 ?.title ?: "Hermes"
         val generation = resetSessionState(sessionId, title, isLoading = true)
+        val cached = loadCachedMessages(sessionId, generation)
         viewModelScope.launch {
             // Warm-cache fast-path (desktop parity): paint the cached Room
             // transcript immediately so the screen never sits blank, then load
             // the fresh server transcript in parallel. If the cache is empty
             // the spinner stays up until the server page lands.
-            loadCachedMessages(sessionId, generation)
+            cached.join()
+            // Cancellation of a superseded cache consumer also releases join(). Do not
+            // let that old selection resume the transport or change current queue gating.
+            if (!isCurrentSessionRequest(sessionId, generation)) return@launch
             // Resume the selected desktop session and hydrate its transcript.
             resumeSession(sessionId, generation)
             loadSessions()
@@ -3900,27 +4797,182 @@ class ChatViewModel(
     private fun loadCachedMessages(
         sessionId: String,
         generation: Long,
-    ): Job =
-        viewModelScope.launch(ioDispatcher) {
-            val cachedMessages = dedupeCachedMessages(repo.loadMessages(sessionId))
-            _uiState.update { state ->
-                // Only paint if still showing this session AND no fresher server
-                // page has landed yet (a fast REST fetch must not be clobbered
-                // by a stale cache read that loses the race).
-                if (isCurrentSessionRequest(sessionId, generation) &&
-                    state.messages.isEmpty() &&
-                    cachedMessages.isNotEmpty()
-                ) {
-                    state.copy(
-                        messages = cachedMessages,
-                        isLoading = false,
-                        todos = hydrateTodosFromMessages(cachedMessages),
-                    )
-                } else {
-                    state
+    ): Job = openTranscriptCache(sessionId, generation, load = true)
+
+    private fun openTranscriptCache(
+        sessionId: String,
+        generation: Long,
+        load: Boolean,
+        emptyLedger: ResponseLedger? = null,
+        onOpened: (() -> Unit)? = null,
+    ): Job {
+        val target = (sessionScope ?: submissionTransport.configuredScope())?.draftTargetKey()
+        transcriptOpenJob?.cancel()
+        transcriptOpening = true
+        val lease = TranscriptOwnerLease()
+        // Admission is synchronous. A rewind claims and clears in this single ordered operation;
+        // its new owner is not eligible for checkpoints until the empty manifest is durable.
+        val result =
+            target?.let {
+                transcriptOperations.strict {
+                    try {
+                        withContext(ioDispatcher) {
+                            repo.openTranscript(target, sessionId).also { (owner, _) ->
+                                lease.capture(owner)
+                                if (emptyLedger != null) {
+                                    check(repo.save(repo.prepare(owner, emptyList(), emptyLedger))) {
+                                        "Transcript rewind commit was rejected"
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        lease.abandon()
+                        throw e
+                    }
                 }
             }
+        return viewModelScope
+            .launch {
+                if (result == null) {
+                    transcriptOpening = false
+                    return@launch
+                }
+                val (owner, cached) =
+                    try {
+                        result.await()
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        if (isCurrentSessionRequest(sessionId, generation)) {
+                            transcriptOpening = false
+                            _uiState.update {
+                                it.copy(
+                                    isLoading = false,
+                                    errorMessage =
+                                        if (emptyLedger == null) {
+                                            "Saved transcript could not be read; existing data preserved"
+                                        } else {
+                                            "Transcript could not be saved"
+                                        },
+                                )
+                            }
+                        }
+                        return@launch
+                    }
+                if (!isCurrentSessionRequest(sessionId, generation) || !owner.valid ||
+                    owner.target != submissionTransport.configuredScope()?.draftTargetKey()
+                ) {
+                    owner.valid = false
+                    return@launch
+                }
+                transcriptOwner = owner
+                lease.transfer()
+                transcriptOpening = false
+                if (load) {
+                    _uiState.update { state ->
+                        if (state.messages.isEmpty()) {
+                            state.copy(
+                                messages = cached.messages,
+                                stagedCanonicalMessages = cached.stagedMessages,
+                                responseLedger =
+                                    cached.payload.ledger.gap().copy(
+                                        requiresCorrelation =
+                                            cached.payload.ledger.requiresCorrelation ||
+                                                cached.messages.any {
+                                                    it.role == MessageRole.USER ||
+                                                        it.role == MessageRole.ASSISTANT
+                                                },
+                                    ),
+                                isLoading = state.isLoading && cached.messages.isEmpty(),
+                                todos = todoHistoryMemo.hydrate(cached.messages),
+                            )
+                        } else {
+                            state
+                        }
+                    }
+                }
+                if (emptyLedger == null) persistTranscript()
+                onOpened?.invoke()
+            }.also { job ->
+                transcriptOpenJob = job
+                // Also runs if this consumer was canceled before its coroutine body ever started.
+                job.invokeOnCompletion {
+                    lease.abandon()
+                    result?.cancel()
+                }
+            }
+    }
+
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    private fun observeStreamingCheckpoints() {
+        viewModelScope.launch {
+            // Keep UI deltas immediate. Quiet-period saves are replaceable only at the
+            // pending tail; seals and terminal barriers remain strict and ordered.
+            _streamingState.debounce(250L).collect { streaming ->
+                val live = streaming.streamingMessage
+                if (live != null && (live.content.isNotEmpty() || live.reasoningText.isNotEmpty())) persistTranscript()
+            }
         }
+    }
+
+    /** Main-thread structural coordinator: capture the revision and immutable whole-cache state now. */
+    private fun persistTranscript(): kotlinx.coroutines.CompletableDeferred<Boolean>? = enqueueTranscript(null)
+
+    private fun commitTranscript(kind: TranscriptBarrier): kotlinx.coroutines.CompletableDeferred<Boolean>? =
+        enqueueTranscript(kind)
+
+    private fun enqueueTranscript(kind: TranscriptBarrier?): kotlinx.coroutines.CompletableDeferred<Boolean>? {
+        val state = _uiState.value
+        val session = state.currentSessionId ?: return null
+        val owner = transcriptOwner
+        if (owner == null) return null // Only explicit create/cache/undo may claim ownership.
+        if (!owner.valid || owner.session != session ||
+            owner.target != submissionTransport.configuredScope()?.draftTargetKey()
+        ) {
+            return null
+        }
+        val live =
+            _streamingState.value.streamingMessage?.takeIf {
+                (it.content.isNotEmpty() || it.reasoningText.isNotEmpty()) &&
+                    state.messages.none { row -> row.id == it.id }
+            }
+        val messages = state.messages + listOfNotNull(live)
+        val ledger = if (live == null) state.responseLedger else state.responseLedger.observe(listOf(live.id))
+        val commit =
+            TranscriptCommit(
+                repo.prepare(owner, messages, ledger, state.stagedCanonicalMessages),
+                sessionGeneration,
+                terminalCommitResponseId.takeIf { terminalCommitPending },
+            )
+        val save: suspend () -> Boolean = {
+            try {
+                val saved = withContext(ioDispatcher) { repo.save(commit.write) }
+                if (saved && commit.generation == sessionGeneration && commit.write.owner === transcriptOwner &&
+                    commit.write.owner.valid &&
+                    commit.write.owner.target == submissionTransport.configuredScope()?.draftTargetKey() &&
+                    commit.write.owner.session == _uiState.value.currentSessionId &&
+                    commit.terminalResponseId != null && commit.terminalResponseId == terminalCommitResponseId &&
+                    commit.write.snapshot.payload.ledger.responses.any {
+                        it.id == commit.terminalResponseId && it.finishedAt != null
+                    } && terminalCommitPending
+                ) {
+                    terminalCommitPending = false
+                    queueExecutionIdle = true
+                    drainOutgoingQueue()
+                }
+                saved
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _uiState.update { it.copy(errorMessage = "Transcript could not be saved") }
+                throw e
+            }
+        }
+        return if (kind == null) {
+            transcriptOperations.checkpoint(owner, commit.generation, save)
+        } else {
+            transcriptOperations.strict(owner, save)
+        }
+    }
 
     private fun loadSessionMessages(
         sessionId: String,
@@ -3987,18 +5039,9 @@ class ChatViewModel(
                     // REST 200 — the gateway has the row for this session.
                     sessionHasServerPresence = true
                     val serverOffset = result.data.pagination?.offset ?: result.data.offset ?: requestedOffset
-                    val chatMessages =
-                        mapServerMessages(
-                            sessionId,
-                            result.data.messages.orEmpty(),
-                            serverOffset,
-                            latestPaging,
-                            _uiState.value.messages,
-                        )
+                    val chatMessages = result.data.messages.orEmpty()
                     loadedMessageOffset = serverOffset
-                    withContext(ioDispatcher) {
-                        repo.persistMessages(chatMessages, sessionId)
-                    }
+
                     if (!isCurrentHydration(sessionId, generation, requestSequence, resyncScope)) return@launch
                     _uiState.update { state ->
                         if (!isCurrentHydration(
@@ -4013,7 +5056,16 @@ class ChatViewModel(
                         // Merge, don't replace: a reload mid-turn must not
                         // drop live WS bubbles (running tool call, streaming
                         // answer) the server hasn't persisted yet. Issue #771.
-                        val merged = mergeTranscriptWithLive(chatMessages, state.messages)
+                        val reconciled =
+                            reconcileTranscript(
+                                state,
+                                submissionTransport.configuredScope()?.draftTargetKey() ?: return@update state,
+                                sessionId,
+                                chatMessages,
+                                serverOffset,
+                                latestPaging,
+                            )
+                        val merged = reconciled.messages
                         val hasOlder =
                             if (latestPaging) {
                                 // Newest-anchored: older messages exist iff the
@@ -4024,9 +5076,9 @@ class ChatViewModel(
                             } else {
                                 serverOffset > 0 && chatMessages.isNotEmpty()
                             }
-                        state.copy(
+                        reconciled.copy(
                             messages = merged,
-                            todos = hydrateTodosFromMessages(merged),
+                            todos = todoHistoryMemo.hydrate(merged),
                             isLoading = false,
                             hasOlderMessages = hasOlder,
                             isLoadingOlder = false,
@@ -4110,9 +5162,7 @@ class ChatViewModel(
         _uiState.update { it.copy(messages = (it.messages + finalized).dedupeById()) }
         val sid = _uiState.value.currentSessionId
         if (sid != null) {
-            viewModelScope.launch(ioDispatcher) {
-                repo.persistMessage(finalized, sid)
-            }
+            commitTranscript(TranscriptBarrier.SEALED_SEGMENT)
         }
     }
 
@@ -4121,17 +5171,30 @@ class ChatViewModel(
         title: String,
         isLoading: Boolean,
     ): Long {
+        // Preserve the latest displayed partial before retiring this selection.
+        // The existing exact-target guard still rejects cross-profile writes.
+        commitTranscript(TranscriptBarrier.NAVIGATION_FLUSH)
         replayResyncJob?.cancel()
         replayResyncOwner = null
         subagentSnapshotJob?.cancel()
+        // Earlier structural snapshots drain before the next claim in the same actor.
+        // Undo, unlike navigation, explicitly revokes its old owner.
+        transcriptOwner = null
+        transcriptOpening = false
+        terminalCommitPending = false
+        terminalCommitResponseId = null
         subagentSnapshotOwner = null
         subagentSnapshotFailures = 0
         queueExecutionIdle = false
         queueTurnObserved = false
         pendingCreateQueueOrigin = null
         val generation = ++sessionGeneration
+        todoHistoryMemo.clear()
+        pendingTerminals.clear()
+        scopedProcessingVersion.value++
         pendingChatSelection = null
         pendingReasoningSelections.clear()
+        cancelResumeDeadline()
         cancelResumeRetry()
         resumedGeneration = -1L
         hydratedGeneration = -1L
@@ -4150,6 +5213,9 @@ class ChatViewModel(
         _uiState.update {
             it.copy(
                 messages = emptyList(),
+                responseLedger = ResponseLedger(),
+                stagedCanonicalMessages = emptyList(),
+                replyBoundariesReady = !isLoading,
                 currentSessionId = sessionId,
                 chatTitle = title,
                 isAgentTyping = false,
@@ -4217,7 +5283,15 @@ class ChatViewModel(
         hydratedGeneration = -1L
         queueExecutionIdle = false
         val request =
-            SessionRequest(generation, sequence, sessionId, scope, streamObservationVersion.get(), resync = true)
+            SessionRequest(
+                generation,
+                sequence,
+                sessionId,
+                scope,
+                streamObservationVersion.get(),
+                snapshotStartedAt = wsClient.snapshotObservationOrdinal(),
+                resync = true,
+            )
         replayResyncOwner = scope to sessionId
         replayResyncJob =
             viewModelScope.launch {
@@ -4243,6 +5317,9 @@ class ChatViewModel(
         sessionId: String,
         generation: Long,
     ) {
+        cancelResumeDeadline()
+        // A prior ACK in this generation must not let new hydration reset the retry budget.
+        resumedGeneration = -1L
         queueExecutionIdle = false
         val requestSequence = ++resumeRequestSequence
         val streamVersion = streamObservationVersion.get()
@@ -4271,10 +5348,65 @@ class ChatViewModel(
                         sessionId = sessionId,
                         streamVersion = streamVersion,
                     )
+                    // Registration stays synchronous on the sender. Only timer ownership
+                    // crosses to Main, without waiting under the transport's outbound lock.
+                    val request = sessionRequestById[id]
+                    if (request != null) {
+                        viewModelScope.launch { armResumeDeadline(id, request) }
+                    }
                 },
             )
         }
         loadSessionMessages(sessionId, generation)
+    }
+
+    private fun isPendingResumeDeadline(
+        id: String,
+        request: SessionRequest,
+    ): Boolean =
+        idToMethod[id] == WsMethods.SESSION_RESUME &&
+            sessionRequestById[id] === request &&
+            request.resumeSequence == activeResumeRequestSequence &&
+            request.generation == sessionGeneration &&
+            request.sessionId == _uiState.value.currentSessionId &&
+            request.scope != null &&
+            request.scope == sessionScope &&
+            request.scope == submissionTransport.configuredScope() &&
+            submissionTransport.isReady(request.scope) &&
+            wsClient.connectionStatus.value == ConnectionStatus.CONNECTED
+
+    private fun armResumeDeadline(
+        id: String,
+        request: SessionRequest,
+    ) {
+        // ACK/error can consume registration before this Main turn. A superseded
+        // sender must not cancel the timer belonging to the current request.
+        if (!isPendingResumeDeadline(id, request)) return
+        cancelResumeDeadline()
+        resumeDeadlineId = id
+        resumeDeadlineJob =
+            viewModelScope.launch {
+                delay(SESSION_RESUME_DEADLINE_MS)
+                if (resumeDeadlineId != id || !isPendingResumeDeadline(id, request)) return@launch
+                // Claim, forget, invalidate and fail atomically on Main: a late ACK
+                // can no longer bind a runtime or drain preserved queued input.
+                forgetRequest(id)
+                resumeDeadlineId = null
+                resumeDeadlineJob = null
+                if (resumedGeneration == request.generation) resumedGeneration = -1L
+                handleResumeFailure(
+                    request.sessionId ?: return@launch,
+                    request.generation,
+                    "Session resume confirmation timed out",
+                )
+            }
+    }
+
+    private fun cancelResumeDeadline(id: String? = null) {
+        if (id != null && id != resumeDeadlineId) return
+        resumeDeadlineJob?.cancel()
+        resumeDeadlineJob = null
+        resumeDeadlineId = null
     }
 
     private fun cancelResumeRetry() {
@@ -4495,16 +5627,9 @@ class ChatViewModel(
                 is NetworkResult.Success -> {
                     if (!isCurrentSessionRequest(sessionId, generation)) return@launch
                     val returnedOffset = result.data.pagination?.offset ?: result.data.offset ?: newOffset
-                    val older =
-                        mapServerMessages(
-                            sessionId,
-                            result.data.messages.orEmpty(),
-                            returnedOffset,
-                            latestPaging,
-                            _uiState.value.messages,
-                        )
+                    val older = result.data.messages.orEmpty()
                     loadedMessageOffset = returnedOffset
-                    withContext(ioDispatcher) { repo.persistMessages(older, sessionId) }
+
                     _uiState.update { current ->
                         if (!isCurrentSessionRequest(sessionId, generation)) return@update current
                         val hasOlder =
@@ -4516,8 +5641,15 @@ class ChatViewModel(
                             } else {
                                 returnedOffset < oldOffset && older.isNotEmpty() && returnedOffset > 0
                             }
-                        current.copy(
-                            messages = (older + current.messages).distinctBy { it.id },
+                        reconcileTranscript(
+                            current,
+                            submissionTransport.configuredScope()?.draftTargetKey() ?: return@update current,
+                            sessionId,
+                            older,
+                            returnedOffset,
+                            latestPaging,
+                            older = true,
+                        ).copy(
                             isLoadingOlder = false,
                             hasOlderMessages = hasOlder,
                         )
@@ -4580,97 +5712,18 @@ class ChatViewModel(
                 when (result) {
                     is NetworkResult.Success -> {
                         if (!isCurrentSessionRequest(sessionId, generation)) return@launch
-                        val incoming =
-                            mapServerMessages(
-                                sessionId,
-                                result.data.messages.orEmpty(),
-                                nextOffset,
-                                latestPaging,
-                                _uiState.value.messages,
-                            )
+                        val incoming = result.data.messages.orEmpty()
                         if (incoming.isEmpty()) return@launch
-                        withContext(ioDispatcher) { repo.persistMessages(incoming, sessionId) }
                         _uiState.update { current ->
                             if (!isCurrentSessionRequest(sessionId, generation)) return@update current
-                            // Issue #771: the sync merge was dropping the
-                            // newest tool bubble — the incoming REST page
-                            // didn't include it yet (server persists tool rows
-                            // at completion, but the sync offset may predate
-                            // that), and the fragile toolName/content match
-                            // consumed the WRONG incoming tool for an existing
-                            // one, leaving the newest WS tool with no match
-                            // → dropped. Use sameLogicalMessage (canonical
-                            // result-key match) and always preserve any WS
-                            // message that has no REST counterpart.
-                            val unmatchedIncoming: MutableList<ChatMessage?> = incoming.toMutableList()
-                            val incomingById = HashMap<String, Int>(unmatchedIncoming.size)
-                            for (i in unmatchedIncoming.indices) {
-                                val id = unmatchedIncoming[i]?.id
-                                if (id != null && !incomingById.containsKey(id)) {
-                                    incomingById[id] = i
-                                }
-                            }
-
-                            val mergedList = mutableListOf<ChatMessage>()
-
-                            for (existing in current.messages) {
-                                val existingServerIndex = serverMessageIndex(existing.id, sessionId)
-                                if (existingServerIndex != null) {
-                                    val matchIdx = incomingById[existing.id]
-                                    if (matchIdx != null && unmatchedIncoming[matchIdx] != null) {
-                                        mergedList.add(unmatchedIncoming[matchIdx]!!)
-                                        unmatchedIncoming[matchIdx] = null
-                                    } else if (latestPaging) {
-                                        // Newest-anchored paging re-keys rows by
-                                        // from-end position, so a transcript that
-                                        // grew since the last fetch shifted ids —
-                                        // match by logical content and keep the
-                                        // existing copy (issue #859).
-                                        val logicalIdx =
-                                            unmatchedIncoming.indexOfFirst { inc ->
-                                                inc != null && sameLogicalMessage(inc, existing)
-                                            }
-                                        if (logicalIdx >= 0) {
-                                            mergedList.add(existing)
-                                            unmatchedIncoming[logicalIdx] = null
-                                        } else {
-                                            mergedList.add(existing)
-                                        }
-                                    } else {
-                                        mergedList.add(existing)
-                                    }
-                                } else {
-                                    // WS message (UUID id, no server index):
-                                    // match by canonical content, not fragile
-                                    // toolName/content equality.
-                                    val matchIdx =
-                                        unmatchedIncoming.indexOfFirst { inc ->
-                                            inc != null && sameLogicalMessage(inc, existing)
-                                        }
-                                    if (matchIdx >= 0) {
-                                        // Prefer the WS copy (richer payload,
-                                        // real tool name) when available.
-                                        mergedList.add(existing)
-                                        unmatchedIncoming[matchIdx] = null
-                                    } else {
-                                        // No REST counterpart (server hasn't
-                                        // persisted yet) — KEEP the WS message.
-                                        mergedList.add(existing)
-                                    }
-                                }
-                            }
-
-                            for (inc in unmatchedIncoming) {
-                                if (inc != null) {
-                                    mergedList.add(inc)
-                                }
-                            }
-                            val merged = mergedList.distinctBy { it.id }
-                            if (sameMessages(current.messages, merged)) {
-                                current
-                            } else {
-                                current.copy(messages = merged)
-                            }
+                            reconcileTranscript(
+                                current,
+                                submissionTransport.configuredScope()?.draftTargetKey() ?: return@update current,
+                                sessionId,
+                                incoming,
+                                nextOffset,
+                                latestPaging,
+                            )
                         }
                     }
 
@@ -4916,7 +5969,12 @@ class ChatViewModel(
 
     /** Explicit refusal uses the same exact-request ACK path as an answer. */
     fun dismissClarify(clarify: ClarifyUi) {
-        respondToClarifyBatch(clarify, clarify.resolvedQuestions.associate { it.qid to CLARIFY_DISMISS_RESPONSE })
+        respondToClarifyBatch(
+            clarify,
+            clarify.resolvedQuestions.filter { clarify.canRespond(it.qid) }.associate {
+                it.qid to if (clarify.ref?.serverRequestId != null) null else CLARIFY_DISMISS_RESPONSE
+            },
+        )
     }
 
     fun respondToClarify(
@@ -4929,20 +5987,24 @@ class ChatViewModel(
 
     fun respondToClarifyBatch(
         clarify: ClarifyUi,
-        answers: Map<String, String>,
+        answers: Map<String, String?>,
     ) {
         val request = clarify.ref ?: return
         for (question in clarify.resolvedQuestions) {
-            val answer = answers[question.qid]?.trim()?.takeIf { it.isNotEmpty() } ?: continue
+            if (!answers.containsKey(question.qid)) continue
+            val answer = answers[question.qid]?.trim()
+            if (answer != null && answer.isEmpty()) continue
             val ref = request.copy(questionId = if (clarify.questions.isEmpty()) clarify.questionId else question.qid)
             viewModelScope.launch(ioDispatcher) {
                 if (_uiState.value.messages.none { it.clarifyInfo?.ref == request }) return@launch
-                attentionRepository.respond(
+                attentionRepository.respondClarification(
                     ref,
+                    answer,
                     submissionTransport.configuredScope(),
                     submissionTransport.isReady(ref.scope),
                     System.currentTimeMillis(),
-                ) { attentionTransport.respondClarification(ref, answer) }
+                    attentionTransport,
+                )
             }
         }
     }
@@ -4951,6 +6013,7 @@ class ChatViewModel(
         event: WsEvent.ClarifyRequest,
         scope: ConnectionScope,
     ) {
+        if (!isCurrentAttentionSession(event.sessionId, scope)) return
         val runtimeId = event.sessionId?.takeIf { it.isNotBlank() }
         val requestId = event.clarifyId?.takeIf { it.isNotBlank() }
         val validQuestions =
@@ -4967,6 +6030,7 @@ class ChatViewModel(
                     SessionRef(runtimeId),
                     requestId,
                     questionId = event.questionId.takeIf { event.questions.isEmpty() },
+                    serverRequestId = event.serverRequestId,
                 )
             } else {
                 null
@@ -5042,11 +6106,12 @@ class ChatViewModel(
         event: WsEvent.ApprovalRequest,
         sourceScope: ConnectionScope? = null,
     ) {
+        if (!isCurrentAttentionSession(event.sessionId, sourceScope)) return
         val runtimeId = event.sessionId?.takeIf { it.isNotBlank() }
         val requestId = event.requestId?.takeIf { it.isNotBlank() }
         val ref =
             if (sourceScope != null && runtimeId != null && requestId != null) {
-                RequestRef(sourceScope, SessionRef(runtimeId), requestId)
+                RequestRef(sourceScope, SessionRef(runtimeId), requestId, serverRequestId = event.serverRequestId)
             } else {
                 null
             }
@@ -5055,6 +6120,7 @@ class ChatViewModel(
             sourceScope
                 ?.let { dashboardAttentionItems(it, event).firstOrNull() }
                 ?.let(attentionRepository::observe)
+        val boundRef = item?.ref ?: ref
         val info =
             ApprovalInfo(
                 command = event.command,
@@ -5064,13 +6130,31 @@ class ChatViewModel(
                 choices = event.choices,
                 allowPermanent = event.allowPermanent,
                 smartDenied = event.smartDenied,
-                ref = ref,
+                ref = boundRef,
                 status = item?.status ?: com.m57.hermescontrol.domain.hermes.AttentionStatus.UNKNOWN,
                 responseEnabled = ref != null && submissionTransport.isReady(ref.scope),
             )
         var added = false
         _uiState.update { state ->
-            if (ref != null && state.messages.any { it.approvalInfo?.ref == ref }) return@update state
+            if (boundRef != null) {
+                val existing =
+                    state.messages.indexOfFirst { message ->
+                        val old = message.approvalInfo?.ref
+                        old == boundRef || (
+                            old != null && old.serverRequestId == null &&
+                                old.scope == boundRef.scope && old.session.runtimeId == boundRef.session.runtimeId &&
+                                old.requestId == boundRef.requestId
+                        )
+                    }
+                if (existing >= 0) {
+                    return@update state.copy(
+                        messages =
+                            state.messages.mapIndexed { index, message ->
+                                if (index == existing) message.copy(approvalInfo = info) else message
+                            },
+                    )
+                }
+            }
             added = true
             state.copy(
                 messages =
@@ -5104,6 +6188,18 @@ class ChatViewModel(
             responseEnabled =
                 ref != null && ref.scope == submissionTransport.configuredScope() &&
                     submissionTransport.isReady(ref.scope),
+            questionLocks =
+                info.resolvedQuestions
+                    .mapNotNull { question ->
+                        val questionRef =
+                            ref?.copy(
+                                questionId = if (info.questions.isEmpty()) info.questionId else question.qid,
+                            )
+                        attentionRepository.items.value.firstOrNull { it.ref == questionRef }?.clarificationLock?.let {
+                            question.qid to
+                                it
+                        }
+                    }.toMap(),
             questionStates =
                 questions.mapValues { (_, item) ->
                     item?.status ?: com.m57.hermescontrol.domain.hermes.AttentionStatus.UNKNOWN
@@ -5539,9 +6635,7 @@ class ChatViewModel(
 
         // Persist — OUTSIDE update{}
         if (persist && sessionId != null) {
-            viewModelScope.launch(ioDispatcher) {
-                repo.persistMessage(msg, sessionId)
-            }
+            persistTranscript()
         }
     }
 
@@ -5573,7 +6667,14 @@ class ChatViewModel(
         streamVersion: Long = -1L,
     ) {
         sessionRequestById[id] =
-            SessionRequest(generation, resumeSequence, sessionId, submissionTransport.configuredScope(), streamVersion)
+            SessionRequest(
+                generation,
+                resumeSequence,
+                sessionId,
+                submissionTransport.configuredScope(),
+                streamVersion,
+                snapshotStartedAt = wsClient.snapshotObservationOrdinal(),
+            )
         trackRequest(id, method)
     }
 
@@ -5637,12 +6738,20 @@ class ChatViewModel(
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
     override fun onCleared() {
+        cancelResumeDeadline()
+        activeResumeRequestSequence = ++resumeRequestSequence
+        todoHistoryMemo.clear()
+        transcriptOwner?.valid = false
+        transcriptOpenJob?.cancel()
+        transcriptOperations.close()
         super.onCleared()
         // PERF-16: Don't disconnect the global HermesWsClient singleton when
         // leaving the Chat screen — it's used by background notification reply.
     }
 
     companion object {
+        private const val SESSION_RESUME_DEADLINE_MS = 15_000L
+
         /** Max auto-retry attempts for a failed session.resume (desktop parity). */
         const val MAX_RESUME_RETRIES = 4
 

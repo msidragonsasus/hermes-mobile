@@ -65,7 +65,7 @@ internal fun AttentionDetailContent(
     item: AttentionItem?,
     ready: Boolean,
     onApprove: (String) -> Unit,
-    onClarify: (String) -> Unit,
+    onClarify: (String?) -> Unit,
     onBack: () -> Unit,
 ) {
     val spacing = LocalSpacing.current
@@ -102,10 +102,27 @@ internal fun AttentionDetailContent(
                             ref = ref,
                             questionStates = mapOf((ref.questionId ?: "q0") to item.status),
                             responseEnabled = canRespond,
+                            questionLocks =
+                                item.clarificationLock
+                                    ?.let {
+                                        mapOf(
+                                            (ref.questionId ?: "q0") to it,
+                                        )
+                                    }.orEmpty(),
                         ),
-                        onRespondSingle = onClarify,
+                        onRespondSingle = { onClarify(it) },
                         onRespondBatch = { answers -> answers[ref.questionId ?: "q0"]?.let(onClarify) },
-                        onDismiss = { onClarify(com.m57.hermescontrol.domain.hermes.CLARIFICATION_DECLINED_ANSWER) },
+                        onDismiss = {
+                            onClarify(
+                                if (ref.serverRequestId !=
+                                    null
+                                ) {
+                                    null
+                                } else {
+                                    com.m57.hermescontrol.domain.hermes.CLARIFICATION_DECLINED_ANSWER
+                                },
+                            )
+                        },
                     )
                 }
                 val rows =

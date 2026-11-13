@@ -2,31 +2,35 @@ package com.m57.hermescontrol.ui.model
 
 import android.content.res.Configuration
 import android.graphics.Bitmap
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.model.ModelProvider
 import com.m57.hermescontrol.data.model.PinnedModel
+import com.m57.hermescontrol.theme.HermesControlTheme
+import com.m57.hermescontrol.theme.ThemePreference
 import com.m57.hermescontrol.ui.model.components.ModelPickerDialog
 import io.mockk.every
 import io.mockk.mockkObject
@@ -70,7 +74,10 @@ class ModelVisibilityUiTest {
         unmockkObject(AuthManager)
     }
 
-    private fun showPicker(largeFont: Boolean = false) {
+    private fun showPicker(
+        largeFont: Boolean = false,
+        longCatalog: Boolean = false,
+    ) {
         // Dialogs create a window context, so its Resources must also carry the font scale.
         val displayConfiguration = Configuration(configuration).apply { fontScale = if (largeFont) 2f else 1f }
         val displayContext = context.createConfigurationContext(displayConfiguration)
@@ -82,11 +89,17 @@ class ModelVisibilityUiTest {
                 LocalResources provides displayContext.resources,
                 LocalDensity provides Density(density.density, if (largeFont) 2f else 1f),
             ) {
-                MaterialTheme(colorScheme = if (largeFont) darkColorScheme() else lightColorScheme()) {
+                HermesControlTheme(themePreference = if (largeFont) ThemePreference.DARK else ThemePreference.LIGHT) {
                     ModelPickerDialog(
-                        providers = listOf(provider),
+                        providers =
+                            listOf(
+                                if (longCatalog) provider.copy(models = List(20) { "model-$it" }) else provider,
+                            ),
                         pinnedModels = listOf(PinnedModel("openai", "one")),
-                        title = "Switch model",
+                        title = context.getString(R.string.chat_switch_model_title),
+                        subtitle = context.getString(R.string.chat_switch_model_scope),
+                        onRefresh = {},
+                        onPinToggle = { _, _ -> },
                         onSelect = { _, _ -> },
                         onDismiss = {},
                     )
@@ -142,6 +155,26 @@ class ModelVisibilityUiTest {
         compose.onNodeWithText(context.getString(R.string.model_visibility_show_all)).performClick()
         waitForVisibility("two", true)
         compose.onNodeWithTag("model_visibility:openai::two").assertIsOn()
+    }
+
+    @Test
+    fun japanesePickerShowsCatalogBeyondPinnedRowWithoutScrolling() {
+        showPicker(longCatalog = true)
+        compose.onNode(hasScrollAction()).assertHeightIsAtLeast(240.dp)
+        compose.onNodeWithText("model-0").assertIsDisplayed()
+        compose.onNodeWithText("model-2").assertIsDisplayed()
+        compose.onNodeWithContentDescription(closeLabel).assertIsDisplayed()
+        compose.onNodeWithText(editLabel).assertIsDisplayed()
+    }
+
+    @Test
+    fun largeFontPickerKeepsCatalogScrollableAndFooterReachable() {
+        showPicker(largeFont = true, longCatalog = true)
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText("model-19"))
+        compose.onNodeWithText("model-19").assertIsDisplayed()
+        compose.onNodeWithContentDescription(closeLabel).assertIsDisplayed()
+        compose.onNodeWithText(editLabel).assertIsDisplayed().performClick()
+        compose.onNodeWithText(closeLabel).assertIsDisplayed()
     }
 
     @Test

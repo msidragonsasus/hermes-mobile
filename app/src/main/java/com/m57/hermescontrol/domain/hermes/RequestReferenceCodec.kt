@@ -10,7 +10,8 @@ object RequestReferenceCodec {
         validId(ref.scope.serverIdentity, 1024) && validId(ref.scope.processId, 128) &&
             ref.scope.generation >= 0 && optionalId(ref.scope.connectionProfileId) &&
             optionalId(ref.scope.serverProfileId) && validId(ref.session.runtimeId) &&
-            optionalId(ref.session.savedId) && validId(ref.requestId) && optionalId(ref.questionId)
+            optionalId(ref.session.savedId) && validId(ref.requestId) && optionalId(ref.questionId) &&
+            optionalId(ref.serverRequestId)
 
     fun encode(ref: RequestRef): String {
         require(isValid(ref))

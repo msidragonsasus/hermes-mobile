@@ -119,8 +119,11 @@ class AppUpdateViewModelTest {
         }
     }
 
+    private val viewModels = mutableListOf<AppUpdateViewModel>()
+
     @After
     fun tearDown() {
+        viewModels.forEach { it.clearForTest() }
         unmockkAll()
         Dispatchers.resetMain()
         cacheDir.deleteRecursively()
@@ -128,6 +131,7 @@ class AppUpdateViewModelTest {
 
     private fun createViewModel() =
         AppUpdateViewModel(app, checker, "1.0-dev", testDispatcher, inspector, scopes, pkg) { intentMock }
+            .also { viewModels += it }
 
     /** APK files (incl. `.part`) currently in the updater's cache directory. */
     private fun apkFiles(): List<File> = File(cacheDir, "updates").listFiles()?.toList().orEmpty()
@@ -307,9 +311,12 @@ class AppUpdateViewModelTest {
             val cached = first.state.value
             coVerify(exactly = 1) { checker.fetchServerLatest(any()) }
 
-            assertEquals(cached, createViewModel().state.value)
+            val second = createViewModel()
+            assertEquals(cached, second.state.value)
             advanceUntilIdle()
             coVerify(exactly = 1) { checker.fetchServerLatest(any()) }
+            first.clearForTest()
+            second.clearForTest()
 
             scopes.serverScope = TEST_SERVER_SCOPE.copy(selectedProfileId = "work")
             createViewModel()
@@ -434,7 +441,7 @@ class AppUpdateViewModelTest {
             scopes.connect(TEST_SERVER_SCOPE.copy(connectionEpoch = 6, credentialFingerprint = "relogin"))
             advanceUntilIdle()
 
-            assertEquals(AppUpdateState.Idle, vm.state.value)
+            assertEquals(scopes.serverScope, (vm.state.value as AppUpdateState.UpdateAvailable).candidate.scope)
             assertTrue(launched.isEmpty())
             assertTrue(apkFiles().isEmpty())
         }
@@ -476,7 +483,7 @@ class AppUpdateViewModelTest {
             assertFalse("orphan swept", orphan.exists())
             assertFalse(inspector.inspected.contains(orphan))
 
-            // Re-opening the installer re-verifies the cached file again.
+            // Re-opening the installer explicitly re-verifies the cached file again.
             vm.resumeInstallAfterPermission()
             advanceUntilIdle()
             assertEquals(2, inspector.inspected.size)
@@ -494,6 +501,369 @@ class AppUpdateViewModelTest {
             assertEquals(UpdateSource.UPSTREAM_GITHUB, vm.sourceInfo.value.source)
             assertEquals(AppUpdateState.Error(UpdateFailure.NO_RELEASE), vm.state.value)
             coVerify(exactly = 1) { checker.fetchLatestRelease() }
+        }
+
+    // Home uses confirmed controller evidence, never notice/dismissal preferences.
+    @Test
+    fun homeAvailability_freshEqualOlderAndNewerInstalled() =
+        runTest {
+            for (installedCode in listOf(1L, 2L, 3L)) {
+                AppUpdateCache.invalidate()
+                inspector.installedIdentity = ApkIdentity(pkg, installedCode, "ignored-name", setOf(signer))
+                val vm = createViewModel()
+                advanceUntilIdle()
+                assertEquals(installedCode == 1L, vm.homeUpdateCandidate.value != null)
+                vm.clearForTest()
+            }
+        }
+
+    @Test
+    fun homeAvailability_dismissalDoesNotHideAndOpensSameDialogWithoutDownloading() =
+        runTest {
+            val vm = createViewModel()
+            advanceUntilIdle()
+            val candidate = (vm.state.value as AppUpdateState.UpdateAvailable).candidate
+            vm.dismissCurrentUpdate()
+            assertEquals(candidate, vm.homeUpdateCandidate.value)
+            vm.openUpdateDialog()
+            assertTrue(AppUpdateCache.isDialogVisible)
+            assertEquals(candidate, vm.homeUpdateCandidate.value)
+            coVerify(exactly = 0) { checker.download(any(), any(), any()) }
+        }
+
+    @Test
+    fun foreground_rechecksCachedUpToDateAndDeduplicatesChecking() =
+        runTest {
+            AppUpdateCache.update(AppUpdateState.UpToDate("1.0-dev", TEST_SERVER_SCOPE))
+            val vm = createViewModel()
+            advanceUntilIdle()
+            coVerify(exactly = 0) { checker.fetchServerLatest(any()) }
+            vm.onForeground()
+            vm.onForeground()
+            advanceUntilIdle()
+            assertTrue(vm.homeUpdateCandidate.value != null)
+            coVerify(exactly = 1) { checker.fetchServerLatest(any()) }
+        }
+
+    @Test
+    fun foreground_installedNowEqualOrNewerInvalidatesImmediately() =
+        runTest {
+            for (installedCode in listOf(2L, 3L)) {
+                AppUpdateCache.invalidate()
+                inspector.installedIdentity = ApkIdentity(pkg, 1, "1.0-dev", setOf(signer))
+                val vm = createViewModel()
+                advanceUntilIdle()
+                assertTrue(vm.homeUpdateCandidate.value != null)
+                inspector.installedIdentity = ApkIdentity(pkg, installedCode, "1.0.2", setOf(signer))
+                vm.onForeground()
+                assertEquals(null, vm.homeUpdateCandidate.value)
+                advanceUntilIdle()
+                assertEquals(null, vm.homeUpdateCandidate.value)
+                vm.clearForTest()
+            }
+        }
+
+    @Test
+    fun foregroundAndOpenDuringTransfer_keepCandidateAndOneAttempt() =
+        runTest {
+            slowDownload(10_000)
+            val vm = createViewModel()
+            advanceUntilIdle()
+            val candidate = vm.homeUpdateCandidate.value
+            assertTrue(candidate != null)
+            vm.startUpdate()
+            testDispatcher.scheduler.advanceTimeBy(100)
+            val progress = vm.state.value
+            vm.onForeground()
+            vm.openUpdateDialog()
+            vm.retryUpdate()
+            vm.startUpdate()
+            assertEquals(progress, vm.state.value)
+            assertEquals(candidate, vm.homeUpdateCandidate.value)
+            advanceUntilIdle()
+            coVerify(exactly = 1) { checker.download(any(), any(), any()) }
+            coVerify(exactly = 1) { checker.fetchServerLatest(any()) }
+            assertEquals(1, launched.size)
+        }
+
+    @Test
+    fun retry_checkFailureNeverUsesOldCacheAndRechecks() =
+        runTest {
+            val vm = createViewModel()
+            advanceUntilIdle()
+            coEvery { checker.fetchServerLatest(any()) } throws IOException("offline")
+            vm.checkForUpdate()
+            assertEquals(null, vm.homeUpdateCandidate.value)
+            advanceUntilIdle()
+            assertEquals(null, vm.homeUpdateCandidate.value)
+            vm.startUpdate()
+            vm.retryUpdate()
+            advanceUntilIdle()
+            coVerify(exactly = 3) { checker.fetchServerLatest(any()) }
+            coVerify(exactly = 0) { checker.download(any(), any(), any()) }
+        }
+
+    @Test
+    fun retry_transferFailureRetainsCandidateAndUsesNewOwnedAttempt() =
+        runTest {
+            val dests = mutableListOf<File>()
+            coEvery { checker.download(any(), any(), any()) } coAnswers {
+                val dest = secondArg<File>()
+                dests += dest
+                dest.writeBytes(apkBytes)
+                if (dests.size == 1) throw UpdateException(UpdateFailure.DOWNLOAD_FAILED)
+                DownloadedApk(dest, apkSha, apkBytes.size.toLong())
+            }
+            val vm = createViewModel()
+            advanceUntilIdle()
+            val candidate = vm.homeUpdateCandidate.value
+            assertTrue(candidate != null)
+            vm.startUpdate()
+            advanceUntilIdle()
+            assertEquals(AppUpdateState.Error(UpdateFailure.DOWNLOAD_FAILED), vm.state.value)
+            assertEquals(candidate, vm.homeUpdateCandidate.value)
+            vm.retryUpdate()
+            advanceUntilIdle()
+            assertEquals(2, dests.size)
+            assertTrue(dests[0] != dests[1])
+            assertFalse(dests[0].exists())
+            coVerify(exactly = 1) { checker.fetchServerLatest(any()) }
+            assertEquals(1, launched.size)
+        }
+
+    @Test
+    fun permissionForeground_repeatedResumeDoesNotDuplicateInstaller() =
+        runTest {
+            every { packageManager.canRequestPackageInstalls() } returns false
+            val vm = createViewModel()
+            advanceUntilIdle()
+            vm.startUpdate()
+            val candidate = vm.homeUpdateCandidate.value
+            assertTrue(candidate != null)
+            vm.onForeground()
+            assertEquals(AppUpdateState.NeedsUnknownSourcesPermission, vm.state.value)
+            assertEquals(candidate, vm.homeUpdateCandidate.value)
+            every { packageManager.canRequestPackageInstalls() } returns true
+            vm.onForeground()
+            vm.onForeground()
+            advanceUntilIdle()
+            vm.onForeground()
+            vm.onForeground()
+            advanceUntilIdle()
+            coVerify(exactly = 1) { checker.download(any(), any(), any()) }
+            assertEquals(1, launched.size)
+        }
+
+    @Test
+    fun connectionSignal_cancelsOldAttemptAndRechecksUsableScope() =
+        runTest {
+            slowDownload(10_000)
+            val vm = createViewModel()
+            advanceUntilIdle()
+            vm.startUpdate()
+            testDispatcher.scheduler.advanceTimeBy(100)
+            val newScope = TEST_SERVER_SCOPE.copy(connectionEpoch = 8, credentialFingerprint = "replacement")
+            scopes.connect(newScope)
+            advanceUntilIdle()
+            assertEquals(newScope, vm.homeUpdateCandidate.value?.scope)
+            assertTrue(launched.isEmpty())
+            assertTrue(apkFiles().isEmpty())
+            coVerify(exactly = 2) { checker.fetchServerLatest(any()) }
+        }
+
+    @Test
+    fun noReleaseAndUnknownInstalled_clearHomeAvailability() =
+        runTest {
+            val vm = createViewModel()
+            advanceUntilIdle()
+            assertTrue(vm.homeUpdateCandidate.value != null)
+            coEvery { checker.fetchServerLatest(any()) } returns ServerLatest.NoRelease
+            vm.onForeground()
+            advanceUntilIdle()
+            assertEquals(null, vm.homeUpdateCandidate.value)
+            inspector.installedIdentity = null
+            coEvery { checker.fetchServerLatest(any()) } returns ServerLatest.Release(release())
+            vm.onForeground()
+            advanceUntilIdle()
+            assertEquals(null, vm.homeUpdateCandidate.value)
+            assertEquals(AppUpdateState.Error(UpdateFailure.INSTALLED_IDENTITY_UNAVAILABLE), vm.state.value)
+        }
+
+    @Test
+    fun foreground_transferFailureKeepsConfirmedCandidateUntilExplicitRetry() =
+        runTest {
+            coEvery { checker.download(any(), any(), any()) } throws UpdateException(UpdateFailure.DOWNLOAD_FAILED)
+            val vm = createViewModel()
+            advanceUntilIdle()
+            val candidate = vm.homeUpdateCandidate.value
+            vm.startUpdate()
+            advanceUntilIdle()
+            vm.onForeground()
+            assertEquals(AppUpdateState.Error(UpdateFailure.DOWNLOAD_FAILED), vm.state.value)
+            assertEquals(candidate, vm.homeUpdateCandidate.value)
+            advanceUntilIdle()
+            coVerify(exactly = 1) { checker.fetchServerLatest(any()) }
+        }
+
+    @Test
+    fun connectionSignal_lateNonCooperativeMetadataCannotRestoreOldScope() =
+        runTest {
+            coEvery { checker.fetchServerLatest(any()) } coAnswers {
+                if (firstArg<com.m57.hermescontrol.data.update.UpdateScope>() == TEST_SERVER_SCOPE) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                        kotlinx.coroutines.delay(1_000)
+                    }
+                    ServerLatest.Release(release())
+                } else {
+                    ServerLatest.NoRelease
+                }
+            }
+            val vm = createViewModel()
+            testDispatcher.scheduler.advanceTimeBy(100)
+            scopes.connect(TEST_SERVER_SCOPE.copy(connectionEpoch = 19, credentialFingerprint = "new-auth"))
+            advanceUntilIdle()
+            assertEquals(AppUpdateState.Error(UpdateFailure.NO_RELEASE), vm.state.value)
+            assertEquals(null, vm.homeUpdateCandidate.value)
+            coVerify(exactly = 2) { checker.fetchServerLatest(any()) }
+            assertTrue(launched.isEmpty())
+        }
+
+    @Test
+    fun permissionRevokedDuringTransfer_reverifyFileAtRestAndNeverReplayHandoff() =
+        runTest {
+            slowDownload(1_000)
+            val vm = createViewModel()
+            advanceUntilIdle()
+            vm.startUpdate()
+            testDispatcher.scheduler.advanceTimeBy(100)
+            every { packageManager.canRequestPackageInstalls() } returns false
+            advanceUntilIdle()
+            assertEquals(AppUpdateState.NeedsUnknownSourcesPermission, vm.state.value)
+            assertTrue(vm.homeUpdateCandidate.value != null)
+            assertEquals(1, inspector.inspected.size)
+            every { packageManager.canRequestPackageInstalls() } returns true
+            vm.onForeground()
+            vm.onForeground()
+            advanceUntilIdle()
+            vm.onForeground()
+            advanceUntilIdle()
+            assertEquals(2, inspector.inspected.size)
+            coVerify(exactly = 1) { checker.download(any(), any(), any()) }
+            assertEquals(1, launched.size)
+        }
+
+    @Test
+    fun cancellation_lateProgressAndCompletionCannotOverwriteNewAttempt() =
+        runTest {
+            var downloads = 0
+            coEvery { checker.download(any(), any(), any()) } coAnswers {
+                val dest = secondArg<File>()
+                val progress = thirdArg<(Float) -> Unit>()
+                downloads++
+                if (downloads == 1) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                        kotlinx.coroutines.delay(1_000)
+                        dest.writeBytes(apkBytes)
+                        progress(0.9f)
+                    }
+                } else {
+                    dest.writeBytes(apkBytes)
+                }
+                DownloadedApk(dest, apkSha, apkBytes.size.toLong())
+            }
+            val vm = createViewModel()
+            advanceUntilIdle()
+            vm.startUpdate()
+            testDispatcher.scheduler.advanceTimeBy(100)
+            vm.cancelDownload()
+            vm.startUpdate()
+            advanceUntilIdle()
+            assertEquals(AppUpdateState.InstallerOpened("1.0.2"), vm.state.value)
+            assertEquals(1, launched.size)
+            assertEquals(1, inspector.inspected.size)
+            assertEquals(1, apkFiles().size)
+        }
+
+    @Test
+    fun explicitUpdateAfterInstallerReturnCanReopenTheReverifiedOwnedFile() =
+        runTest {
+            val vm = createViewModel()
+            advanceUntilIdle()
+            vm.startUpdate()
+            advanceUntilIdle()
+            assertEquals(1, launched.size)
+            val originalFile = inspector.inspected.single()
+            vm.onForeground()
+            advanceUntilIdle()
+            assertTrue(vm.state.value is AppUpdateState.UpdateAvailable)
+            assertEquals(1, launched.size)
+            vm.startUpdate()
+            advanceUntilIdle()
+            assertEquals(2, launched.size)
+            assertEquals(listOf(originalFile, originalFile), inspector.inspected)
+            coVerify(exactly = 1) { checker.download(any(), any(), any()) }
+        }
+
+    @Test
+    fun aNewReleaseAfterPriorInstallerHandoffCanStartANewOwnedAttempt() =
+        runTest {
+            val vm = createViewModel()
+            advanceUntilIdle()
+            vm.startUpdate()
+            advanceUntilIdle()
+            val nextId = "v3-${apkSha.take(16)}"
+            val next =
+                release().copy(
+                    releaseId = nextId,
+                    versionCode = 3,
+                    versionName = "1.0.3",
+                    apkPath = "releases/$nextId/apk",
+                )
+            coEvery { checker.fetchServerLatest(any()) } returns ServerLatest.Release(next)
+            inspector.archiveIdentity = ApkIdentity(pkg, 3, "1.0.3", setOf(signer))
+            vm.onForeground()
+            advanceUntilIdle()
+            assertEquals(3L, vm.homeUpdateCandidate.value?.versionCode)
+            vm.startUpdate()
+            advanceUntilIdle()
+            coVerify(exactly = 2) { checker.download(any(), any(), any()) }
+            assertEquals(2, launched.size)
+            assertEquals(AppUpdateState.InstallerOpened("1.0.3"), vm.state.value)
+        }
+
+    @Test
+    fun explicitInstallerReopenCannotTrustTamperedCachedBytes() =
+        runTest {
+            val vm = createViewModel()
+            advanceUntilIdle()
+            vm.startUpdate()
+            advanceUntilIdle()
+            val tamperedFile = inspector.inspected.single()
+            tamperedFile.writeBytes(ByteArray(apkBytes.size))
+            vm.resumeInstallAfterPermission()
+            advanceUntilIdle()
+            coVerify(exactly = 2) { checker.download(any(), any(), any()) }
+            assertEquals(2, launched.size)
+            assertFalse(inspector.inspected.last() == tamperedFile)
+        }
+
+    @Test
+    fun installerUnavailable_retryChecksThenCanOwnANewAttempt() =
+        runTest {
+            every { app.startActivity(any()) } throws IllegalStateException("no installer")
+            val vm = createViewModel()
+            advanceUntilIdle()
+            vm.startUpdate()
+            advanceUntilIdle()
+            assertEquals(AppUpdateState.Error(UpdateFailure.INSTALLER_UNAVAILABLE), vm.state.value)
+            vm.retryUpdate()
+            advanceUntilIdle()
+            assertTrue(vm.state.value is AppUpdateState.UpdateAvailable)
+            coVerify(exactly = 2) { checker.fetchServerLatest(any()) }
+            every { app.startActivity(capture(launched)) } returns Unit
+            vm.startUpdate()
+            advanceUntilIdle()
+            assertEquals(1, launched.size)
         }
 
     @Test

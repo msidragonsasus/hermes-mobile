@@ -22,7 +22,7 @@ class AttentionViewModel(
 
     fun clarify(
         ref: RequestRef,
-        answer: String,
+        answer: String?,
     ) {
         viewModelScope.launch { coordinator.respondClarification(ref, answer) }
     }

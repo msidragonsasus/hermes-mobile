@@ -12,34 +12,6 @@ import kotlinx.serialization.json.JsonPrimitive
 private fun List<ChatMessage>.upsertById(message: ChatMessage): List<ChatMessage> = (this + message).dedupeById()
 
 /**
- * Strips this turn's sealed-orphan prefix from the final message text.
- *
- * Issue #842: `message.complete` carries the FULL final assistant text, which
- * often repeats the interim commentary that was already sealed into its own
- * bubble(s) at each `tool.start`. When the complete text begins with the
- * concatenation of those sealed contents, the prefix is removed so the final
- * bubble shows only the not-yet-rendered part — every narration line appears
- * exactly once (sealed orphan bubbles + stripped answer), matching the
- * persisted transcript. Returns the text unchanged when there is no overlap
- * (commentary that is NOT carried in the final row stays in its orphan
- * bubbles and the final bubble keeps its full text).
- */
-private fun stripSealedOrphanPrefix(
-    text: String,
-    messages: List<ChatMessage>,
-    sealedOrphanIds: List<String>,
-): String {
-    if (sealedOrphanIds.isEmpty()) return text
-    val turn = messages.drop(messages.indexOfLast { it.role == MessageRole.USER } + 1)
-    val prefix =
-        sealedOrphanIds
-            .mapNotNull { id -> turn.firstOrNull { it.id == id }?.content }
-            .joinToString("")
-    if (prefix.isEmpty() || !text.startsWith(prefix)) return text
-    return text.removePrefix(prefix)
-}
-
-/**
  * Pure state reducer for WebSocket events.
  *
  * Transforms [ChatUiState] in response to each [WsEvent] and returns a
@@ -47,7 +19,8 @@ private fun stripSealedOrphanPrefix(
  * ViewModel should execute (persistence, navigation, etc.).
  *
  * This is a pure function — no I/O, no mutable state, no dependencies on
- * Android or ViewModel classes. Easy to unit test.
+ * Android or ViewModel classes. The default hydrator keeps this behavior; a caller may supply
+ * a memo scoped to its own lifecycle.
  */
 object ChatWsEventReducer {
     fun reduce(
@@ -55,6 +28,7 @@ object ChatWsEventReducer {
         streamingState: StreamingState,
         event: WsEvent,
         currentSessionId: String? = null,
+        hydrateTodos: (List<ChatMessage>) -> List<TodoItem> = ::hydrateTodosFromMessages,
     ): ReducerResult {
         val eventSessionId =
             when (event) {
@@ -100,7 +74,7 @@ object ChatWsEventReducer {
             }
         val hydratedTodos =
             if (result.state.todos.isEmpty() && result.state.messages.isNotEmpty()) {
-                hydrateTodosFromMessages(result.state.messages)
+                hydrateTodos(result.state.messages)
             } else {
                 result.state.todos
             }
@@ -289,6 +263,7 @@ object ChatWsEventReducer {
 
             is WsEvent.VaultRequest,
             is WsEvent.ServerRequestCancel,
+            is WsEvent.OpenRequestsSnapshot,
             is WsEvent.UnsupportedServerRequest,
             -> {
                 ReducerResult(state = state, streamingState = streamingState)
@@ -327,6 +302,7 @@ object ChatWsEventReducer {
                 // message's reasoning — the card must start blank and only
                 // fill once real reasoning deltas arrive.
                 reasoningText = "",
+                timestamp = System.currentTimeMillis(),
                 isStreaming = true,
             )
         val effects = mutableListOf<ReducerEffect>()
@@ -385,7 +361,15 @@ object ChatWsEventReducer {
     ): ReducerResult {
         // Token accumulation is done by the ViewModel (streaming buffer + flush timer).
         // The reducer only signals that new content arrived — ViewModel owns the timer.
-        return ReducerResult(state = state, streamingState = streamingState)
+        return ReducerResult(
+            state = state,
+            streamingState =
+                if (event.token.isNotEmpty() && streamingState.previewedFinalCandidateId != null) {
+                    streamingState.copy(previewedFinalCandidateId = null)
+                } else {
+                    streamingState
+                },
+        )
     }
 
     // ── MessageInterim ────────────────────────────────────────────────
@@ -394,7 +378,7 @@ object ChatWsEventReducer {
      * `message.interim` seals interim commentary as its own bubble while the
      * turn continues (with or without tools). Text that already streamed is
      * sealed from the live message; unstreamed text is added once. Sealed ids
-     * feed the final-answer prefix strip exactly like tool.start seals.
+     * retain the delivered segments' identities exactly like tool.start seals.
      */
     private fun onMessageInterim(
         state: ChatUiState,
@@ -406,26 +390,32 @@ object ChatWsEventReducer {
         val reasoning = streamingState.reasoningText.ifBlank { live?.reasoningText.orEmpty() }
         val segments = mutableListOf<ChatMessage>()
         if (live != null) {
-            segments += live.copy(isStreaming = false, reasoningText = reasoning, finishTimestamp = now)
+            val observedBody = live.observedPreviewBody()
+            // The server's streamed flag does not prove that every delta reached this client.
+            // Fill only this observed delivery's strict raw prefix, never stripped/equal prose.
+            val sealedLive =
+                if (!streamingState.turnEnded && event.alreadyStreamed && event.text.isNotBlank() &&
+                    observedBody.length < event.text.length && event.text.startsWith(observedBody)
+                ) {
+                    live.copy(content = event.text, sourceBody = event.text)
+                } else {
+                    live
+                }
+            segments += sealedLive.copy(isStreaming = false, reasoningText = reasoning, finishTimestamp = now)
         }
         val text = event.text
         val turn = state.messages.drop(state.messages.indexOfLast { it.role == MessageRole.USER } + 1) + segments
 
         fun ChatMessage.shows(text: String) = role == MessageRole.ASSISTANT && content.trim() == text.trim()
-        // Streamed text is already on screen somewhere in the turn. Unstreamed
-        // text is a repeated frame only while it is still the latest row; the
-        // same words after a tool round or other activity are a new segment.
-        val alreadyShown =
-            if (event.alreadyStreamed) {
-                live != null || turn.any { it.shows(text) }
-            } else {
-                turn.lastOrNull()?.shows(text) == true
-            }
+        // Only explicit already-streamed evidence can reuse a delivered segment.
+        // Equal unstreamed prose is an independent delivery, including next to a live stream.
+        val alreadyShown = event.alreadyStreamed && (live != null || turn.any { it.shows(text) })
         if (text.isNotBlank() && !alreadyShown) {
             segments +=
                 ChatMessage(
                     role = MessageRole.ASSISTANT,
                     content = text,
+                    timestamp = now,
                     reasoningText = if (live == null) reasoning else "",
                     finishTimestamp = now,
                 )
@@ -437,9 +427,16 @@ object ChatWsEventReducer {
             state = state.copy(messages = segments.fold(state.messages) { messages, m -> messages.upsertById(m) }),
             streamingState =
                 streamingState.copy(
-                    streamingMessage = if (live != null) null else streamingState.streamingMessage,
+                    streamingMessage = if (segments.isNotEmpty()) null else streamingState.streamingMessage,
                     sealedOrphanIds = streamingState.sealedOrphanIds + segments.map { it.id },
                     isWritingText = false,
+                    previewedFinalCandidateId =
+                        segments.lastOrNull()?.id
+                            ?: streamingState.previewedFinalCandidateId?.takeIf { candidateId ->
+                                event.alreadyStreamed &&
+                                    turn.singleOrNull { it.id == candidateId }?.observedPreviewBody()?.trim() ==
+                                    text.trim()
+                            },
                 ),
             effects = effects,
         )
@@ -545,6 +542,18 @@ object ChatWsEventReducer {
 
     // ── MessageComplete ───────────────────────────────────────────────
 
+    /** Storage may synthesize edited prose plus older MEDIA hints; that is not observed delivery evidence. */
+    private fun ChatMessage.observedPreviewBody(): String {
+        val source = sourceBody
+        return if (source != null &&
+            (source == content || HostMediaExtractor.strip(source) == content)
+        ) {
+            source
+        } else {
+            content
+        }
+    }
+
     private fun finalizedMessageInCurrentTurn(
         state: ChatUiState,
         streamingState: StreamingState,
@@ -554,7 +563,6 @@ object ChatWsEventReducer {
         // Hydration may have replaced the local UUID with its REST counterpart.
         // Only match within this turn so a later identical answer stays distinct.
         return turn.firstOrNull { it.id == finalized.id }
-            ?: turn.lastOrNull { it.role == MessageRole.ASSISTANT && it.content.trim() == finalized.content.trim() }
     }
 
     private fun onMessageComplete(
@@ -562,9 +570,43 @@ object ChatWsEventReducer {
         streamingState: StreamingState,
         event: WsEvent.MessageComplete,
     ): ReducerResult {
+        if (event.responseReused == true) {
+            return onMessageComplete(
+                state,
+                streamingState,
+                event.copy(
+                    text = streamingState.streamingMessage?.content.orEmpty(),
+                    responseReused = false,
+                ),
+            )
+        }
         val streaming = streamingState.streamingMessage
+        // The wire flag proves prior delivery, but does not select a row by equal prose.
+        // Select only the actual current-observation interim, then verify its source body.
+        val previewed =
+            if (event.responsePreviewed == true && !streamingState.turnEnded &&
+                streaming?.content.isNullOrBlank()
+            ) {
+                state.messages
+                    .drop(state.messages.indexOfLast { it.role == MessageRole.USER } + 1)
+                    .singleOrNull {
+                        it.id == streamingState.previewedFinalCandidateId &&
+                            it.id in streamingState.sealedOrphanIds &&
+                            it.role == MessageRole.ASSISTANT && !it.isStreaming &&
+                            it.observedPreviewBody().trim() == event.text.trim()
+                    }
+            } else {
+                null
+            }
+        if (streamingState.turnEnded && streaming == null && streamingState.finalizedMessage != null &&
+            state.messages.none { it.id == streamingState.finalizedMessage.id }
+        ) {
+            // Canonical replacement retired the whole local manifest. A terminal replay without
+            // an explicit surviving row alias cannot select a new row by equal prose.
+            return ReducerResult(state, streamingState)
+        }
         val finalized =
-            if (streaming == null &&
+            previewed ?: if (streaming == null &&
                 (streamingState.completedText == null || streamingState.completedText.trim() == event.text.trim())
             ) {
                 finalizedMessageInCurrentTurn(state, streamingState)
@@ -582,24 +624,18 @@ object ChatWsEventReducer {
                 ?: streamingState.reasoningText.ifBlank {
                     streaming?.reasoningText ?: finalized?.reasoningText.orEmpty()
                 }
-        // Issue #842: the complete payload carries the FULL final text, which
-        // often repeats commentary already sealed into its own bubble(s) at
-        // each tool.start. Strip the sealed prefix so the final bubble shows
-        // only the part not already rendered — every narration line appears
-        // exactly once, matching the persisted transcript (sealed orphans +
-        // stripped answer). Turns whose final text does NOT contain the
-        // commentary are left untouched (orphans stay, final keeps its text).
+        // A distinct final body may repeat sealed commentary verbatim. Only
+        // response_reused=true or an explicitly previewed selected interim proves prior delivery; equal
+        // prose or a shared prefix does not establish segment identity.
         val text =
             if (finalized != null && streamingState.completedText != null) {
-                // A REST refresh may have re-keyed the sealed commentary too.
-                // Its prefix was already removed on the first completion.
+                // A replay targets the already-finalized row, not a new segment.
                 finalized.content
             } else {
-                stripSealedOrphanPrefix(event.text, state.messages, streamingState.sealedOrphanIds)
+                event.text
             }
-        // Edge: the complete payload was entirely covered by sealed orphans
-        // (the interim text already rendered as its own bubble(s)) — nothing
-        // new to show, so don't add an empty final bubble.
+        // A reused delivery with no live stream has no new final body.
+        // An empty completion likewise must not create an empty final bubble.
         if (text.isBlank()) {
             return ReducerResult(
                 state = state.copy(isAgentTyping = false, clarifyRequest = null),
@@ -614,7 +650,7 @@ object ChatWsEventReducer {
             )
         }
         val msg =
-            (streaming ?: finalized)?.copy(
+            (previewed ?: streaming ?: finalized)?.copy(
                 content = text,
                 isStreaming = false,
                 reasoningText = reasoning,
@@ -623,6 +659,7 @@ object ChatWsEventReducer {
                 role = MessageRole.ASSISTANT,
                 content = text,
                 reasoningText = reasoning,
+                timestamp = System.currentTimeMillis(),
                 finishTimestamp = System.currentTimeMillis(),
             )
         val terminalState =
@@ -632,7 +669,7 @@ object ChatWsEventReducer {
                 sealedOrphanIds = streamingState.sealedOrphanIds,
                 turnEnded = true,
             )
-        if (msg == finalized) {
+        if (streamingState.turnEnded && msg == finalized) {
             return ReducerResult(
                 state = state.copy(isAgentTyping = false),
                 streamingState = terminalState,
@@ -751,9 +788,8 @@ object ChatWsEventReducer {
 
         // Finalize any orphan streaming message (issue #771 + #842): interim
         // text streamed BEFORE the tool is sealed as its own bubble (desktop
-        // parity). The sealed id is tracked in StreamingState so
-        // onMessageComplete can strip the repeated prefix — the complete
-        // payload often re-carries the same commentary text.
+        // parity). Track the sealed id in StreamingState as delivery identity,
+        // without using its prose to strip a distinct final message.
         var orphanToPersist: ChatMessage? = null
         val newState =
             if (streamingState.streamingMessage?.content?.isNotEmpty() == true) {
@@ -790,14 +826,14 @@ object ChatWsEventReducer {
         // thinking BEFORE the tool starts) — wiping it made the reasoning
         // bubble vanish mid-turn. When an orphan WAS sealed (interim text
         // before the tool), the streaming message is done — null it, keep the
-        // reasoning text in shared state, and remember the sealed orphan so
-        // message.complete can strip the repeated prefix.
+        // reasoning text in shared state, and remember the sealed orphan's id.
         val finalStreamingState =
             if (orphanToPersist != null) {
                 streamingState.copy(
                     streamingMessage = null,
                     sealedOrphanIds = streamingState.sealedOrphanIds + orphanToPersist.id,
                     isWritingText = false,
+                    previewedFinalCandidateId = null,
                 )
             } else {
                 streamingState.copy(isWritingText = false)
