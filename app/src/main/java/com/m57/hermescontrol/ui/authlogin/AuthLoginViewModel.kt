@@ -130,7 +130,7 @@ class AuthLoginViewModel(
                 AuthManager.syncCookieStoreForProfile(profileId)
                 AuthManager.setWsAuthParam(if (gated) "ticket" else "token")
                 ApiClient.rebuild()
-                HermesWsClient.connect()
+                HermesWsClient.connectInBackground()
                 PushTokenLifecycle.registerAsync()
                 _uiState.update { it.copy(isLoading = false, connectionSuccess = true) }
             }

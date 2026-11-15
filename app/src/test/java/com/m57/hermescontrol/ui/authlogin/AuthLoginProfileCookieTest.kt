@@ -88,6 +88,7 @@ class AuthLoginProfileCookieTest {
             every { AuthManager.setWsAuthParam(any()) } just Runs
             every { ApiClient.rebuild() } just Runs
             every { HermesWsClient.connect() } just Runs
+            every { HermesWsClient.connectInBackground() } just Runs
             coEvery { GatewayWebSocketProbe.check(any(), any(), any(), any()) } returns false
             coEvery { GatewayWebSocketProbe.check(any(), "ticket", "fresh-one-use", any()) } returns true
             server.enqueue(MockResponse().setBody("""{"ticket":"fresh-one-use"}"""))

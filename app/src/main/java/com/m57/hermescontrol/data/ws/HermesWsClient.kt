@@ -501,6 +501,14 @@ object HermesWsClient {
         }
     }
 
+    /**
+     * [connect] for main-thread callers: the handshake first mints a ticket or
+     * refreshes the dashboard token with blocking network I/O.
+     */
+    fun connectInBackground() {
+        wsScope.launch { connect() }
+    }
+
     /** Open a WebSocket connection using settings from [AuthManager]. */
     fun connect() {
         if (networkCollectorStarted.compareAndSet(false, true)) {

@@ -146,7 +146,7 @@ class MainActivity : ComponentActivity() {
         ExternalActivityLifecycleGuard.onHostResumed()
         NotificationHelper.stop(this)
         if (AuthManager.isGatedMode() || !AuthManager.getToken().isNullOrBlank()) {
-            HermesWsClient.connect()
+            HermesWsClient.connectInBackground()
         }
     }
 
