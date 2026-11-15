@@ -14814,4 +14814,37 @@ class ChatViewModelTest {
                 exactly = 1,
             ) { HermesWsClient.sendMessage(any(), "Uncertain intent must never replay", any(), any()) }
         }
+
+    @Test
+    fun loadingWatchdog_redoesGatewayReadyWhenProfileSwitchMissesIt() =
+        runTest {
+            val (viewModel, _) = createViewModelWithSession()
+            mockSwitchFlow.emit("meow")
+            advanceUntilIdle()
+            assertTrue(viewModel.uiState.value.isLoading)
+            mockConnectionStatus.value = ConnectionStatus.CONNECTED
+            clearMocks(HermesWsClient, answers = false, recordedCalls = true, childMocks = false, verificationMarks = true)
+
+            assertTrue(viewModel.recoverStuckLoading())
+            advanceUntilIdle()
+
+            assertFalse(viewModel.uiState.value.isLoading)
+            verify(atLeast = 1) { HermesWsClient.send(WsMethods.SESSION_LIST, any(), any()) }
+        }
+
+    @Test
+    fun loadingWatchdog_dropsSpinnerWithoutRedialWhenDisconnected() =
+        runTest {
+            val (viewModel, _) = createViewModelWithSession()
+            mockSwitchFlow.emit("meow")
+            advanceUntilIdle()
+            mockConnectionStatus.value = ConnectionStatus.DISCONNECTED
+            advanceUntilIdle()
+
+            assertTrue(viewModel.recoverStuckLoading())
+            advanceUntilIdle()
+
+            assertFalse(viewModel.uiState.value.isLoading)
+            assertNull(viewModel.uiState.value.resumeError)
+        }
 }

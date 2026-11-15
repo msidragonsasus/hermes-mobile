@@ -62,9 +62,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -1187,6 +1190,19 @@ class ChatViewModel(
                 _uiState.update { it.copy(slashUsageCounts = counts) }
             }
         }
+        // Several paths raise the spinner and rely on one WS reply to lower it
+        // (profile switch waits for gateway.ready, an unsent resume never arms its
+        // deadline). One watchdog covers them all instead of a timer per path.
+        if (!isTestEnvironment()) {
+            viewModelScope.launch {
+                _uiState.map { it.isLoading }.distinctUntilChanged().collectLatest { loading ->
+                    if (!loading) return@collectLatest
+                    do {
+                        delay(LOADING_WATCHDOG_MS)
+                    } while (!recoverStuckLoading())
+                }
+            }
+        }
         if (wsClient.connectionStatus.value == ConnectionStatus.CONNECTED) {
             handleGatewayReady()
         }
@@ -1240,6 +1256,28 @@ class ChatViewModel(
                 }
             }
         }
+    }
+
+    /** Returns false while a bounded resume retry still owns the spinner. */
+    internal fun recoverStuckLoading(): Boolean {
+        val state = _uiState.value
+        if (!state.isLoading || state.resumeError != null) return true
+        if (state.isResumeRetrying) return false
+        Log.w(TAG, "Chat loading exceeded watchdog; recovering")
+        when {
+            wsClient.connectionStatus.value != ConnectionStatus.CONNECTED ->
+                // The connection banner owns this state; never cover the chat with a spinner.
+                _uiState.update { it.copy(isLoading = false) }
+            state.currentSessionId == null ->
+                // Missed gateway.ready (e.g. after a profile switch): redo its work on this socket.
+                handleGatewayReady()
+            state.messages.isEmpty() ->
+                _uiState.update {
+                    it.copy(isLoading = false, resumeError = "Session load timed out")
+                }
+            else -> _uiState.update { it.copy(isLoading = false) }
+        }
+        return true
     }
 
     // ── WS Event Handling ────────────────────────────────────────────────
@@ -6751,6 +6789,9 @@ class ChatViewModel(
 
     companion object {
         private const val SESSION_RESUME_DEADLINE_MS = 15_000L
+
+        /** Longer than the resume deadline, so the normal failure path reports first. */
+        private const val LOADING_WATCHDOG_MS = 25_000L
 
         /** Max auto-retry attempts for a failed session.resume (desktop parity). */
         const val MAX_RESUME_RETRIES = 4
