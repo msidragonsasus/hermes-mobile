@@ -110,7 +110,7 @@ def manaba(home, settings):
                 text = page.locator("body").inner_text(timeout=5000)
                 if not text.strip() or "manaba" not in (page.title() + text).lower():
                     return records, "partial" if records else "auth_required"
-                if "未提出課題" not in text:
+                if not re.search(r"未提出(?:の)?課題", text):
                     return [], "partial"
                 records.append(dict(id="manaba:list:" + hashlib.sha256(target.encode()).hexdigest()[:32], source="manaba",
                                     title="未提出課題一覧", url=target, text=text[:30000]))
