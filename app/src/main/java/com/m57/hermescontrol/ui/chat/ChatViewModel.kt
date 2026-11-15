@@ -1258,7 +1258,9 @@ class ChatViewModel(
         }
     }
 
-    /** Returns false while a bounded resume retry still owns the spinner. */
+    private var watchdogRetriedGeneration = -1L
+
+    /** Returns false while a resume retry (bounded or the watchdog's own) still owns the spinner. */
     internal fun recoverStuckLoading(): Boolean {
         val state = _uiState.value
         if (!state.isLoading || state.resumeError != null) return true
@@ -1271,6 +1273,12 @@ class ChatViewModel(
             state.currentSessionId == null ->
                 // Missed gateway.ready (e.g. after a profile switch): redo its work on this socket.
                 handleGatewayReady()
+            watchdogRetriedGeneration != sessionGeneration -> {
+                // A launch-time resume can stall while a manual Retry succeeds: do that Retry once.
+                watchdogRetriedGeneration = sessionGeneration
+                retryResumeSession()
+                return false
+            }
             state.messages.isEmpty() ->
                 _uiState.update {
                     it.copy(isLoading = false, resumeError = "Session load timed out")
@@ -6791,7 +6799,7 @@ class ChatViewModel(
         private const val SESSION_RESUME_DEADLINE_MS = 15_000L
 
         /** Longer than the resume deadline, so the normal failure path reports first. */
-        private const val LOADING_WATCHDOG_MS = 25_000L
+        private const val LOADING_WATCHDOG_MS = 18_000L
 
         /** Max auto-retry attempts for a failed session.resume (desktop parity). */
         const val MAX_RESUME_RETRIES = 4

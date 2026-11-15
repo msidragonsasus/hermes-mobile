@@ -14847,4 +14847,29 @@ class ChatViewModelTest {
             assertFalse(viewModel.uiState.value.isLoading)
             assertNull(viewModel.uiState.value.resumeError)
         }
+
+    @Test
+    fun loadingWatchdog_retriesStalledResumeOnceThenReportsIt() =
+        runTest {
+            val (viewModel, _) = createViewModelWithSession()
+            mockConnectionStatus.value = ConnectionStatus.CONNECTED
+            advanceUntilIdle()
+            @Suppress("UNCHECKED_CAST")
+            val state =
+                ChatViewModel::class.java.getDeclaredField("_uiState").apply { isAccessible = true }
+                    .get(viewModel) as MutableStateFlow<ChatUiState>
+            // The stalled launch-time state: spinner up, its resume never answered.
+            state.value = state.value.copy(isLoading = true, resumeError = null, isResumeRetrying = false)
+            clearMocks(HermesWsClient, answers = false, recordedCalls = true, childMocks = false, verificationMarks = true)
+
+            assertFalse(viewModel.recoverStuckLoading())
+            advanceUntilIdle()
+            // The Retry re-enters the normal bounded resume cycle (deadline + backoff retries).
+            verify(atLeast = 1) { HermesWsClient.send(WsMethods.SESSION_RESUME, any(), any()) }
+
+            // Still stalled after the one automatic Retry: report it instead of spinning.
+            state.value = state.value.copy(isLoading = true, resumeError = null, isResumeRetrying = false)
+            assertTrue(viewModel.recoverStuckLoading())
+            assertFalse(state.value.isLoading)
+        }
 }
