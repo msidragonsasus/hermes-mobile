@@ -42,6 +42,7 @@ object NavigationController {
     var backStack: NavBackStack<NavKey>? = null
     var pendingCareerNotice: String? by mutableStateOf(null)
     var pendingOpenClawNotice: String? by mutableStateOf(null)
+    var pendingWorkerDestination: String? by mutableStateOf(null)
     var pendingChatPrefill: String? by mutableStateOf(null)
         private set
     private var shellNavigation: ShellNavigation? = null
@@ -102,6 +103,20 @@ object NavigationController {
         if (!RequestReferenceCodec.isValid(ref)) return
         pendingChatNavigation = null
         pendingAttentionNavigation = PendingAttentionNavigation(ref, ++nextAttentionNavigationId)
+    }
+
+    fun openWorkerDestinationFromNotification(destination: String) {
+        if (destination !in
+            setOf(
+                com.m57.hermescontrol.worker.WorkerNotificationRoute.DEST_TODAY,
+                com.m57.hermescontrol.worker.WorkerNotificationRoute.DEST_WORK,
+            )
+        ) {
+            return
+        }
+        pendingChatNavigation = null
+        pendingAttentionNavigation = null
+        pendingWorkerDestination = destination
     }
 
     fun revealPendingAttention() {

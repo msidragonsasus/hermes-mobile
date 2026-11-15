@@ -8,6 +8,15 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+if (listOf(
+        file("google-services.json"),
+        file("src/debug/google-services.json"),
+        file("src/release/google-services.json"),
+    ).any { it.exists() }
+) {
+    apply(plugin = libs.plugins.google.services.get().pluginId)
+}
+
 val googleWebClientId =
     (project.findProperty("GOOGLE_WEB_CLIENT_ID") as? String)
         ?.replace("\\", "\\\\")
@@ -231,6 +240,10 @@ dependencies {
     implementation(libs.androidx.navigation3.ui)
     implementation(libs.androidx.navigation3.runtime)
     implementation(libs.androidx.lifecycle.viewmodel.navigation3)
+
+    // Push notifications (optional at runtime when google-services.json is absent)
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
 }
 
 tasks.register<Exec>("ktlintCheck") {

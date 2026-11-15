@@ -1,12 +1,17 @@
 package com.m57.hermescontrol.home
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -26,12 +31,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.m57.hermescontrol.HermesControlApp
 import com.m57.hermescontrol.NavigationController
+import com.m57.hermescontrol.R
 import com.m57.hermescontrol.career.CareerHomeProvider
 import com.m57.hermescontrol.career.CareerLocalStore
 import com.m57.hermescontrol.career.careerScope
@@ -42,9 +52,15 @@ import com.m57.hermescontrol.domain.hermes.AttentionStatus
 import com.m57.hermescontrol.domain.hermes.LinkState
 import com.m57.hermescontrol.navigation.AttentionDetailKey
 import com.m57.hermescontrol.theme.LocalSpacing
+import com.m57.hermescontrol.ui.chat.MarkdownText
+import com.m57.hermescontrol.ui.chat.components.DiffViewCard
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.OverviewHeading
+import com.m57.hermescontrol.ui.common.OverviewRow
 import com.m57.hermescontrol.ui.common.sharedAppUpdateViewModel
+import com.m57.hermescontrol.worker.InboxItem
+import com.m57.hermescontrol.worker.WorkerInboxFormatters
+import com.m57.hermescontrol.worker.WorkerInboxRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -74,6 +90,7 @@ fun HomeScreen() {
     var loading by remember(scope) { mutableStateOf(false) }
     var refresh by remember(scope) { mutableStateOf(0) }
     var careerEnabled by remember(scope) { mutableStateOf(false) }
+    var workerResults by remember(scope) { mutableStateOf(WorkerInboxRepository.cachedTodayResults(scope)) }
     var now by remember(scope) { mutableStateOf(Instant.now()) }
     val careerVisible = providers.firstOrNull { it.scope == scope && it.provider == "career" }?.enabled != false
     val chatVisible = providers.firstOrNull { it.scope == scope && it.provider == "chat" }?.enabled != false
@@ -82,6 +99,9 @@ fun HomeScreen() {
             do {
                 now = Instant.now()
                 try {
+                    val refreshedWorker = WorkerInboxRepository.refreshTodayResults(scope)
+                    if (scope != AuthManager.uiPreferenceScope()) return@repeatOnLifecycle
+                    workerResults = refreshedWorker
                     careerEnabled = CareerLocalStore(app, careerScope()).enabled()
                     if (careerEnabled && careerVisible) {
                         loading = true
@@ -194,6 +214,17 @@ fun HomeScreen() {
             onConnectionSettings = { NavigationController.navigateTo(com.m57.hermescontrol.SettingsConnection) },
             today = today,
             threadTitles = threadTitles,
+            workerResults = workerResults,
+            onAckWorkerResult = { item ->
+                if (item.acked_at.isNullOrBlank()) {
+                    coroutine.launch {
+                        val updated = WorkerInboxRepository.ackItem(scope, item.id)
+                        if (scope == AuthManager.uiPreferenceScope()) {
+                            workerResults = updated
+                        }
+                    }
+                }
+            },
         )
     }
 }
@@ -219,12 +250,15 @@ internal fun HomeFeedContent(
     onConnectionSettings: () -> Unit,
     today: TodayPlanState? = null,
     threadTitles: Map<String, String> = emptyMap(),
+    workerResults: List<InboxItem> = emptyList(),
+    onAckWorkerResult: (InboxItem) -> Unit = {},
 ) {
     var settings by rememberSaveable(scope) { mutableStateOf(false) }
     var showCoverage by rememberSaveable(scope) { mutableStateOf(false) }
     var expandActions by rememberSaveable(scope) { mutableStateOf(false) }
     var expandResults by rememberSaveable(scope) { mutableStateOf(false) }
     var openGroups by rememberSaveable(scope) { mutableStateOf(emptyList<String>()) }
+    var expandedWorkerIds by rememberSaveable(scope) { mutableStateOf(emptyList<String>()) }
     val spacing = LocalSpacing.current
     LazyColumn(
         modifier = Modifier.testTag("home_list"),
@@ -298,21 +332,40 @@ internal fun HomeFeedContent(
                 }
             }
         }
-        if (results.isNotEmpty()) {
+        if (results.isNotEmpty() || workerResults.isNotEmpty()) {
             item { OverviewHeading("届いた結果", "取得・作成した最新の結果です。") }
-            items(if (expandResults) results else results.take(5), key = {
+            val visibleWorker = if (expandResults) workerResults else workerResults.take(5)
+            items(visibleWorker, key = { "worker_result:${it.id}" }) { inboxItem ->
+                val isExpanded = inboxItem.id in expandedWorkerIds
+                WorkerTodayResultRow(
+                    item = inboxItem,
+                    expanded = isExpanded,
+                    onToggle = {
+                        expandedWorkerIds =
+                            if (isExpanded) {
+                                expandedWorkerIds - inboxItem.id
+                            } else {
+                                onAckWorkerResult(inboxItem)
+                                expandedWorkerIds + inboxItem.id
+                            }
+                    },
+                )
+            }
+            val remainingSlots = if (expandResults) results.size else (5 - visibleWorker.size).coerceAtLeast(0)
+            items(results.take(remainingSlots), key = {
                 "result:${it.provider}:${it.id}"
             }) { HomeEntry(it) { onOpen(it) } }
-            if (!expandResults && results.size > 5) {
+            val totalResults = workerResults.size + results.size
+            if (!expandResults && totalResults > 5) {
                 item {
                     TextButton(
                         onClick = { expandResults = true },
                         shapes = ButtonDefaults.shapes(),
-                    ) { Text("残り${results.size - 5}件を表示") }
+                    ) { Text("残り${totalResults - 5}件を表示") }
                 }
             }
         }
-        if (!loading && results.isEmpty() && actions.isEmpty() && pending.isEmpty()) {
+        if (!loading && results.isEmpty() && workerResults.isEmpty() && actions.isEmpty() && pending.isEmpty()) {
             item {
                 Text(
                     if (error != null ||
@@ -408,5 +461,76 @@ private fun openHomeItem(
         item.target.session_id?.let(NavigationController::openChatResult)
     } else {
         NavigationController.navigateTo(HomeDetailKey(scope, item))
+    }
+}
+
+@Composable
+private fun WorkerTodayResultRow(
+    item: InboxItem,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    val spacing = LocalSpacing.current
+    val preview = WorkerInboxFormatters.notificationPreview(item.body)
+    val metaParts =
+        buildList {
+            if (item.isMemoryDiff) {
+                add(stringResource(R.string.worker_today_memory_diff_badge))
+            }
+            if (item.created_at.isNotBlank()) {
+                add(homeOverviewTime(item.created_at))
+            }
+        }
+    OverviewRow(
+        icon = if (item.isMemoryDiff) Icons.Outlined.EditNote else Icons.Outlined.Description,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
+        compact = true,
+    ) {
+        Text(item.title, style = MaterialTheme.typography.titleMedium)
+        if (metaParts.isNotEmpty()) {
+            Text(
+                text = metaParts.joinToString(" · "),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier =
+                    if (item.created_at.isNotBlank()) {
+                        Modifier.semantics { contentDescription = homeTime(item.created_at) }
+                    } else {
+                        Modifier
+                    },
+            )
+        }
+        if (!expanded && preview.isNotBlank()) {
+            Text(
+                text = preview,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (expanded && item.body.isNotBlank()) {
+            val isUnifiedDiff =
+                item.isMemoryDiff &&
+                    (
+                        item.body.contains("\n+") ||
+                            item.body.contains("\n-") ||
+                            item.body.contains("@@") ||
+                            item.body.startsWith("---")
+                    )
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(top = spacing.xs),
+                verticalArrangement = Arrangement.spacedBy(spacing.xs),
+            ) {
+                if (isUnifiedDiff) {
+                    DiffViewCard(diffText = item.body)
+                } else {
+                    MarkdownText(
+                        text = item.body,
+                        textColor = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+        }
     }
 }

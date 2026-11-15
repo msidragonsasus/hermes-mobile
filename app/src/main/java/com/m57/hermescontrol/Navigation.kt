@@ -142,6 +142,10 @@ private fun appEntryProvider(
         com.m57.hermescontrol.terminal
             .TerminalScreen()
     }
+    entry<WorkScreen> {
+        com.m57.hermescontrol.worker
+            .WorkScreen(onOpenDrawer = openDrawer)
+    }
     entry<com.m57.hermescontrol.career.CareerScreenKey> {
         com.m57.hermescontrol.career
             .CareerAppScreen()
@@ -399,6 +403,18 @@ fun MainNavigation(sessionId: String? = null) {
     }
     LaunchedEffect(hasToken, pendingAttention?.requestId) {
         if (hasToken && pendingAttention != null) NavigationController.revealPendingAttention()
+    }
+    val workerDestination = NavigationController.pendingWorkerDestination
+    LaunchedEffect(hasToken, workerDestination) {
+        if (hasToken && workerDestination != null) {
+            val target =
+                when (workerDestination) {
+                    com.m57.hermescontrol.worker.WorkerNotificationRoute.DEST_WORK -> WorkScreen
+                    else -> TodayScreen
+                }
+            NavigationController.navigateTo(target)
+            NavigationController.pendingWorkerDestination = null
+        }
     }
 
     val currentScreen = backStack.lastOrNull() ?: startScreen

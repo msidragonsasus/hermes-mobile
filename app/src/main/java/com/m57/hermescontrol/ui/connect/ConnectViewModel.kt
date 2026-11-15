@@ -22,6 +22,7 @@ import com.m57.hermescontrol.data.remote.ServerEndpoint
 import com.m57.hermescontrol.data.remote.requiresLocalNetworkPermission
 import com.m57.hermescontrol.data.remote.safeApiCall
 import com.m57.hermescontrol.data.ws.GatewayWebSocketProbe
+import com.m57.hermescontrol.worker.PushTokenLifecycle
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -278,6 +279,7 @@ class ConnectViewModel(
                         AuthManager.setProfileToken(AuthManager.DEFAULT_PROFILE_ID, state.token)
                     }
                     ApiClient.rebuild()
+                    PushTokenLifecycle.registerAsync()
                     _uiState.update {
                         it.copy(
                             isConnecting = false,

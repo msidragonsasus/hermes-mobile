@@ -26,6 +26,7 @@ class AppManagementTest {
                     com.m57.hermescontrol.SettingsPasswords,
                     ActivityScreen,
                     MiniAppExamplesScreen,
+                    com.m57.hermescontrol.WorkScreen,
                     com.m57.hermescontrol.agents
                         .AgentDetailKey("BRO"),
                 )

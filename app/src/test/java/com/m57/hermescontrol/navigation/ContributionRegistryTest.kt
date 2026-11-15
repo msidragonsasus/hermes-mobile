@@ -102,7 +102,11 @@ class ContributionRegistryTest {
             specialized.map { it.keyType },
         )
         assertEquals(44, legacy.size)
-        assertEquals(74, ScreenRegistry.contributions.destinations.size)
+        assertEquals(75, ScreenRegistry.contributions.destinations.size)
+        assertEquals(
+            com.m57.hermescontrol.WorkScreen::class,
+            ScreenRegistry.contributions.forRoute("worker/work")?.keyType,
+        )
         assertEquals(
             com.m57.hermescontrol.terminal.TerminalScreenKey::class,
             ScreenRegistry.contributions.forRoute("terminal/home")?.keyType,

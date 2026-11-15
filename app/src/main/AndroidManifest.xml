@@ -79,6 +79,18 @@
             android:name=".notification.NotificationReplyReceiver"
             android:exported="false" />
 
+        <service
+            android:name=".worker.HermesMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name=".worker.EscrowDecisionReceiver"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

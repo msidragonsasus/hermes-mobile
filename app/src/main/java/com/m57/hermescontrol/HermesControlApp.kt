@@ -18,6 +18,7 @@ import com.m57.hermescontrol.domain.hermes.AttentionCoordinator
 import com.m57.hermescontrol.domain.hermes.AttentionRepository
 import com.m57.hermescontrol.domain.hermes.RunRepository
 import com.m57.hermescontrol.ui.analytics.AnalyticsPreloader
+import com.m57.hermescontrol.worker.PushTokenLifecycle
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -43,6 +44,7 @@ class HermesControlApp :
 
     override fun onCreate() {
         super.onCreate()
+        PushTokenLifecycle.attachApplication(this)
         NetworkMonitor.init(this)
         // Issue #537 follow-up (A): preload analytics in the background after launch
         // so the tab renders instantly when opened (the usage endpoint is slow on a
@@ -64,6 +66,7 @@ class HermesControlApp :
                 com.m57.hermescontrol.data.update.UpdateConnectionWatcher
                     .watch()
             }
+            PushTokenLifecycle.registerAsync()
         }
     }
 

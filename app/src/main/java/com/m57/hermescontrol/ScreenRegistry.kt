@@ -265,6 +265,8 @@ object ScreenRegistry {
                     .PcPowerContribution(),
                 com.m57.hermescontrol.terminal
                     .TerminalContribution(),
+                com.m57.hermescontrol.worker
+                    .WorkerContribution(),
             ),
         )
 

@@ -27,6 +27,8 @@ object WsMethods {
     /** Lifetime usage snapshot (calls, token totals, compression count). */
     const val SESSION_USAGE = "session.usage"
     const val SUBAGENT_LIST = "subagent.list"
+    const val SUBAGENT_INTERRUPT = "subagent.interrupt"
+    const val CRON_MANAGE = "cron.manage"
     const val PROFILES_CONFIGURE = "profiles.configure"
     const val PROFILES_LIST = "profiles.list"
 

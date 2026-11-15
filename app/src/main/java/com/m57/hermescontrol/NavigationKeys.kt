@@ -15,6 +15,8 @@ import kotlinx.serialization.Serializable
 
 @Serializable data object CronJobsScreen : NavKey
 
+@Serializable data object WorkScreen : NavKey
+
 @Serializable data object GatewayScreen : NavKey
 
 @Serializable data object HistoryScreen : NavKey

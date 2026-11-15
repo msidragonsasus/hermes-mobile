@@ -302,29 +302,8 @@ class ChatNotificationService : Service() {
             .build()
 
     private fun createNotificationChannels() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val serviceChannel =
-                NotificationChannel(
-                    SERVICE_CHANNEL_ID,
-                    getString(R.string.notif_channel_service_name),
-                    NotificationManager.IMPORTANCE_MIN,
-                ).apply {
-                    description = getString(R.string.notif_channel_service_desc)
-                }
-
-            val chatChannel =
-                NotificationChannel(
-                    CHAT_CHANNEL_ID,
-                    getString(R.string.notif_channel_chat_name),
-                    NotificationManager.IMPORTANCE_HIGH,
-                ).apply {
-                    description = getString(R.string.notif_channel_chat_desc)
-                }
-
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(serviceChannel)
-            manager.createNotificationChannel(chatChannel)
-        }
+        com.m57.hermescontrol.worker.WorkerNotifications
+            .ensureChannels(this)
     }
 
     override fun onStartCommand(

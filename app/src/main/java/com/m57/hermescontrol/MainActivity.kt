@@ -36,6 +36,7 @@ class MainActivity : ComponentActivity() {
         private const val SAVED_PENDING_ATTENTION = "pending_attention_navigation"
         private const val SAVED_PENDING_CAREER = "pending_career_notice"
         private const val SAVED_PENDING_OPENCLAW = "pending_openclaw_notice"
+        private const val SAVED_PENDING_WORKER = "pending_worker_destination"
 
         /**
          * Action that identifies notification-driven "open this chat" intents.
@@ -68,6 +69,7 @@ class MainActivity : ComponentActivity() {
         NavigationController.restorePendingAttentionNavigation(savedInstanceState?.getString(SAVED_PENDING_ATTENTION))
         NavigationController.pendingCareerNotice = savedInstanceState?.getString(SAVED_PENDING_CAREER)
         NavigationController.pendingOpenClawNotice = savedInstanceState?.getString(SAVED_PENDING_OPENCLAW)
+        NavigationController.pendingWorkerDestination = savedInstanceState?.getString(SAVED_PENDING_WORKER)
         consumeNotificationIntent(intent)
 
         enableEdgeToEdge()
@@ -122,6 +124,7 @@ class MainActivity : ComponentActivity() {
         NavigationController.savePendingAttentionNavigation()?.let { outState.putString(SAVED_PENDING_ATTENTION, it) }
         NavigationController.pendingCareerNotice?.let { outState.putString(SAVED_PENDING_CAREER, it) }
         NavigationController.pendingOpenClawNotice?.let { outState.putString(SAVED_PENDING_OPENCLAW, it) }
+        NavigationController.pendingWorkerDestination?.let { outState.putString(SAVED_PENDING_WORKER, it) }
         super.onSaveInstanceState(outState)
     }
 
@@ -183,6 +186,13 @@ class MainActivity : ComponentActivity() {
             val ref = RequestReferenceCodec.decode(intent.getStringExtra(AttentionNotificationRoute.EXTRA_REF))
             intent.removeExtra(AttentionNotificationRoute.EXTRA_REF)
             ref?.let(NavigationController::openAttentionFromNotification)
+            return
+        }
+        if (intent?.action == com.m57.hermescontrol.worker.WorkerNotificationRoute.ACTION_OPEN_DESTINATION) {
+            val destination =
+                intent.getStringExtra(com.m57.hermescontrol.worker.WorkerNotificationRoute.EXTRA_DESTINATION)
+            intent.removeExtra(com.m57.hermescontrol.worker.WorkerNotificationRoute.EXTRA_DESTINATION)
+            destination?.let(NavigationController::openWorkerDestinationFromNotification)
             return
         }
         // Issue #832: MainActivity is exported (launcher requirement) — only

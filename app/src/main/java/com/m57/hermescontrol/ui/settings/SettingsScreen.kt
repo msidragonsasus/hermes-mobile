@@ -99,6 +99,7 @@ fun SettingsScreen(
             BehaviorSection(
                 autoReconnect = state.autoReconnect,
                 onAutoReconnectChange = viewModel::onAutoReconnectChange,
+                pushConfigured = state.pushConfigured,
             )
             SectionDivider()
             LinkRow(

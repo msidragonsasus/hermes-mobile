@@ -57,6 +57,7 @@ internal fun SettingsConnectionPage(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var passwordVisible by remember { mutableStateOf(false) }
     var confirmLogout by remember { mutableStateOf(false) }
+    var loggingOut by remember { mutableStateOf(false) }
 
     HermesScaffold(
         title = { Text(stringResource(R.string.settings_sec_connection)) },
@@ -91,6 +92,7 @@ internal fun SettingsConnectionPage(
             // Destructive but not primary: outlined in the error color, confirmed before it runs.
             OutlinedButton(
                 onClick = { confirmLogout = true },
+                enabled = !loggingOut,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
                 shapes = ButtonDefaults.shapes(),
@@ -102,15 +104,19 @@ internal fun SettingsConnectionPage(
 
     if (confirmLogout) {
         AlertDialog(
-            onDismissRequest = { confirmLogout = false },
+            onDismissRequest = { if (!loggingOut) confirmLogout = false },
             title = { Text(stringResource(R.string.settings_logout_confirm_title)) },
             text = { Text(stringResource(R.string.settings_logout_confirm_desc)) },
             confirmButton = {
                 TextButton(
+                    enabled = !loggingOut,
                     onClick = {
-                        confirmLogout = false
-                        viewModel.logout()
-                        onLogout()
+                        loggingOut = true
+                        viewModel.logout {
+                            loggingOut = false
+                            confirmLogout = false
+                            onLogout()
+                        }
                     },
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
                     shapes = ButtonDefaults.shapes(),
@@ -119,7 +125,11 @@ internal fun SettingsConnectionPage(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { confirmLogout = false }, shapes = ButtonDefaults.shapes()) {
+                TextButton(
+                    enabled = !loggingOut,
+                    onClick = { confirmLogout = false },
+                    shapes = ButtonDefaults.shapes(),
+                ) {
                     Text(stringResource(R.string.action_cancel))
                 }
             },

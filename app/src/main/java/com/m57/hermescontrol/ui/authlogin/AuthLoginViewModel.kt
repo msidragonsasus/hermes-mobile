@@ -21,6 +21,7 @@ import com.m57.hermescontrol.data.remote.safeApiCall
 import com.m57.hermescontrol.data.ws.GatewayWebSocketProbe
 import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.data.ws.WsTicketResponse
+import com.m57.hermescontrol.worker.PushTokenLifecycle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -130,6 +131,7 @@ class AuthLoginViewModel(
                 AuthManager.setWsAuthParam(if (gated) "ticket" else "token")
                 ApiClient.rebuild()
                 HermesWsClient.connect()
+                PushTokenLifecycle.registerAsync()
                 _uiState.update { it.copy(isLoading = false, connectionSuccess = true) }
             }
     }
@@ -403,6 +405,7 @@ class AuthLoginViewModel(
                     AuthManager.setToken(result.wsCredential)
                     ApiClient.rebuild()
                     HermesWsClient.connect()
+                    PushTokenLifecycle.registerAsync()
                     _uiState.update { it.copy(isLoading = false, connectionSuccess = true) }
                 }
             }

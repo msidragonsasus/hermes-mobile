@@ -7,6 +7,7 @@ import androidx.compose.material.icons.filled.HistoryEdu
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation3.runtime.NavKey
 import com.m57.hermescontrol.AchievementsScreen
@@ -39,6 +40,7 @@ import com.m57.hermescontrol.SkillsScreen
 import com.m57.hermescontrol.SystemScreen
 import com.m57.hermescontrol.ToolsetsScreen
 import com.m57.hermescontrol.WebhooksScreen
+import com.m57.hermescontrol.WorkScreen
 
 data class ManagementEntry(
     val key: NavKey,
@@ -117,6 +119,12 @@ object AppManagement {
                 "automation",
                 R.string.management_automation,
                 listOf(
+                    ManagementEntry(
+                        WorkScreen,
+                        R.string.screen_work,
+                        R.string.management_work_desc,
+                        Icons.Filled.TaskAlt,
+                    ),
                     legacy(CronJobsScreen, R.string.management_cron_desc),
                     legacy(WebhooksScreen, R.string.management_webhooks_desc),
                     legacy(KanbanScreen, R.string.management_kanban_desc),

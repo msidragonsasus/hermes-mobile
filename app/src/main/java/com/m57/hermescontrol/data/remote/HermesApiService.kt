@@ -1365,4 +1365,37 @@ interface HermesApiService {
     suspend fun deleteManagedFile(
         @Body body: ManagedFileDelete,
     ): Response<ManagedFileActionResponse>
+
+    // ── Autonomous Worker (mobile_worker plugin) ───────────────────────
+    @GET("api/plugins/mobile_worker/inbox")
+    suspend fun getWorkerInbox(
+        @Query("since") since: Long,
+        @Query("limit") limit: Int = 50,
+    ): Response<com.m57.hermescontrol.worker.InboxResponse>
+
+    @POST("api/plugins/mobile_worker/inbox/{id}/ack")
+    suspend fun ackWorkerInbox(
+        @Path("id") id: String,
+    ): Response<com.m57.hermescontrol.worker.AckResponse>
+
+    @GET("api/plugins/mobile_worker/escrows")
+    suspend fun getWorkerEscrows(
+        @Query("status") status: String = "pending",
+    ): Response<com.m57.hermescontrol.worker.EscrowsResponse>
+
+    @POST("api/plugins/mobile_worker/escrow/{id}/decision")
+    suspend fun decideWorkerEscrow(
+        @Path("id") id: String,
+        @Body body: com.m57.hermescontrol.worker.EscrowDecisionRequest,
+    ): Response<com.m57.hermescontrol.worker.EscrowDecisionResponse>
+
+    @POST("api/plugins/mobile_worker/push/register")
+    suspend fun registerPushToken(
+        @Body body: com.m57.hermescontrol.worker.PushRegisterRequest,
+    ): Response<com.m57.hermescontrol.worker.AckResponse>
+
+    @HTTP(method = "DELETE", path = "api/plugins/mobile_worker/push/register", hasBody = true)
+    suspend fun unregisterPushToken(
+        @Body body: com.m57.hermescontrol.worker.PushUnregisterRequest,
+    ): Response<com.m57.hermescontrol.worker.AckResponse>
 }

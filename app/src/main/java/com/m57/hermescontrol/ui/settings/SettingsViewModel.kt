@@ -15,6 +15,8 @@ import com.m57.hermescontrol.data.session.ProfileSwitchCoordinator
 import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.theme.ThemePreference
 import com.m57.hermescontrol.theme.ThemePreset
+import com.m57.hermescontrol.worker.PushTokenLifecycle
+import com.m57.hermescontrol.worker.WorkerPushLifecycle
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +27,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 data class SettingsUiState(
     val baseUrl: String = ServerEndpoint.DEFAULT_BASE_URL,
@@ -38,6 +41,7 @@ data class SettingsUiState(
     val credentialTransportError: Boolean = false,
     val token: String = "",
     val autoReconnect: Boolean = true,
+    val pushConfigured: Boolean = false,
     val themePreference: ThemePreference = ThemePreference.SYSTEM,
     val useDynamicColors: Boolean = false,
     val themePreset: ThemePreset = ThemePreset.DEFAULT,
@@ -67,6 +71,7 @@ data class SettingsUiState(
 
 class SettingsViewModel(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val pushLifecycle: WorkerPushLifecycle = PushTokenLifecycle,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
@@ -84,6 +89,7 @@ class SettingsViewModel(
         val baseUrl = AuthManager.getBaseUrl()
         val token = AuthManager.getToken() ?: ""
         val autoReconnect = AuthManager.isAutoReconnect()
+        val pushConfigured = runCatching { pushLifecycle.isConfigured() }.getOrDefault(false)
         val themePreference = AuthManager.getThemePreference()
         val useDynamicColors = AuthManager.isUseDynamicColors()
         val themePreset = AuthManager.getThemePreset()
@@ -104,6 +110,7 @@ class SettingsViewModel(
                 transportWarning = transportWarning,
                 token = token,
                 autoReconnect = autoReconnect,
+                pushConfigured = pushConfigured,
                 themePreference = themePreference,
                 useDynamicColors = useDynamicColors,
                 themePreset = themePreset,
@@ -417,11 +424,19 @@ class SettingsViewModel(
     }
 
     /** Clear all auth credentials — logs out and returns to landing screen. */
-    fun logout() {
-        AuthManager.setToken(null)
-        AuthManager.setSessionCookie(null)
-        AuthManager.setWsAuthParam("token")
-        HermesWsClient.disconnect(clearPendingMessages = true)
+    fun logout(onComplete: () -> Unit = {}) {
+        viewModelScope.launch(ioDispatcher) {
+            withTimeoutOrNull(2_000L) {
+                runCatching { pushLifecycle.unregisterBeforeLogout() }
+            }
+            HermesWsClient.disconnect(clearPendingMessages = true)
+            AuthManager.setToken(null)
+            AuthManager.setSessionCookie(null)
+            AuthManager.setWsAuthParam("token")
+            withContext(Dispatchers.Main) {
+                onComplete()
+            }
+        }
         // Don't rebuild ApiClient here — let the navigation complete first
     }
 

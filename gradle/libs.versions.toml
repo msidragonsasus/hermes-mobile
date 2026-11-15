@@ -34,8 +34,12 @@ latex = "1.5.4"
 credentials = "1.6.0"
 googleId = "1.2.0"
 playServicesAuth = "21.5.1"
+firebaseBom = "35.2.0"
+googleServices = "4.6.0"
 
 [libraries]
+firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "firebaseBom" }
+firebase-messaging = { module = "com.google.firebase:firebase-messaging" }
 bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version = "1.85.2" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
 androidx-work-runtime = { module = "androidx.work:work-runtime", version.ref = "androidxWork" }
@@ -109,3 +113,4 @@ compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 room = { id = "androidx.room3", version.ref = "room" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }
