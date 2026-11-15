@@ -3,6 +3,7 @@ package com.m57.hermescontrol.ui.chat
 import android.app.Application
 import android.net.Uri
 import android.util.Log
+import com.m57.hermescontrol.BuildConfig
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.m57.hermescontrol.NavigationController
@@ -72,6 +73,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.intOrNull
@@ -1291,6 +1293,7 @@ class ChatViewModel(
     // ── WS Event Handling ────────────────────────────────────────────────
 
     private fun handleGatewayReady() {
+        if (BuildConfig.DEBUG) Log.d(TAG, "gatewayReady current=${_uiState.value.currentSessionId != null}")
         todoHistoryMemo.clear()
         queueExecutionIdle = false
         // A definitely-unsent queue entry may retry on a fresh binding, never UNKNOWN.
@@ -2081,7 +2084,10 @@ class ChatViewModel(
         cancelResumeDeadline(id)
         val method = idToMethod.remove(id) ?: return
         val request = sessionRequestById.remove(id)
-        if (request != null && isStaleSessionRequest(request)) return
+        if (request != null && isStaleSessionRequest(request)) {
+            if (BuildConfig.DEBUG) Log.d(TAG, "drop stale $method ${staleReason(request)}")
+            return
+        }
         when (method) {
             WsMethods.SESSION_CREATE -> {
                 val resultMap = result as? Map<String, Any?> ?: return
@@ -4830,7 +4836,9 @@ class ChatViewModel(
             // transcript immediately so the screen never sits blank, then load
             // the fresh server transcript in parallel. If the cache is empty
             // the spinner stays up until the server page lands.
-            cached.join()
+            // Bounded: the transcript actor is serialized, so rapid session switching
+            // queues cache opens; never let that backlog hold the resume itself.
+            withTimeoutOrNull(CACHE_PAINT_BUDGET_MS) { cached.join() }
             // Cancellation of a superseded cache consumer also releases join(). Do not
             // let that old selection resume the transport or change current queue gating.
             if (!isCurrentSessionRequest(sessionId, generation)) return@launch
@@ -5046,7 +5054,17 @@ class ChatViewModel(
                     api = recoveryApi,
                     profile = resyncScope?.serverProfileId,
                 )
-            if (!isCurrentHydration(sessionId, generation, requestSequence, resyncScope)) return@launch
+            if (!isCurrentHydration(sessionId, generation, requestSequence, resyncScope)) {
+                if (BuildConfig.DEBUG) {
+                    Log.d(
+                        TAG,
+                        "drop stale hydration gen=${generation != sessionGeneration} " +
+                            "seq=${requestSequence != activeHydrationRequestSequence} " +
+                            "session=${sessionId != _uiState.value.currentSessionId}",
+                    )
+                }
+                return@launch
+            }
             val (result, requestedOffset) =
                 if (latestResult is NetworkResult.Success && latestResult.data.pagination?.order == "latest") {
                     latestPaging = true
@@ -5235,6 +5253,7 @@ class ChatViewModel(
         queueTurnObserved = false
         pendingCreateQueueOrigin = null
         val generation = ++sessionGeneration
+        if (BuildConfig.DEBUG) Log.d(TAG, "resetSession gen=$generation loading=$isLoading hasId=${sessionId != null}")
         todoHistoryMemo.clear()
         pendingTerminals.clear()
         scopedProcessingVersion.value++
@@ -6741,6 +6760,12 @@ class ChatViewModel(
     private fun isStaleSessionRequest(id: String): Boolean =
         sessionRequestById[id]?.let(::isStaleSessionRequest) == true
 
+    private fun staleReason(request: SessionRequest): String =
+        "gen=${request.generation != sessionGeneration} " +
+            "scope=${request.scope != null && !submissionTransport.isReady(request.scope)} " +
+            "session=${request.sessionId != null && request.sessionId != _uiState.value.currentSessionId} " +
+            "resumeSeq=${request.resumeSequence != 0L && request.resumeSequence != activeResumeRequestSequence}"
+
     private fun isStaleSessionRequest(request: SessionRequest): Boolean =
         request.generation != sessionGeneration ||
             (request.scope != null && !submissionTransport.isReady(request.scope)) ||
@@ -6800,6 +6825,9 @@ class ChatViewModel(
 
         /** Longer than the resume deadline, so the normal failure path reports first. */
         private const val LOADING_WATCHDOG_MS = 18_000L
+
+        /** How long a session switch waits for the cached transcript before resuming anyway. */
+        private const val CACHE_PAINT_BUDGET_MS = 1_500L
 
         /** Max auto-retry attempts for a failed session.resume (desktop parity). */
         const val MAX_RESUME_RETRIES = 4
