@@ -765,8 +765,11 @@ fun ChatScreen(
                     )
                 }
 
-                // Loading overlay
-                ChatLoadingOverlay(isLoading = state.isLoading && state.resumeError == null)
+                // Loading overlay: only over an empty transcript. Cached history stays readable
+                // while a resume is confirmed (desktop parity: warm cache paints immediately).
+                ChatLoadingOverlay(
+                    isLoading = state.isLoading && state.resumeError == null && state.messages.isEmpty(),
+                )
 
                 // Resume-exhausted overlay — explicit error + Retry instead
                 // of an infinite spinner (desktop parity).
