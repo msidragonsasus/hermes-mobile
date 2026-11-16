@@ -100,6 +100,12 @@ fun HomeScreen() {
     val workState by worker.uiState.collectAsStateWithLifecycle()
     val workerToast = workState.toastMessageRes?.let { stringResource(it) }
     ToastEffect(toastMessage = workerToast, onClearToast = worker::clearToast)
+    // Routines and helpers come over the socket: a cold start polls before it is connected,
+    // so reload once the link comes up instead of waiting for the next minute's poll.
+    val linkState = connection.connection.state
+    LaunchedEffect(linkState) {
+        if (linkState == LinkState.CONNECTED) worker.refresh()
+    }
     var error by remember(scope) { mutableStateOf<String?>(null) }
     var loading by remember(scope) { mutableStateOf(false) }
     var refresh by remember(scope) { mutableStateOf(0) }
