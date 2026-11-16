@@ -66,6 +66,7 @@ enum class EscrowDecisionOutcome {
 
 object DefaultWorkGatewayClient : WorkGatewayClient {
     private const val WS_TIMEOUT_MS = 12_000L
+    private const val SESSION_NOT_OWNED = 4001
 
     override suspend fun fetchPendingEscrows(): Result<List<EscrowRecord>> =
         runCatching {
@@ -103,6 +104,13 @@ object DefaultWorkGatewayClient : WorkGatewayClient {
         runCatching {
             val raw = HermesWsClient.request(WsMethods.SUBAGENT_LIST, emptyMap(), WS_TIMEOUT_MS).await()
             WorkerWsParsers.parseSubagents(raw)
+        }.recoverCatching { error ->
+            // subagent.list is scoped to a live session this client owns; with none, nothing is visible.
+            if (error is HermesWsClient.HermesRpcException && error.code == SESSION_NOT_OWNED) {
+                emptyList()
+            } else {
+                throw error
+            }
         }
 
     override suspend fun interruptSubagent(subagentId: String): Result<Unit> =
