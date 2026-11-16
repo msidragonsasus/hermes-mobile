@@ -6975,6 +6975,93 @@ class ChatViewModelTest {
         }
 
     @Test
+    fun mainConversation_found_resumesBotChatTip() =
+        runTest {
+            val viewModel = createViewModel()
+            advanceUntilIdle()
+            viewModel.mainConversationResolver = { ChatViewModel.MainConversation.Found("bot-chat-tip") }
+
+            mockConnectionStatus.value = ConnectionStatus.CONNECTED
+            emitEvent(WsEvent.GatewayReady(null))
+            advanceUntilIdle()
+
+            assertEquals("bot-chat-tip", viewModel.uiState.value.currentSessionId)
+            verify {
+                HermesWsClient.send(
+                    WsMethods.SESSION_RESUME,
+                    mapOf("session_id" to "bot-chat-tip", "omit_messages" to true),
+                    any(),
+                )
+            }
+            verify(inverse = true) { HermesWsClient.send(WsMethods.SESSION_CREATE, any(), any()) }
+        }
+
+    @Test
+    fun mainConversation_absent_createsTitledBotChat() =
+        runTest {
+            val viewModel = createViewModel()
+            advanceUntilIdle()
+            viewModel.mainConversationResolver = { ChatViewModel.MainConversation.Absent }
+
+            mockConnectionStatus.value = ConnectionStatus.CONNECTED
+            emitEvent(WsEvent.GatewayReady(null))
+            advanceUntilIdle()
+
+            verify {
+                HermesWsClient.send(
+                    WsMethods.SESSION_CREATE,
+                    mapOf("source" to "desktop", "title" to ChatViewModel.BOT_CHAT_TITLE),
+                    any(),
+                )
+            }
+            assertEquals(ChatViewModel.BOT_CHAT_TITLE, viewModel.uiState.value.chatTitle)
+        }
+
+    @Test
+    fun mainConversation_unknown_keepsPlainNewSession() =
+        runTest {
+            val viewModel = createViewModel()
+            advanceUntilIdle()
+            viewModel.mainConversationResolver = { error("lookup failed") }
+
+            mockConnectionStatus.value = ConnectionStatus.CONNECTED
+            emitEvent(WsEvent.GatewayReady(null))
+            advanceUntilIdle()
+
+            verify { HermesWsClient.send(WsMethods.SESSION_CREATE, mapOf("source" to "desktop"), any()) }
+            assertEquals("Hermes", viewModel.uiState.value.chatTitle)
+        }
+
+    @Test
+    fun mainConversation_lateLookup_doesNotOverrideAnOpenedSession() =
+        runTest {
+            val viewModel = createViewModel()
+            advanceUntilIdle()
+            val gate = CompletableDeferred<Unit>()
+            viewModel.mainConversationResolver = {
+                gate.await()
+                ChatViewModel.MainConversation.Found("bot-chat-tip")
+            }
+
+            mockConnectionStatus.value = ConnectionStatus.CONNECTED
+            emitEvent(WsEvent.GatewayReady(null))
+            advanceUntilIdle()
+            viewModel.switchSession("picked-by-user")
+            advanceUntilIdle()
+            gate.complete(Unit)
+            advanceUntilIdle()
+
+            assertEquals("picked-by-user", viewModel.uiState.value.currentSessionId)
+            verify(inverse = true) {
+                HermesWsClient.send(
+                    WsMethods.SESSION_RESUME,
+                    mapOf("session_id" to "bot-chat-tip", "omit_messages" to true),
+                    any(),
+                )
+            }
+        }
+
+    @Test
     fun testGatewayReady_withInitialSessionId_switchesToIt() =
         runTest {
             val viewModel = createViewModel()

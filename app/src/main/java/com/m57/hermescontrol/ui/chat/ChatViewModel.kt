@@ -1332,7 +1332,63 @@ class ChatViewModel(
                 initialSessionId = null
                 switchSession(initial)
             } else {
-                createNewSession(setLoading = false)
+                openMainConversation()
+            }
+        }
+    }
+
+    /** Outcome of looking up the profile's forever "Bot Chat". */
+    internal sealed interface MainConversation {
+        data class Found(
+            val sessionId: String,
+        ) : MainConversation
+
+        /** The profile has no Bot Chat yet. */
+        data object Absent : MainConversation
+
+        /** Unknown (error, timeout, older server): never create a second Bot Chat on a guess. */
+        data object Unknown : MainConversation
+    }
+
+    /** Exact-title lookup resolved to the live compression tip. Unit tests keep the legacy start. */
+    internal var mainConversationResolver: suspend () -> MainConversation = {
+        if (isTestEnvironment()) {
+            MainConversation.Unknown
+        } else {
+            withTimeoutOrNull(MAIN_CONVERSATION_LOOKUP_MS) {
+                val result = sendRpcAndAwait(WsMethods.SESSION_LIST, mapOf("title" to BOT_CHAT_TITLE))
+                val sessions = (result.toJsonElement().toAny() as? Map<*, *>)?.get("sessions") as? List<*>
+                // An older server ignores `title` and lists everything: trust only the exact row.
+                val row = (sessions?.firstOrNull() as? Map<*, *>)?.takeIf { it["title"] == BOT_CHAT_TITLE }
+                val id = ((row?.get("resolved_id") ?: row?.get("id")) as? String)?.takeIf(String::isNotBlank)
+                when {
+                    id != null -> MainConversation.Found(id)
+                    sessions != null && sessions.isEmpty() -> MainConversation.Absent
+                    else -> MainConversation.Unknown
+                }
+            } ?: MainConversation.Unknown
+        }
+    }
+
+    /**
+     * A cold start with no explicit target continues the one main conversation instead of
+     * minting a new session each launch (AUTONOMOUS_WORKER.md §8). A missing Bot Chat is
+     * created under that title; an unknown lookup falls back to a plain new session.
+     */
+    private fun openMainConversation() {
+        val generation = sessionGeneration
+        viewModelScope.launch {
+            val target = runCatching { mainConversationResolver() }.getOrDefault(MainConversation.Unknown)
+            // The user (or a notification) may have opened something while we looked.
+            if (generation != sessionGeneration || _uiState.value.currentSessionId != null ||
+                NavigationController.pendingSessionId != null
+            ) {
+                return@launch
+            }
+            when (target) {
+                is MainConversation.Found -> switchSession(target.sessionId)
+                MainConversation.Absent -> createNewSession(setLoading = false, title = BOT_CHAT_TITLE)
+                MainConversation.Unknown -> createNewSession(setLoading = false)
             }
         }
     }
@@ -3851,7 +3907,7 @@ class ChatViewModel(
 
             is SlashResult.NewSession -> {
                 val currentTitle = _uiState.value.chatTitle
-                if (currentTitle.equals("Bot Chat", ignoreCase = true)) {
+                if (currentTitle.equals(BOT_CHAT_TITLE, ignoreCase = true)) {
                     // Bot Chat is a canonical forever-conversation — compact instead of creating an orphan
                     val sessionId = _uiState.value.currentSessionId
                     if (!sessionId.isNullOrBlank()) {
@@ -4420,17 +4476,18 @@ class ChatViewModel(
     fun createNewSession(
         setLoading: Boolean = true,
         queueOrigin: String? = null,
+        title: String? = null,
     ) {
         // A fresh create has no persisted row until the first prompt.
         sessionHasServerPresence = false
-        val generation = resetSessionState(sessionId = null, title = "Hermes", isLoading = setLoading)
+        val generation = resetSessionState(sessionId = null, title = title ?: "Hermes", isLoading = setLoading)
         pendingCreateQueueOrigin = generation to queueOrigin
         viewModelScope.launch(ioDispatcher) {
             // Composer choices belong to their session. A new conversation follows the bot's
             // server defaults, including defaults edited from another bot/group settings page.
             wsClient.send(
                 WsMethods.SESSION_CREATE,
-                params = mapOf("source" to "desktop"),
+                params = mapOf("source" to "desktop") + listOfNotNull(title?.let { "title" to it }),
                 onSent = { id -> trackSessionRequest(id, WsMethods.SESSION_CREATE, generation) },
             )
         }
@@ -6828,6 +6885,12 @@ class ChatViewModel(
 
         /** How long a session switch waits for the cached transcript before resuming anyway. */
         private const val CACHE_PAINT_BUDGET_MS = 1_500L
+
+        /** Exact title of the profile's forever conversation (Hermes core `BOT_CHAT_TITLE`). */
+        const val BOT_CHAT_TITLE = "Bot Chat"
+
+        /** Main-conversation lookup budget; past it the launch falls back to a new session. */
+        private const val MAIN_CONVERSATION_LOOKUP_MS = 5_000L
 
         /** Max auto-retry attempts for a failed session.resume (desktop parity). */
         const val MAX_RESUME_RETRIES = 4
