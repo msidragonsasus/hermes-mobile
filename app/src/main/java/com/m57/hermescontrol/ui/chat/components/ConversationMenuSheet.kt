@@ -48,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -98,6 +99,9 @@ fun ConversationMenuSheet(
     historyStatusUnverified: Boolean = false,
     groupKeys: Set<String> = emptySet(),
     drawerModifier: Modifier = Modifier,
+    title: String? = null,
+    primaryLabel: String? = null,
+    primaryIcon: ImageVector = Icons.Default.Add,
 ) {
     val spacing = LocalSpacing.current
     val untitled = stringResource(R.string.agent_history_untitled)
@@ -139,14 +143,14 @@ fun ConversationMenuSheet(
             ) {
                 Column(Modifier.fillMaxSize()) {
                     Text(
-                        stringResource(R.string.agent_history_drawer_title),
+                        title ?: stringResource(R.string.agent_history_drawer_title),
                         style = MaterialTheme.typography.titleLargeEmphasized,
                         modifier = Modifier.padding(horizontal = spacing.lg, vertical = spacing.md),
                     )
                     val transparent = ListItemDefaults.colors(containerColor = Color.Transparent)
                     ListItem(
-                        headlineContent = { Text(stringResource(R.string.content_desc_new_chat)) },
-                        leadingContent = { Icon(Icons.Default.Add, contentDescription = null) },
+                        headlineContent = { Text(primaryLabel ?: stringResource(R.string.content_desc_new_chat)) },
+                        leadingContent = { Icon(primaryIcon, contentDescription = null) },
                         colors = transparent,
                         modifier =
                             Modifier

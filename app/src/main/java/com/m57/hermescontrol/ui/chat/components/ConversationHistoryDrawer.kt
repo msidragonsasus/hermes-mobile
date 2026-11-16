@@ -1,5 +1,7 @@
 package com.m57.hermescontrol.ui.chat.components
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -41,7 +43,7 @@ fun ConversationHistoryDrawer(
     currentSessionId: String?,
     currentModel: String?,
     onHistory: () -> Unit,
-    onNewConversation: () -> Unit,
+    onMainConversation: () -> Unit,
     onModel: () -> Unit,
     onSelectSession: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -116,7 +118,7 @@ fun ConversationHistoryDrawer(
         currentModel = currentModel,
         visible = visible,
         onHistory = onHistory,
-        onNewConversation = onNewConversation,
+        onNewConversation = onMainConversation,
         onModel = onModel,
         onDismiss = onDismiss,
         historyState = merged,
@@ -141,5 +143,9 @@ fun ConversationHistoryDrawer(
         historyRechecking = status.rechecking,
         historyStatusUnverified = status.unverified,
         groupKeys = groups.result.entries.mapTo(mutableSetOf()) { it.key },
+        // One main conversation (AUTONOMOUS_WORKER.md §8): the drawer returns to it instead of minting chats.
+        title = stringResource(R.string.agent_past_conversations),
+        primaryLabel = stringResource(R.string.agent_main_conversation),
+        primaryIcon = Icons.AutoMirrored.Filled.Chat,
     )
 }

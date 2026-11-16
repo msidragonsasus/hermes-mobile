@@ -23,6 +23,7 @@ internal fun ConversationHeaderActions(
     settingsEnabled: Boolean = true,
     settingsTag: String = "chat_settings_button",
     newEnabled: Boolean = true,
+    showNew: Boolean = true,
 ) {
     Surface(
         shape = CircleShape,
@@ -30,8 +31,14 @@ internal fun ConversationHeaderActions(
         modifier = Modifier.padding(end = 8.dp),
     ) {
         Row {
-            IconButton(onClick = onNew, enabled = newEnabled, modifier = Modifier.testTag("conversation_new_button")) {
-                Icon(painterResource(R.drawable.edit_square_24), stringResource(R.string.content_desc_new_chat))
+            if (showNew) {
+                IconButton(
+                    onClick = onNew,
+                    enabled = newEnabled,
+                    modifier = Modifier.testTag("conversation_new_button"),
+                ) {
+                    Icon(painterResource(R.drawable.edit_square_24), stringResource(R.string.content_desc_new_chat))
+                }
             }
             IconButton(onClick = onSettings, enabled = settingsEnabled, modifier = Modifier.testTag(settingsTag)) {
                 Icon(painterResource(R.drawable.settings_24), stringResource(R.string.chat_settings_title))

@@ -538,9 +538,9 @@ fun ChatScreen(
                     showConversationMenu = false
                     NavigationController.navigateTo(HistoryScreen)
                 },
-                onNewConversation = {
+                onMainConversation = {
                     showConversationMenu = false
-                    viewModel.createNewSession()
+                    viewModel.showMainConversation()
                 },
                 onModel = {
                     showConversationMenu = false
@@ -567,6 +567,8 @@ fun ChatScreen(
             com.m57.hermescontrol.ui.chat.components.ConversationHeaderActions(
                 onNew = { viewModel.createNewSession() },
                 onSettings = { NavigationController.navigateTo(com.m57.hermescontrol.agents.ChatSettingsKey) },
+                // Topics change inside the one main conversation; past ones stay in the drawer.
+                showNew = false,
             )
         },
     ) { _ ->

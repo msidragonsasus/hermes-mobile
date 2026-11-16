@@ -7033,7 +7033,7 @@ class ChatViewModelTest {
         }
 
     @Test
-    fun mainConversation_unknownThenFound_retriesOnce() =
+    fun mainConversation_refusedThenFound_retriesOnce() =
         runTest {
             val viewModel = createViewModel()
             advanceUntilIdle()
@@ -7041,7 +7041,7 @@ class ChatViewModelTest {
             viewModel.mainConversationResolver = {
                 calls++
                 if (calls == 1) {
-                    ChatViewModel.MainConversation.Unknown
+                    error("refused before the socket settled")
                 } else {
                     ChatViewModel.MainConversation.Found("bot-chat-tip")
                 }
@@ -7053,6 +7053,37 @@ class ChatViewModelTest {
 
             assertEquals(2, calls)
             assertEquals("bot-chat-tip", viewModel.uiState.value.currentSessionId)
+            verify(inverse = true) { HermesWsClient.send(WsMethods.SESSION_CREATE, any(), any()) }
+        }
+
+    @Test
+    fun showMainConversation_fromPastConversation_switchesToBotChat() =
+        runTest {
+            val viewModel = createViewModel()
+            advanceUntilIdle()
+            viewModel.switchSession("past-session")
+            advanceUntilIdle()
+            viewModel.mainConversationResolver = { ChatViewModel.MainConversation.Found("bot-chat-tip") }
+
+            viewModel.showMainConversation()
+            advanceUntilIdle()
+
+            assertEquals("bot-chat-tip", viewModel.uiState.value.currentSessionId)
+        }
+
+    @Test
+    fun showMainConversation_unknown_keepsOpenConversation() =
+        runTest {
+            val viewModel = createViewModel()
+            advanceUntilIdle()
+            viewModel.switchSession("past-session")
+            advanceUntilIdle()
+            viewModel.mainConversationResolver = { ChatViewModel.MainConversation.Unknown }
+
+            viewModel.showMainConversation()
+            advanceUntilIdle()
+
+            assertEquals("past-session", viewModel.uiState.value.currentSessionId)
             verify(inverse = true) { HermesWsClient.send(WsMethods.SESSION_CREATE, any(), any()) }
         }
 

@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="agent_history_drawer_title">チャット履歴</string>
+    <string name="agent_past_conversations">過去の会話</string>
+    <string name="agent_main_conversation">メイン会話</string>
     <string name="agent_history_search">チャットを検索</string>
     <string name="agent_history_clear_search">検索をクリア</string>
     <string name="agent_history_error">チャット履歴を取得できませんでした</string>

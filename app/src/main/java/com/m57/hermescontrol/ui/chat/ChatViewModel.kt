@@ -1370,17 +1370,20 @@ class ChatViewModel(
         }
     }
 
+    /** Returns from a past conversation to the main one (the drawer's first entry). */
+    fun showMainConversation() = openMainConversation(userInitiated = true)
+
     /**
      * A cold start with no explicit target continues the one main conversation instead of
      * minting a new session each launch (AUTONOMOUS_WORKER.md §8). A missing Bot Chat is
      * created under that title; an unknown lookup falls back to a plain new session.
      */
-    private fun openMainConversation() {
+    private fun openMainConversation(userInitiated: Boolean = false) {
         val generation = sessionGeneration
         viewModelScope.launch {
             var lookup = runCatching { mainConversationResolver() }
             // A read right after the socket opens can be refused at once; ask once more.
-            if (lookup.getOrNull() !is MainConversation.Found && lookup.getOrNull() != MainConversation.Absent) {
+            if (lookup.isFailure) {
                 delay(MAIN_CONVERSATION_RETRY_MS)
                 lookup = runCatching { mainConversationResolver() }
             }
@@ -1390,15 +1393,22 @@ class ChatViewModel(
                 Log.d(TAG, "mainConversation ${target::class.simpleName} $failure")
             }
             // The user (or a notification) may have opened something while we looked.
-            if (generation != sessionGeneration || _uiState.value.currentSessionId != null ||
-                NavigationController.pendingSessionId != null
-            ) {
-                return@launch
-            }
+            val openedElsewhere =
+                _uiState.value.currentSessionId != null || NavigationController.pendingSessionId != null
+            if (generation != sessionGeneration || (!userInitiated && openedElsewhere)) return@launch
             when (target) {
-                is MainConversation.Found -> switchSession(target.sessionId)
-                MainConversation.Absent -> createNewSession(setLoading = false, title = BOT_CHAT_TITLE)
-                MainConversation.Unknown -> createNewSession(setLoading = false)
+                is MainConversation.Found -> {
+                    if (target.sessionId != _uiState.value.currentSessionId) switchSession(target.sessionId)
+                }
+
+                MainConversation.Absent -> {
+                    createNewSession(setLoading = false, title = BOT_CHAT_TITLE)
+                }
+
+                // From the drawer an unknown lookup keeps the open conversation; it never mints one.
+                MainConversation.Unknown -> {
+                    if (!userInitiated) createNewSession(setLoading = false)
+                }
             }
         }
     }

@@ -62,12 +62,9 @@ import com.m57.hermescontrol.ui.common.ToastEffect
 import com.m57.hermescontrol.ui.common.sharedAppUpdateViewModel
 import com.m57.hermescontrol.worker.EscrowDecision
 import com.m57.hermescontrol.worker.EscrowRecord
-import com.m57.hermescontrol.worker.InboxItem
 import com.m57.hermescontrol.worker.ScheduledWorkRow
 import com.m57.hermescontrol.worker.WorkViewModel
 import com.m57.hermescontrol.worker.WorkerApprovalObject
-import com.m57.hermescontrol.worker.WorkerInboxFormatters
-import com.m57.hermescontrol.worker.WorkerInboxRepository
 import com.m57.hermescontrol.worker.WorkerScheduledJob
 import com.m57.hermescontrol.worker.upcomingOrder
 import kotlinx.coroutines.CancellationException
@@ -110,7 +107,6 @@ fun HomeScreen() {
     var loading by remember(scope) { mutableStateOf(false) }
     var refresh by remember(scope) { mutableStateOf(0) }
     var careerEnabled by remember(scope) { mutableStateOf(false) }
-    var workerResults by remember(scope) { mutableStateOf(WorkerInboxRepository.cachedTodayResults(scope)) }
     var now by remember(scope) { mutableStateOf(Instant.now()) }
     val careerVisible = providers.firstOrNull { it.scope == scope && it.provider == "career" }?.enabled != false
     val chatVisible = providers.firstOrNull { it.scope == scope && it.provider == "chat" }?.enabled != false
@@ -120,9 +116,6 @@ fun HomeScreen() {
                 now = Instant.now()
                 worker.refresh()
                 try {
-                    val refreshedWorker = WorkerInboxRepository.refreshTodayResults(scope)
-                    if (scope != AuthManager.uiPreferenceScope()) return@repeatOnLifecycle
-                    workerResults = refreshedWorker
                     careerEnabled = CareerLocalStore(app, careerScope()).enabled()
                     if (careerEnabled && careerVisible) {
                         loading = true
@@ -240,17 +233,6 @@ fun HomeScreen() {
             onOpenWork = { NavigationController.navigateTo(com.m57.hermescontrol.WorkScreen) },
             today = today,
             threadTitles = threadTitles,
-            workerResults = workerResults,
-            onAckWorkerResult = { item ->
-                if (item.acked_at.isNullOrBlank()) {
-                    coroutine.launch {
-                        val updated = WorkerInboxRepository.ackItem(scope, item.id)
-                        if (scope == AuthManager.uiPreferenceScope()) {
-                            workerResults = updated
-                        }
-                    }
-                }
-            },
         )
     }
 }
@@ -281,15 +263,12 @@ internal fun HomeFeedContent(
     onOpenWork: () -> Unit = {},
     today: TodayPlanState? = null,
     threadTitles: Map<String, String> = emptyMap(),
-    workerResults: List<InboxItem> = emptyList(),
-    onAckWorkerResult: (InboxItem) -> Unit = {},
 ) {
     var settings by rememberSaveable(scope) { mutableStateOf(false) }
     var showCoverage by rememberSaveable(scope) { mutableStateOf(false) }
     var expandActions by rememberSaveable(scope) { mutableStateOf(false) }
     var expandResults by rememberSaveable(scope) { mutableStateOf(false) }
     var openGroups by rememberSaveable(scope) { mutableStateOf(emptyList<String>()) }
-    var expandedWorkerIds by rememberSaveable(scope) { mutableStateOf(emptyList<String>()) }
     val spacing = LocalSpacing.current
     LazyColumn(
         modifier = Modifier.testTag("home_list"),
@@ -372,30 +351,14 @@ internal fun HomeFeedContent(
                 }
             }
         }
-        if (results.isNotEmpty() || workerResults.isNotEmpty()) {
+        // Background work reports in the main conversation (AUTONOMOUS_WORKER.md §8.3), not here.
+        if (results.isNotEmpty()) {
             item { OverviewHeading("届いた結果") }
-            val visibleWorker = if (expandResults) workerResults else workerResults.take(5)
-            items(visibleWorker, key = { "worker_result:${it.id}" }) { inboxItem ->
-                val isExpanded = inboxItem.id in expandedWorkerIds
-                WorkerTodayResultRow(
-                    item = inboxItem,
-                    expanded = isExpanded,
-                    onToggle = {
-                        expandedWorkerIds =
-                            if (isExpanded) {
-                                expandedWorkerIds - inboxItem.id
-                            } else {
-                                onAckWorkerResult(inboxItem)
-                                expandedWorkerIds + inboxItem.id
-                            }
-                    },
-                )
-            }
-            val remainingSlots = if (expandResults) results.size else (5 - visibleWorker.size).coerceAtLeast(0)
-            items(results.take(remainingSlots), key = {
+            val visibleCount = if (expandResults) results.size else 5
+            items(results.take(visibleCount), key = {
                 "result:${it.provider}:${it.id}"
             }) { HomeEntry(it) { onOpen(it) } }
-            val totalResults = workerResults.size + results.size
+            val totalResults = results.size
             if (!expandResults && totalResults > 5) {
                 item {
                     TextButton(
@@ -426,7 +389,6 @@ internal fun HomeFeedContent(
         }
         if (!loading &&
             results.isEmpty() &&
-            workerResults.isEmpty() &&
             actions.isEmpty() &&
             pending.isEmpty() &&
             approvals.isEmpty()
@@ -526,76 +488,5 @@ private fun openHomeItem(
         item.target.session_id?.let(NavigationController::openChatResult)
     } else {
         NavigationController.navigateTo(HomeDetailKey(scope, item))
-    }
-}
-
-@Composable
-private fun WorkerTodayResultRow(
-    item: InboxItem,
-    expanded: Boolean,
-    onToggle: () -> Unit,
-) {
-    val spacing = LocalSpacing.current
-    val preview = WorkerInboxFormatters.notificationPreview(item.body)
-    val metaParts =
-        buildList {
-            if (item.isMemoryDiff) {
-                add(stringResource(R.string.worker_today_memory_diff_badge))
-            }
-            if (item.created_at.isNotBlank()) {
-                add(homeOverviewTime(item.created_at))
-            }
-        }
-    OverviewRow(
-        icon = if (item.isMemoryDiff) Icons.Outlined.EditNote else Icons.Outlined.Description,
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
-        compact = true,
-    ) {
-        Text(item.title, style = MaterialTheme.typography.titleMedium)
-        if (metaParts.isNotEmpty()) {
-            Text(
-                text = metaParts.joinToString(" · "),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier =
-                    if (item.created_at.isNotBlank()) {
-                        Modifier.semantics { contentDescription = homeTime(item.created_at) }
-                    } else {
-                        Modifier
-                    },
-            )
-        }
-        if (!expanded && preview.isNotBlank()) {
-            Text(
-                text = preview,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        if (expanded && item.body.isNotBlank()) {
-            val isUnifiedDiff =
-                item.isMemoryDiff &&
-                    (
-                        item.body.contains("\n+") ||
-                            item.body.contains("\n-") ||
-                            item.body.contains("@@") ||
-                            item.body.startsWith("---")
-                    )
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(top = spacing.xs),
-                verticalArrangement = Arrangement.spacedBy(spacing.xs),
-            ) {
-                if (isUnifiedDiff) {
-                    DiffViewCard(diffText = item.body)
-                } else {
-                    MarkdownText(
-                        text = item.body,
-                        textColor = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-            }
-        }
     }
 }
