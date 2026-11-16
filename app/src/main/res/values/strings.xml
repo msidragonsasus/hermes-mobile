@@ -1412,9 +1412,11 @@
     <string name="worker_live_status_running">Running</string>
     <string name="worker_action_stop">Stop</string>
     <string name="worker_live_default_title">Active task</string>
-    <string name="worker_schedule_status_active">Active</string>
     <string name="worker_schedule_status_paused">Paused</string>
     <string name="worker_action_pause">Pause</string>
     <string name="worker_action_resume">Resume</string>
     <string name="worker_today_memory_diff_badge">Memory update</string>
+    <string name="worker_time_tomorrow">Tomorrow %1$s</string>
+    <string name="worker_schedule_next_label">Next %1$s</string>
+    <string name="worker_approval_source_label">From %1$s</string>
 </resources>

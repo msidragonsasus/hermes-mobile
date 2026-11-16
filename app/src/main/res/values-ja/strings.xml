@@ -1246,9 +1246,11 @@
     <string name="worker_live_status_running">実行中</string>
     <string name="worker_action_stop">停止</string>
     <string name="worker_live_default_title">手伝い中の作業</string>
-    <string name="worker_schedule_status_active">有効</string>
-    <string name="worker_schedule_status_paused">一時停止</string>
+    <string name="worker_schedule_status_paused">一時停止中</string>
     <string name="worker_action_pause">一時停止</string>
     <string name="worker_action_resume">再開</string>
     <string name="worker_today_memory_diff_badge">記憶の更新</string>
+    <string name="worker_time_tomorrow">明日 %1$s</string>
+    <string name="worker_schedule_next_label">次 %1$s</string>
+    <string name="worker_approval_source_label">定期「%1$s」から</string>
 </resources>

@@ -207,6 +207,13 @@ existing code. A Material import or a rounded rectangle does not prove complianc
   colored or rainbow gradients, card backgrounds and large enclosing UI. This
   loading shimmer on glyphs is the only gradient allowed in chat; surfaces stay flat.
 
+- 2026-11-16: the autonomous worker follows a Muse-like "楽" model: Home is the
+  hub. Worker approvals are decided in place at the top of 「対応が必要」
+  (`WorkerApprovalObject`, shared with Work), and 「このあと」 lists the next
+  routines. Worker rows put time in one muted, tabular trailing column
+  (`WorkerTimeLabel`: `04:30`, `明日 04:30`). Routine actions (pause, resume,
+  delete) live in the row's menu, not as per-row colored icons and badges.
+
 When the user rejects a design, record it here in the same change.
 
 ### Inputs

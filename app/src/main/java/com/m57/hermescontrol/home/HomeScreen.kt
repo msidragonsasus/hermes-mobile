@@ -39,6 +39,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.m57.hermescontrol.HermesControlApp
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
@@ -57,10 +58,18 @@ import com.m57.hermescontrol.ui.chat.components.DiffViewCard
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.OverviewHeading
 import com.m57.hermescontrol.ui.common.OverviewRow
+import com.m57.hermescontrol.ui.common.ToastEffect
 import com.m57.hermescontrol.ui.common.sharedAppUpdateViewModel
+import com.m57.hermescontrol.worker.EscrowDecision
+import com.m57.hermescontrol.worker.EscrowRecord
 import com.m57.hermescontrol.worker.InboxItem
+import com.m57.hermescontrol.worker.ScheduledWorkRow
+import com.m57.hermescontrol.worker.WorkViewModel
+import com.m57.hermescontrol.worker.WorkerApprovalObject
 import com.m57.hermescontrol.worker.WorkerInboxFormatters
 import com.m57.hermescontrol.worker.WorkerInboxRepository
+import com.m57.hermescontrol.worker.WorkerScheduledJob
+import com.m57.hermescontrol.worker.upcomingOrder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -86,6 +95,11 @@ fun HomeScreen() {
     val updateCandidate by updater.homeUpdateCandidate.collectAsStateWithLifecycle()
     val coroutine = rememberCoroutineScope()
     val lifecycle = LocalLifecycleOwner.current
+    // Same activity-scoped instance as the Work screen, so a decision made here is gone there too.
+    val worker: WorkViewModel = viewModel { WorkViewModel() }
+    val workState by worker.uiState.collectAsStateWithLifecycle()
+    val workerToast = workState.toastMessageRes?.let { stringResource(it) }
+    ToastEffect(toastMessage = workerToast, onClearToast = worker::clearToast)
     var error by remember(scope) { mutableStateOf<String?>(null) }
     var loading by remember(scope) { mutableStateOf(false) }
     var refresh by remember(scope) { mutableStateOf(0) }
@@ -98,6 +112,7 @@ fun HomeScreen() {
         lifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             do {
                 now = Instant.now()
+                worker.refresh()
                 try {
                     val refreshedWorker = WorkerInboxRepository.refreshTodayResults(scope)
                     if (scope != AuthManager.uiPreferenceScope()) return@repeatOnLifecycle
@@ -212,6 +227,11 @@ fun HomeScreen() {
             onOpen = { openHomeItem(it, scope) },
             onAttention = { NavigationController.navigateTo(AttentionDetailKey(it.ref)) },
             onConnectionSettings = { NavigationController.navigateTo(com.m57.hermescontrol.SettingsConnection) },
+            approvals = workState.escrows,
+            busyApprovalIds = workState.busyEscrowIds,
+            onDecide = worker::decideEscrow,
+            upcoming = upcomingOrder(workState.scheduledJobs).filter { it.enabled && !it.nextRunAt.isNullOrBlank() },
+            onOpenWork = { NavigationController.navigateTo(com.m57.hermescontrol.WorkScreen) },
             today = today,
             threadTitles = threadTitles,
             workerResults = workerResults,
@@ -248,6 +268,11 @@ internal fun HomeFeedContent(
     onOpen: (HomeItem) -> Unit,
     onAttention: (AttentionItem) -> Unit,
     onConnectionSettings: () -> Unit,
+    approvals: List<EscrowRecord> = emptyList(),
+    busyApprovalIds: Set<String> = emptySet(),
+    onDecide: (EscrowRecord, EscrowDecision) -> Unit = { _, _ -> },
+    upcoming: List<WorkerScheduledJob> = emptyList(),
+    onOpenWork: () -> Unit = {},
     today: TodayPlanState? = null,
     threadTitles: Map<String, String> = emptyMap(),
     workerResults: List<InboxItem> = emptyList(),
@@ -290,8 +315,17 @@ internal fun HomeFeedContent(
                 Text("取得・通知設定は変更しません。承認・回答待ちは表示を続けます。")
             }
         }
-        if (pending.isNotEmpty() || actions.isNotEmpty()) {
-            item { OverviewHeading("対応が必要", "あなたの判断・対応が必要な項目です。") }
+        if (approvals.isNotEmpty() || pending.isNotEmpty() || actions.isNotEmpty()) {
+            item { OverviewHeading("対応が必要") }
+            // Worker approvals are decided in place: the card already shows everything the decision binds to.
+            items(approvals, key = { "escrow:${it.id}" }) { record ->
+                WorkerApprovalObject(
+                    record = record,
+                    busy = record.id in busyApprovalIds,
+                    onApprove = { onDecide(record, EscrowDecision.APPROVE) },
+                    onDeny = { onDecide(record, EscrowDecision.DENY) },
+                )
+            }
             items(if (expandActions) pending else pending.take(5)) {
                 HomeAttentionEntry(it, ready = linkState == LinkState.CONNECTED) { onAttention(it) }
             }
@@ -333,7 +367,7 @@ internal fun HomeFeedContent(
             }
         }
         if (results.isNotEmpty() || workerResults.isNotEmpty()) {
-            item { OverviewHeading("届いた結果", "取得・作成した最新の結果です。") }
+            item { OverviewHeading("届いた結果") }
             val visibleWorker = if (expandResults) workerResults else workerResults.take(5)
             items(visibleWorker, key = { "worker_result:${it.id}" }) { inboxItem ->
                 val isExpanded = inboxItem.id in expandedWorkerIds
@@ -365,7 +399,32 @@ internal fun HomeFeedContent(
                 }
             }
         }
-        if (!loading && results.isEmpty() && workerResults.isEmpty() && actions.isEmpty() && pending.isEmpty()) {
+        if (upcoming.isNotEmpty()) {
+            item { OverviewHeading("このあと") }
+            items(upcoming.take(3), key = { "upcoming:${it.id}:${it.name}" }) { job ->
+                ScheduledWorkRow(
+                    job = job,
+                    japanese = true,
+                    busy = false,
+                    onTogglePause = null,
+                    onRequestDelete = null,
+                    onClick = onOpenWork,
+                )
+            }
+            item {
+                TextButton(
+                    onClick = onOpenWork,
+                    shapes = ButtonDefaults.shapes(),
+                ) { Text("すべての作業") }
+            }
+        }
+        if (!loading &&
+            results.isEmpty() &&
+            workerResults.isEmpty() &&
+            actions.isEmpty() &&
+            pending.isEmpty() &&
+            approvals.isEmpty()
+        ) {
             item {
                 Text(
                     if (error != null ||
