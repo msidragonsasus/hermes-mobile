@@ -1378,7 +1378,17 @@ class ChatViewModel(
     private fun openMainConversation() {
         val generation = sessionGeneration
         viewModelScope.launch {
-            val target = runCatching { mainConversationResolver() }.getOrDefault(MainConversation.Unknown)
+            var lookup = runCatching { mainConversationResolver() }
+            // A read right after the socket opens can be refused at once; ask once more.
+            if (lookup.getOrNull() !is MainConversation.Found && lookup.getOrNull() != MainConversation.Absent) {
+                delay(MAIN_CONVERSATION_RETRY_MS)
+                lookup = runCatching { mainConversationResolver() }
+            }
+            val target = lookup.getOrDefault(MainConversation.Unknown)
+            if (BuildConfig.DEBUG) {
+                val failure = lookup.exceptionOrNull()?.javaClass?.simpleName
+                Log.d(TAG, "mainConversation ${target::class.simpleName} $failure")
+            }
             // The user (or a notification) may have opened something while we looked.
             if (generation != sessionGeneration || _uiState.value.currentSessionId != null ||
                 NavigationController.pendingSessionId != null
@@ -6891,6 +6901,9 @@ class ChatViewModel(
 
         /** Main-conversation lookup budget; past it the launch falls back to a new session. */
         private const val MAIN_CONVERSATION_LOOKUP_MS = 5_000L
+
+        /** Pause before the single retry of an unknown main-conversation lookup. */
+        private const val MAIN_CONVERSATION_RETRY_MS = 1_000L
 
         /** Max auto-retry attempts for a failed session.resume (desktop parity). */
         const val MAX_RESUME_RETRIES = 4

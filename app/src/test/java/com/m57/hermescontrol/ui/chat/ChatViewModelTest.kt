@@ -7033,6 +7033,30 @@ class ChatViewModelTest {
         }
 
     @Test
+    fun mainConversation_unknownThenFound_retriesOnce() =
+        runTest {
+            val viewModel = createViewModel()
+            advanceUntilIdle()
+            var calls = 0
+            viewModel.mainConversationResolver = {
+                calls++
+                if (calls == 1) {
+                    ChatViewModel.MainConversation.Unknown
+                } else {
+                    ChatViewModel.MainConversation.Found("bot-chat-tip")
+                }
+            }
+
+            mockConnectionStatus.value = ConnectionStatus.CONNECTED
+            emitEvent(WsEvent.GatewayReady(null))
+            advanceUntilIdle()
+
+            assertEquals(2, calls)
+            assertEquals("bot-chat-tip", viewModel.uiState.value.currentSessionId)
+            verify(inverse = true) { HermesWsClient.send(WsMethods.SESSION_CREATE, any(), any()) }
+        }
+
+    @Test
     fun mainConversation_lateLookup_doesNotOverrideAnOpenedSession() =
         runTest {
             val viewModel = createViewModel()
