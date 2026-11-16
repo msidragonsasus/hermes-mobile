@@ -3,6 +3,8 @@ package com.m57.hermescontrol.ui.chat
 import android.content.res.Configuration
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
@@ -15,6 +17,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.theme.HermesControlTheme
 import com.m57.hermescontrol.theme.ThemePreference
@@ -45,7 +48,7 @@ class PromptDisclosureUiTest {
                     val holder = rememberSaveableStateHolder()
                     if (visible.value) {
                         holder.SaveableStateProvider("prompt") {
-                            Box(Modifier.width(300.dp)) {
+                            Box(Modifier.width(300.dp).verticalScroll(rememberScrollState())) {
                                 ChatBubble(
                                     message = message.value,
                                     searchQuery = if (searching.value) "設問 40" else "",
@@ -63,24 +66,26 @@ class PromptDisclosureUiTest {
     @Test
     fun longPromptStartsCollapsedAndCanExpandThenCollapse() {
         render()
+        debugSnapshot("prompt")
         compose.onNodeWithText("もっと表示").assertIsDisplayed()
         compose.onNodeWithTag("prompt_disclosure_fade").assertExists()
         val initialBounds = compose.onNodeWithTag("prompt_body").getUnclippedBoundsInRoot()
         val initial = initialBounds.bottom - initialBounds.top
-        compose.onNodeWithTag("prompt_disclosure_toggle").performClick()
+        compose.onNodeWithTag("prompt_disclosure_toggle").performScrollTo().performClick()
         compose.onNodeWithText("折りたたむ").assertExists()
         compose.onNodeWithTag("prompt_disclosure_fade").assertDoesNotExist()
         val expandedBounds = compose.onNodeWithTag("prompt_body").getUnclippedBoundsInRoot()
         val expanded = expandedBounds.bottom - expandedBounds.top
         assertTrue(expanded > initial)
-        compose.onNodeWithTag("prompt_disclosure_toggle").performClick()
+        compose.onNodeWithTag("prompt_disclosure_toggle").performScrollTo().performClick()
+        debugSnapshot("prompt")
         compose.onNodeWithText("もっと表示").assertIsDisplayed()
     }
 
     @Test
     fun disposingAndRestoringUnchangedPromptPreservesExpansion() {
         render()
-        compose.onNodeWithTag("prompt_disclosure_toggle").performClick()
+        compose.onNodeWithTag("prompt_disclosure_toggle").performScrollTo().performClick()
         compose.runOnIdle { visible.value = false }
         compose.onNodeWithTag("prompt_disclosure_toggle").assertDoesNotExist()
         compose.runOnIdle { visible.value = true }
@@ -90,11 +95,12 @@ class PromptDisclosureUiTest {
     @Test
     fun editedWhileDisposedPromptRejectsRestoredExpansion() {
         render()
-        compose.onNodeWithTag("prompt_disclosure_toggle").performClick()
+        compose.onNodeWithTag("prompt_disclosure_toggle").performScrollTo().performClick()
         compose.runOnIdle { visible.value = false }
         compose.onNodeWithTag("prompt_disclosure_toggle").assertDoesNotExist()
         compose.runOnIdle { message.value = message.value.copy(content = longText + "\n変更") }
         compose.runOnIdle { visible.value = true }
+        debugSnapshot("prompt")
         compose.onNodeWithText("もっと表示").assertIsDisplayed()
     }
 
@@ -113,22 +119,25 @@ class PromptDisclosureUiTest {
         compose.onNodeWithTag("prompt_disclosure_toggle").assertDoesNotExist()
         compose.onNodeWithTag("prompt_disclosure_fade").assertDoesNotExist()
         compose.runOnIdle { searching.value = false }
+        debugSnapshot("prompt")
         compose.onNodeWithText("もっと表示").assertIsDisplayed()
     }
 
     @Test
     fun changingMessageIdentityResetsExpandedPreference() {
         render()
-        compose.onNodeWithTag("prompt_disclosure_toggle").performClick()
+        compose.onNodeWithTag("prompt_disclosure_toggle").performScrollTo().performClick()
         compose.runOnIdle { message.value = message.value.copy(id = "different") }
+        debugSnapshot("prompt")
         compose.onNodeWithText("もっと表示").assertIsDisplayed()
     }
 
     @Test
     fun editedContentResetsExpandedPreference() {
         render()
-        compose.onNodeWithTag("prompt_disclosure_toggle").performClick()
+        compose.onNodeWithTag("prompt_disclosure_toggle").performScrollTo().performClick()
         compose.runOnIdle { message.value = message.value.copy(content = longText + "\n修正") }
+        debugSnapshot("prompt")
         compose.onNodeWithText("もっと表示").assertIsDisplayed()
     }
 
@@ -144,6 +153,18 @@ class PromptDisclosureUiTest {
     fun wrappedJapaneseWithoutNewlinesAlsoCollapsesInDarkTheme() {
         message.value = message.value.copy(content = "長い日本語の質問".repeat(600))
         render(dark = true)
+        debugSnapshot("prompt")
         compose.onNodeWithText("もっと表示").assertIsDisplayed()
+    }
+
+    private fun debugSnapshot(name: String) {
+        compose.waitForIdle()
+        val inst =
+            androidx.test.platform.app.InstrumentationRegistry
+                .getInstrumentation()
+        val dir = java.io.File(inst.targetContext.getExternalFilesDir(null), "port-debug").apply { mkdirs() }
+        java.io.File(dir, "$name.png").outputStream().use {
+            inst.uiAutomation.takeScreenshot().compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+        }
     }
 }

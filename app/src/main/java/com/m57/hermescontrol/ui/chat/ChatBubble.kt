@@ -1,6 +1,5 @@
 package com.m57.hermescontrol.ui.chat
 
-import android.content.ClipData
 import android.text.format.DateFormat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
@@ -12,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
@@ -26,8 +26,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material3.Card
@@ -40,20 +38,15 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.ClipEntry
-import androidx.compose.ui.platform.LocalClipboard
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
@@ -74,9 +67,8 @@ import com.m57.hermescontrol.theme.HermesStatusColors
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.theme.onColorFor
 import com.m57.hermescontrol.ui.chat.components.CollapsiblePromptBody
+import com.m57.hermescontrol.ui.chat.components.MessageActionHost
 import com.m57.hermescontrol.util.BidiUtils
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -100,151 +92,103 @@ fun ChatBubble(
     modifier: Modifier = Modifier,
     showTimestamp: Boolean = true,
 ) {
-    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
-    val maxBubbleWidth = screenWidth * 0.80f
-
     AnimatedVisibility(
         visible = true,
-        enter =
-            fadeIn() +
-                expandVertically(
-                    animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                ),
+        enter = fadeIn() + expandVertically(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)),
     ) {
-        val clipboard = LocalClipboard.current
-        val scope = rememberCoroutineScope()
-        var copied by remember { mutableStateOf(false) }
-
-        // Copy feedback: briefly show ✓ then revert
-        LaunchedEffect(copied) {
-            if (copied) {
-                delay(1500)
-                copied = false
-            }
-        }
-
         val statusColors = LocalHermesStatusColors.current
-
         val highlightedText =
             remember(message.content, searchQuery, isCurrentMatch, statusColors) {
                 if (searchQuery.isNotBlank()) {
-                    buildHighlightedString(
-                        message.content,
-                        searchQuery,
-                        isCurrentMatch,
-                        statusColors,
-                    )
+                    buildHighlightedString(message.content, searchQuery, isCurrentMatch, statusColors)
                 } else {
                     AnnotatedString(message.content)
                 }
             }
-        Box(
-            modifier =
-                modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 2.dp),
+        val attachments = message.attachments.orEmpty()
+        val hasImages = attachments.any { it.isImage }
+        val isRtl = remember(message.content) { BidiUtils.isRtlText(message.content) }
+        val direction = if (isRtl) LayoutDirection.Rtl else LocalLayoutDirection.current
+        BoxWithConstraints(
+            modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
             contentAlignment = Alignment.CenterEnd,
         ) {
-            // Tonal grey, not primary: blue is kept for the one action (send), so a long
-            // conversation does not turn into a wall of accent color.
-            val bubbleColor = MaterialTheme.colorScheme.secondaryContainer
-            val userBubbleTextColor = MaterialTheme.colorScheme.onSecondaryContainer
-            Box {
-                Surface(
-                    modifier =
-                        Modifier
-                            .widthIn(max = maxBubbleWidth)
-                            .clip(
-                                RoundedCornerShape(
-                                    topStart = 22.dp,
-                                    topEnd = 22.dp,
-                                    bottomStart = 22.dp,
-                                    bottomEnd = 6.dp,
-                                ),
-                            ).background(color = bubbleColor)
-                            .testTag("chat_bubble_user"),
-                    color = Color.Transparent,
-                    tonalElevation = 0.dp,
-                ) {
-                    val isRtl = remember(message.content) { BidiUtils.isRtlText(message.content) }
-                    val bubbleDirection = if (isRtl) LayoutDirection.Rtl else LocalLayoutDirection.current
-                    CompositionLocalProvider(LocalLayoutDirection provides bubbleDirection) {
-                        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
-                            // Long USER prompts fold here; attachments, copy and time stay outside.
-                            CollapsiblePromptBody(
-                                text = highlightedText,
-                                messageId = message.id,
-                                content = message.content,
-                                role = message.role,
-                                color = userBubbleTextColor,
-                                surfaceColor = bubbleColor,
-                                currentSearchMatch = searchQuery.isNotBlank() && isCurrentMatch,
-                                style =
-                                    MaterialTheme.typography.bodyLarge.copy(
-                                        textDirection =
-                                            if (isRtl) {
-                                                TextDirection.Rtl
-                                            } else {
-                                                TextDirection.Ltr
-                                            },
-                                    ),
-                            )
-                            // Render inline attachments
-                            if (!message.attachments.isNullOrEmpty()) {
-                                Spacer(modifier = Modifier.height(6.dp))
-                                message.attachments.forEach { attachment ->
+            val maxBubbleWidth = maxWidth * 0.80f
+            MessageActionHost(message = message) {
+                CompositionLocalProvider(LocalLayoutDirection provides direction) {
+                    Column(
+                        Modifier.widthIn(max = maxBubbleWidth).testTag("chat_bubble_user"),
+                        horizontalAlignment = Alignment.End,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        // One renderer preserves attachment order and the existing open/save contract.
+                        val renderAttachments: @Composable (Color) -> Unit = { color ->
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                horizontalAlignment = Alignment.End,
+                            ) {
+                                attachments.forEach { attachment ->
                                     InlineAttachment(
                                         attachment = attachment,
-                                        textColor = userBubbleTextColor,
-                                        onOpen = { onOpenAttachment(it) },
-                                        onSave = { onSaveAttachment(it) },
+                                        textColor = color,
+                                        onOpen = onOpenAttachment,
+                                        onSave = onSaveAttachment,
                                         savingPath = savingAttachmentPath,
                                         openingPath = openingAttachmentPath,
                                         canSave = canSaveAttachment,
                                         onImageClick = onImageClick,
                                     )
-                                    Spacer(modifier = Modifier.height(4.dp))
                                 }
                             }
-                            if (!message.isStreaming) {
-                                Row(
-                                    modifier =
-                                        Modifier
-                                            .align(Alignment.End)
-                                            .padding(top = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    IconButton(
-                                        onClick = {
-                                            scope.launch {
-                                                clipboard.setClipEntry(
-                                                    ClipEntry(ClipData.newPlainText(null, message.content)),
-                                                )
-                                            }
-                                            copied = true
-                                        },
-                                        modifier = Modifier.size(20.dp),
-                                    ) {
-                                        Icon(
-                                            imageVector = if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
-                                            contentDescription = stringResource(R.string.content_desc_copy),
-                                            modifier = Modifier.size(12.dp),
-                                            tint = userBubbleTextColor.copy(alpha = 0.7f),
+                        }
+                        if (message.content.isNotBlank() || (!hasImages && attachments.isNotEmpty())) {
+                            Surface(
+                                shape =
+                                    RoundedCornerShape(
+                                        topStart = 22.dp,
+                                        topEnd = 22.dp,
+                                        bottomStart = 22.dp,
+                                        bottomEnd = 6.dp,
+                                    ),
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                modifier = Modifier.testTag("chat_user_text_surface"),
+                            ) {
+                                Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                                    if (message.content.isNotBlank()) {
+                                        CollapsiblePromptBody(
+                                            text = highlightedText,
+                                            messageId = message.id,
+                                            content = message.content,
+                                            role = message.role,
+                                            surfaceColor = MaterialTheme.colorScheme.secondaryContainer,
+                                            currentSearchMatch = searchQuery.isNotBlank() && isCurrentMatch,
+                                            selectionEnabled = false,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            style =
+                                                MaterialTheme.typography.bodyLarge.copy(
+                                                    textDirection = if (isRtl) TextDirection.Rtl else TextDirection.Ltr,
+                                                ),
                                         )
                                     }
-                                    if (showTimestamp) {
-                                        Spacer(modifier = Modifier.width(2.dp))
-                                        Text(
-                                            text =
-                                                formatTimestamp(
-                                                    message.timestamp,
-                                                    DateFormat.is24HourFormat(LocalContext.current),
-                                                ),
-                                            color = userBubbleTextColor.copy(alpha = 0.6f),
-                                            style = MaterialTheme.typography.labelSmall,
+                                    if (!hasImages && attachments.isNotEmpty()) {
+                                        if (message.content.isNotBlank()) Spacer(Modifier.height(6.dp))
+                                        renderAttachments(MaterialTheme.colorScheme.onSecondaryContainer)
+                                    }
+                                    if (!hasImages && !message.isStreaming && showTimestamp) {
+                                        UserMessageTimestamp(
+                                            message,
+                                            MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f),
+                                            Modifier.align(Alignment.End).padding(top = 4.dp),
                                         )
                                     }
                                 }
+                            }
+                        }
+                        if (hasImages) {
+                            // Media sits directly on the page, with no tinted bubble or empty text row.
+                            renderAttachments(MaterialTheme.colorScheme.onSurface)
+                            if (!message.isStreaming && showTimestamp) {
+                                UserMessageTimestamp(message, MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
@@ -252,6 +196,20 @@ fun ChatBubble(
             }
         }
     }
+}
+
+@Composable
+private fun UserMessageTimestamp(
+    message: ChatMessage,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        formatTimestamp(message.timestamp, DateFormat.is24HourFormat(LocalContext.current)),
+        modifier = modifier,
+        color = color,
+        style = MaterialTheme.typography.labelSmall,
+    )
 }
 
 @Composable

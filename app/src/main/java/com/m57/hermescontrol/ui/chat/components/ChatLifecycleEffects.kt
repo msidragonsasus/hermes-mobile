@@ -17,6 +17,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.m57.hermescontrol.NavigationController
+import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.ws.ConnectionStatus
 import com.m57.hermescontrol.ui.chat.ChatMessage
 import com.m57.hermescontrol.ui.chat.ChatViewModel
@@ -47,14 +48,18 @@ fun ChatLifecycleEffects(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // Switch to session from notification/history
+    // Switch to session from notification/history (profile-scoped so cross-profile hops never mix)
     val pendingNavigation = NavigationController.pendingChatNavigation
-    LaunchedEffect(sessionId, pendingNavigation, connectionStatus) {
+    val pendingMainRequest = NavigationController.pendingMainConversationRequestId
+    LaunchedEffect(sessionId, pendingNavigation, pendingMainRequest, connectionStatus) {
         if (connectionStatus != ConnectionStatus.CONNECTED) return@LaunchedEffect
-        val request = NavigationController.consumePendingChatNavigation()
+        val activeProfile = AuthManager.activeProfileId.value
+        val request = NavigationController.consumePendingChatNavigation(activeProfile)
         val target = request?.sessionId ?: sessionId
         if (!target.isNullOrBlank()) {
             viewModel.switchSession(target)
+        } else if (NavigationController.consumePendingMainConversationRequest()) {
+            viewModel.showMainConversation()
         }
         if (request?.scrollToBottom == true) {
             scrollController.jumpToBottom(animated = false)

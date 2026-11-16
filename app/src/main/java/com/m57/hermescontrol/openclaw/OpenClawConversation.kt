@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -50,7 +49,9 @@ import com.m57.hermescontrol.ui.chat.components.ChatConnectionBanner
 import com.m57.hermescontrol.ui.chat.components.ChatInputBar
 import com.m57.hermescontrol.ui.chat.components.ChatScrollToBottomFab
 import com.m57.hermescontrol.ui.chat.components.ConversationHeaderActions
+import com.m57.hermescontrol.ui.chat.components.ConversationLayout
 import com.m57.hermescontrol.ui.chat.components.ConversationMenuSheet
+import com.m57.hermescontrol.ui.chat.components.quotedReplyField
 import com.m57.hermescontrol.ui.chat.components.rememberChatScrollController
 import com.m57.hermescontrol.ui.chat.fullbleed.FullBleedAgentMessage
 import com.m57.hermescontrol.ui.common.EmptyState
@@ -85,7 +86,7 @@ internal fun OpenClawConversation(
     val scope = rememberCoroutineScope()
     val scroll = rememberChatScrollController(list, scope)
     val connected = state.connection == ClawConnection.CONNECTED
-    val canChangeSession = state.canSend && !state.loading && !state.saving
+    val canChangeSession = state.canSend && !state.loading && !state.busy && !state.saving
     val canChangeOptions = state.canPatch && !state.loading && !state.busy && !state.saving
     val handleNew = {
         if (canChangeSession) {
@@ -168,21 +169,60 @@ internal fun OpenClawConversation(
         },
     ) {
         val swipeDistance = with(LocalDensity.current) { 64.dp.toPx() }
-        Column(
-            Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
-                .pointerInput(swipeDistance) {
-                    var travelled = 0f
-                    detectHorizontalDragGestures(onDragStart = { travelled = 0f }) { change, amount ->
-                        travelled += amount
-                        if (travelled > swipeDistance) {
-                            change.consume()
-                            history = true
+        ConversationLayout(
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background)
+                    .pointerInput(swipeDistance) {
+                        var travelled = 0f
+                        detectHorizontalDragGestures(onDragStart = { travelled = 0f }) { change, amount ->
+                            travelled += amount
+                            if (travelled > swipeDistance) {
+                                change.consume()
+                                history = true
+                            }
                         }
+                    }.testTag("openclaw_chat"),
+            onReply =
+                if (connected) {
+                    { message ->
+                        input = quotedReplyField(message, input)
+                        drafts = drafts + (state.sessionKey to input.text)
                     }
-                }.imePadding()
-                .testTag("openclaw_chat"),
+                } else {
+                    null
+                },
+            composer = {
+                ChatInputBar(
+                    inputFieldValue = input,
+                    onInputChange = {
+                        input = it
+                        drafts = drafts + (state.sessionKey to it.text)
+                    },
+                    onSend = handleSend,
+                    onImeSend = handleSend,
+                    onStop = onStop,
+                    onMicTap = {},
+                    isListening = false,
+                    isAgentTyping = state.busy,
+                    isConnected = connected,
+                    commandCatalog = CommandCatalog(),
+                    attachmentsEnabled = false,
+                    microphoneEnabled = false,
+                    showCommandSuggestions = false,
+                    sendEnabled = state.canSend && !state.loading && !state.saving && !state.busy,
+                    currentSessionModel = state.model,
+                    reasoningLevel = state.effort,
+                    reasoningDisplayName = state.effort ?: "既定値",
+                    onModelTap = onModel,
+                    onReasoningPickerTap = onEffort,
+                    modelControlsEnabled = canChangeOptions,
+                    inputTestTag = "openclaw_input",
+                    sendTestTag = "openclaw_send",
+                    stopTestTag = "openclaw_stop",
+                )
+            },
         ) {
             AgentModeTabs(groups = false, conversation = OpenClawChatKey)
             if (state.configured) {
@@ -300,34 +340,6 @@ internal fun OpenClawConversation(
                     }
                 }
             }
-            ChatInputBar(
-                inputFieldValue = input,
-                onInputChange = {
-                    input = it
-                    drafts = drafts + (state.sessionKey to it.text)
-                },
-                onSend = handleSend,
-                onImeSend = handleSend,
-                onStop = onStop,
-                onMicTap = {},
-                isListening = false,
-                isAgentTyping = state.busy,
-                isConnected = connected,
-                commandCatalog = CommandCatalog(),
-                attachmentsEnabled = false,
-                microphoneEnabled = false,
-                showCommandSuggestions = false,
-                sendEnabled = state.canSend && !state.loading && !state.saving && !state.busy,
-                currentSessionModel = state.model,
-                reasoningLevel = state.effort,
-                reasoningDisplayName = state.effort ?: "既定値",
-                onModelTap = onModel,
-                onReasoningPickerTap = onEffort,
-                modelControlsEnabled = canChangeOptions,
-                inputTestTag = "openclaw_input",
-                sendTestTag = "openclaw_send",
-                stopTestTag = "openclaw_stop",
-            )
         }
     }
 }

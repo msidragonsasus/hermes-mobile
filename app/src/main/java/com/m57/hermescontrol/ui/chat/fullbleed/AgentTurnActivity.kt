@@ -22,6 +22,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.ui.chat.ChatMessage
+import com.m57.hermescontrol.ui.chat.brainstorm.BrainstormParser
 
 internal fun ChatTurn.Agent.tabKey(): String =
     when (val first = entries.first()) {
@@ -34,23 +35,31 @@ internal fun ChatTurn.Agent.tabKey(): String =
 internal fun ChatTurn.Agent.reasoningMessage(): ChatMessage? =
     entries.filterIsInstance<AgentEntry.Prose>().firstOrNull { it.message.reasoningText.isNotBlank() }?.message
 
-/** True when the turn has reasoning or tool calls to fold behind the activity row. */
+/** True when the turn has reasoning or non-brainstorm tool calls to fold behind the activity row. */
 internal fun ChatTurn.Agent.hasActivity(): Boolean =
-    reasoningMessage() != null || entries.any { it is AgentEntry.ToolRow }
+    reasoningMessage() != null ||
+        entries.any { it is AgentEntry.ToolRow && !BrainstormParser.isBrainstormToolMessage(it.message) }
 
 /**
  * The answer always shows; tool rows fold away until the activity row is opened.
- * Approval and clarification must never disappear behind it.
+ * Approval, clarification, and parallel brainstorm panels must never disappear behind it.
  */
 internal fun AgentEntry.visibleWhen(activityExpanded: Boolean): Boolean =
     when (this) {
-        is AgentEntry.Prose -> true
-
-        is AgentEntry.ToolRow -> {
-            activityExpanded || message.approvalInfo != null || message.clarifyInfo != null
+        is AgentEntry.Prose -> {
+            true
         }
 
-        is AgentEntry.SystemEvent, is AgentEntry.ConnectionEvents -> true
+        is AgentEntry.ToolRow -> {
+            activityExpanded ||
+                message.approvalInfo != null ||
+                message.clarifyInfo != null ||
+                BrainstormParser.isBrainstormToolMessage(message)
+        }
+
+        is AgentEntry.SystemEvent, is AgentEntry.ConnectionEvents -> {
+            true
+        }
     }
 
 /**

@@ -60,7 +60,13 @@ internal fun reconcileTranscript(
                     message.role == MessageRole.ASSISTANT && message.displayKind != "hidden" &&
                         HostMediaExtractor.extract(it).isNotEmpty()
                 }
-            message.copy(id = id, sourceBody = source) to position
+            // History may omit streamed reasoning. An exact scoped row/ACK alias lets us
+            // retain it without using the reasoning or prose to establish identity.
+            val alias = row?.let { state.responseLedger.aliases[it.toString()] }
+            val antecedent =
+                state.messages.singleOrNull { it.id == alias }
+                    ?: state.messages.singleOrNull { it.id == id }
+            message.copy(id = id, sourceBody = source).withRetainedReasoning(antecedent) to position
         }
     val mapped = mappedWithPositions.map { it.first }
     val rawPositionById = mappedWithPositions.associate { it.first.id to it.second }
@@ -579,8 +585,8 @@ internal fun reconcileTranscript(
  *   alias). Text, position and time never establish which history turn a local turn is; an
  *   unproven local turn stays as an ambiguous observation with its pending input;
  * - each folded message keeps everything it held: a reply folds only into a server row of the
- *   proven span with the same body, reasoning, attachments and display kind (a tool also needs
- *   its unique call id), and nothing local-only is lost.
+ *   proven span with the same body, compatible reasoning, attachments and display kind (a tool
+ *   also needs its unique call id). Missing unprojected history reasoning is retained from the local row.
  * Folded messages are substituted in place, so unfolded local messages (interim commentary, a
  * differently stored reply, cards) keep their order. No reply authority is granted.
  */
@@ -718,14 +724,19 @@ private fun foldUnprovenLocalTurns(
 
 /**
  * True only when [server] keeps everything this local message holds: the same stored body and,
- * when present locally, the same reasoning, attachments and display kind, with no local-only
- * transient data. Equal visible text alone is not proof that nothing is lost.
+ * when present locally, compatible reasoning, the same attachments and display kind, with no
+ * local-only transient data. Missing reasoning is carried forward by [withLocalPresentation].
+ * Equal visible text alone is not proof that nothing is lost.
  */
 private fun ChatMessage.foldsLosslesslyInto(server: ChatMessage): Boolean {
     fun normalized(text: String) = text.replace("\r\n", "\n").trim()
     if (role != server.role || normalized(bodyForStorage()).isEmpty()) return false
     if (normalized(bodyForStorage()) != normalized(server.bodyForStorage())) return false
-    if (reasoningText.isNotBlank() && normalized(reasoningText) != normalized(server.reasoningText)) return false
+    if (reasoningText.isNotBlank() && (server.reasoningText.isNotBlank() || server.hasServerDisplayProjection) &&
+        normalized(reasoningText) != normalized(server.reasoningText)
+    ) {
+        return false
+    }
     if (displayKind != null && displayKind != server.displayKind) return false
     if (toolCallId.isNotBlank() && toolCallId != server.toolCallId) return false
     if (toolOutputRiskData != null || !progressPreview.isNullOrBlank()) return false
@@ -733,9 +744,18 @@ private fun ChatMessage.foldsLosslesslyInto(server: ChatMessage): Boolean {
     return attachments.orEmpty().all { Triple(it.retainedSourceAddress(), it.name, it.mimeType) in kept }
 }
 
-/** Local presentation the server row does not carry (tool name/status, finish time). */
+/** Only call after an exact row/alias match, or a fold within a proven turn. */
+private fun ChatMessage.withRetainedReasoning(local: ChatMessage?): ChatMessage {
+    if (local == null || hasServerDisplayProjection || reasoningText.isNotBlank() || role != local.role) return this
+
+    fun normalized(text: String) = text.replace("\r\n", "\n").trim()
+    if (normalized(bodyForStorage()) != normalized(local.bodyForStorage())) return this
+    return copy(reasoningText = local.reasoningText)
+}
+
+/** Local presentation the server row does not carry (reasoning, tool name/status, finish time). */
 private fun ChatMessage.withLocalPresentation(local: ChatMessage): ChatMessage =
-    copy(
+    withRetainedReasoning(local).copy(
         toolName = toolName ?: local.toolName,
         toolStatus = toolStatus ?: local.toolStatus,
         finishTimestamp = finishTimestamp ?: local.finishTimestamp,

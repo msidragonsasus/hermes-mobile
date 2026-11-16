@@ -1,6 +1,8 @@
 package com.m57.hermescontrol.ui.chat
 
 import com.m57.hermescontrol.data.model.SessionMessage
+import com.m57.hermescontrol.ui.chat.fakes.FakeChatMessageDao
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -324,8 +326,107 @@ class UnprovenTurnFoldTest {
         val result = reconciled(state)
         assertEquals(
             "local reasoning",
-            result.messages.single { it.id == "local-answer" }.reasoningText,
+            result.messages.single { it.role == MessageRole.ASSISTANT }.reasoningText,
         )
+    }
+
+    private fun withLocalReasoning(state: ChatUiState): ChatUiState =
+        state.copy(
+            messages =
+                state.messages.map {
+                    if (it.id == "local-answer") it.copy(reasoningText = "local reasoning") else it
+                },
+        )
+
+    @Test fun missingHistoryReasoningFoldsOnceWithoutLosingReasoning() {
+        val result = reconciled(withLocalReasoning(localTurn(10L, terminal = noReceipt())))
+        assertEquals(once, result.messages.joinToString(" | ") { "${it.role.name.lowercase()}:${it.content}" })
+        assertEquals("local reasoning", result.messages.single { it.role == MessageRole.ASSISTANT }.reasoningText)
+        assertEquals(
+            listOf(canonicalMessageId(target, session, 11L)),
+            result.responseLedger.responses
+                .single()
+                .messageIds,
+        )
+    }
+
+    @Test fun exactFinalAliasRetainsReasoningAcrossHistoryRefreshes() {
+        val result =
+            reconciled(withLocalReasoning(localTurn(10L, terminal = incomplete(final = 11L), finalAlias = true)))
+        assertEquals(once, result.messages.joinToString(" | ") { "${it.role.name.lowercase()}:${it.content}" })
+        assertEquals("local reasoning", result.messages.single { it.role == MessageRole.ASSISTANT }.reasoningText)
+    }
+
+    @Test fun conflictingHistoryReasoningIsNotAbsorbed() {
+        val rows = page.map { if (it.id == 11) it.copy(reasoning = JsonPrimitive("different reasoning")) else it }
+        val result = reconciled(withLocalReasoning(localTurn(10L, terminal = noReceipt())), rows)
+        val replies = result.messages.filter { it.role == MessageRole.ASSISTANT }
+        assertEquals(2, replies.size)
+        assertEquals(setOf("local reasoning", "different reasoning"), replies.map { it.reasoningText }.toSet())
+    }
+
+    @Test fun reasoningDoesNotProveAnUnacknowledgedTurn() {
+        val result = reconciled(withLocalReasoning(localTurn(null, terminal = noReceipt())))
+        assertEquals(2, result.messages.count { it.role == MessageRole.ASSISTANT })
+        assertEquals("local reasoning", result.messages.single { it.id == "local-answer" }.reasoningText)
+    }
+
+    @Test fun reasoningFoldKeepsTheSameAnswerInALaterTurn() {
+        val rows = page + listOf(row(12, "user", "another question"), row(13, "assistant", "local answer"))
+        val result = reconciled(withLocalReasoning(localTurn(10L, terminal = noReceipt())), rows)
+        assertEquals(2, result.messages.count { it.role == MessageRole.ASSISTANT })
+        assertEquals(
+            "local reasoning",
+            result.messages
+                .single {
+                    it.id == canonicalMessageId(target, session, 11L)
+                }.reasoningText,
+        )
+        assertEquals("", result.messages.single { it.id == canonicalMessageId(target, session, 13L) }.reasoningText)
+    }
+
+    @Test fun foldedReasoningSurvivesPersistenceAndAColdHistoryRefresh() =
+        runTest {
+            val result = reconciled(withLocalReasoning(localTurn(10L, terminal = noReceipt())))
+            val dao = FakeChatMessageDao()
+            val repository = ChatPersistenceRepository(dao)
+            val (owner, _) = repository.openTranscript(target, session)
+            assertEquals(true, repository.save(repository.prepare(owner, result.messages, result.responseLedger)))
+            val reopened = ChatPersistenceRepository(dao).readTranscript(target, session)
+            assertEquals(result.messages, reopened.messages)
+            val refreshed =
+                reconciled(ChatUiState(messages = reopened.messages, responseLedger = reopened.payload.ledger))
+            assertEquals(1, refreshed.messages.count { it.role == MessageRole.ASSISTANT })
+            assertEquals(
+                "local reasoning",
+                refreshed.messages.single { it.role == MessageRole.ASSISTANT }.reasoningText,
+            )
+        }
+
+    @Test fun exactRowWithChangedBodyDoesNotInheritStaleReasoning() {
+        val state = reconciled(withLocalReasoning(localTurn(10L, terminal = noReceipt())))
+        val changed = page.map { if (it.id == 11) it.copy(content = JsonPrimitive("edited answer")) else it }
+        val result = reconciled(state, changed)
+        val answer = result.messages.single { it.role == MessageRole.ASSISTANT }
+        assertEquals("edited answer", answer.content)
+        assertEquals("", answer.reasoningText)
+    }
+
+    @Test fun explicitServerProjectionDoesNotReviveRetainedReasoning() {
+        val state = reconciled(withLocalReasoning(localTurn(10L, terminal = noReceipt())))
+        val projected = page.map { if (it.id == 11) it.copy(display_content = JsonPrimitive("local answer")) else it }
+        val result = reconciled(state, projected)
+        val answer = result.messages.single { it.role == MessageRole.ASSISTANT }
+        assertEquals("local answer", answer.content)
+        assertEquals("", answer.reasoningText)
+        assertEquals(true, answer.hasServerDisplayProjection)
+    }
+
+    @Test fun explicitServerProjectionCannotConsumeUnboundLocalReasoning() {
+        val projected = page.map { if (it.id == 11) it.copy(display_content = JsonPrimitive("local answer")) else it }
+        val result = reconciled(withLocalReasoning(localTurn(10L, terminal = noReceipt())), projected)
+        assertEquals("local reasoning", result.messages.single { it.id == "local-answer" }.reasoningText)
+        assertEquals("", result.messages.single { it.id == canonicalMessageId(target, session, 11L) }.reasoningText)
     }
 
     @Test fun runningTurnIsNotFolded() {

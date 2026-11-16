@@ -1,6 +1,5 @@
 package com.m57.hermescontrol.ui.chat.fullbleed
 
-import android.content.ClipData
 import android.text.format.DateFormat
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,26 +9,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.ClipEntry
-import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -41,17 +30,16 @@ import com.m57.hermescontrol.ui.chat.ChatMessage
 import com.m57.hermescontrol.ui.chat.ImageViewerModel
 import com.m57.hermescontrol.ui.chat.InlineAttachment
 import com.m57.hermescontrol.ui.chat.MarkdownText
+import com.m57.hermescontrol.ui.chat.components.MessageActionHost
 import com.m57.hermescontrol.ui.chat.components.ReasoningCard
 import com.m57.hermescontrol.ui.common.BotAvatar
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 /**
  * Full-bleed renderer for ONE agent (assistant) message (issue #866).
  *
  * Unlike [com.m57.hermescontrol.ui.chat.ChatBubble], agent prose renders
  * directly on the background — no bubble container, no width cap — with a
- * turn header (role + time) and a trailing copy affordance. User messages
+ * turn header (role + time) and shared long-press message actions. User messages
  * keep their bubbles; this composable is only used for ASSISTANT messages.
  *
  * [showTurnHeader] renders the role/time header — true only for the first
@@ -75,6 +63,7 @@ internal fun FullBleedAgentMessage(
     modifier: Modifier = Modifier,
     showTimestamp: Boolean = true,
     showFooter: Boolean = true,
+    actionMessage: ChatMessage = message,
 ) {
     val textColor = MaterialTheme.colorScheme.onSurface
     var localImage by remember { mutableStateOf<ImageViewerModel?>(null) }
@@ -84,31 +73,31 @@ internal fun FullBleedAgentMessage(
             .ImageViewerDialog(image, onDismiss = { localImage = null })
     }
 
-    Column(
-        modifier =
-            modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .testTag("fullbleed_agent_message"),
-    ) {
-        if (showTurnHeader) {
-            AssistantTurnHeader(message.timestamp, speakerName = speakerName, showTimestamp = showTimestamp)
-        }
+    MessageActionHost(message = actionMessage, modifier = modifier) {
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .testTag("fullbleed_agent_message"),
+        ) {
+            if (showTurnHeader) {
+                AssistantTurnHeader(message.timestamp, speakerName = speakerName, showTimestamp = showTimestamp)
+            }
 
-        if (showReasoning && message.reasoningText.isNotBlank()) {
-            ReasoningCard(
-                reasoningText = message.reasoningText,
-                isStreaming = message.isStreaming,
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-        }
+            if (showReasoning && message.reasoningText.isNotBlank()) {
+                ReasoningCard(
+                    reasoningText = message.reasoningText,
+                    isStreaming = message.isStreaming,
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+            }
 
-        // Defense-in-depth: never render an empty prose block (blank bubble +
-        // lone Copy button). Blank settled rows are tool-call placeholders that
-        // slipped through upstream mapping; streaming keeps rendering so the
-        // live cursor survives until the first delta lands.
-        if (message.content.isNotBlank() || message.isStreaming) {
-            SelectionContainer {
+            // Defense-in-depth: never render an empty prose block (blank bubble +
+            // message actions). Blank settled rows are tool-call placeholders that
+            // slipped through upstream mapping; streaming keeps rendering so the
+            // live cursor survives until the first delta lands.
+            if (message.content.isNotBlank() || message.isStreaming) {
                 MarkdownText(
                     text = message.content,
                     textColor = textColor,
@@ -118,96 +107,38 @@ internal fun FullBleedAgentMessage(
                     onImageClick = openImage,
                 )
             }
-        }
 
-        // Render inline attachments (mirrors ChatBubble so agent-delivered
-        // media — images, files — shows in full-bleed mode too).
-        if (!message.attachments.isNullOrEmpty()) {
-            Spacer(modifier = Modifier.height(6.dp))
-            message.attachments.forEach { attachment ->
-                InlineAttachment(
-                    attachment = attachment,
-                    textColor = textColor,
-                    onOpen = { onOpenAttachment(it) },
-                    onSave = { onSaveAttachment(it) },
-                    savingPath = savingAttachmentPath,
-                    openingPath = openingAttachmentPath,
-                    canSave = canSaveAttachment,
-                    onImageClick = openImage,
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-            }
-        }
-
-        // A reasoning-only step has nothing to copy, so it gets no footer.
-        if (showFooter && !message.isStreaming &&
-            (message.content.isNotBlank() || !message.attachments.isNullOrEmpty())
-        ) {
-            ReplyFooterRow(
-                text = message.content,
-                finishedAt = message.finishTimestamp ?: message.timestamp,
-                showTimestamp = showTimestamp,
-            )
-        }
-    }
-}
-
-/**
- * The quiet copy + finish-time row under an answer. The main chat places one per
- * completed response (see [replyFooter]); standalone single-message callers keep
- * it under their message.
- */
-@Composable
-internal fun ReplyFooterRow(
-    text: String,
-    finishedAt: Long,
-    modifier: Modifier = Modifier,
-    showTimestamp: Boolean = true,
-) {
-    val clipboard = LocalClipboard.current
-    val scope = rememberCoroutineScope()
-    var copied by remember { mutableStateOf(false) }
-
-    // Copy feedback: briefly show ✓ then revert
-    LaunchedEffect(copied) {
-        if (copied) {
-            delay(1500)
-            copied = false
-        }
-    }
-
-    Row(
-        modifier = modifier,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconButton(
-            onClick = {
-                scope.launch {
-                    clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(null, text)))
+            // Render inline attachments (mirrors ChatBubble so agent-delivered
+            // media — images, files — shows in full-bleed mode too).
+            if (!message.attachments.isNullOrEmpty()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                message.attachments.forEach { attachment ->
+                    InlineAttachment(
+                        attachment = attachment,
+                        textColor = textColor,
+                        onOpen = { onOpenAttachment(it) },
+                        onSave = { onSaveAttachment(it) },
+                        savingPath = savingAttachmentPath,
+                        openingPath = openingAttachmentPath,
+                        canSave = canSaveAttachment,
+                        onImageClick = openImage,
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
                 }
-                copied = true
-            },
-            modifier = Modifier.size(28.dp).testTag("fullbleed_copy"),
-        ) {
-            Icon(
-                imageVector = if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
-                contentDescription = stringResource(R.string.content_desc_copy),
-                modifier = Modifier.size(14.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Spacer(modifier = Modifier.width(4.dp))
-        if (showTimestamp) {
-            Text(
-                text =
-                    com.m57.hermescontrol.ui.chat.formatTimestamp(
-                        finishedAt,
-                        DateFormat.is24HourFormat(LocalContext.current),
-                    ),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                modifier = Modifier.testTag("fullbleed_finish_time"),
-            )
+            }
+
+            if (showFooter && !message.isStreaming && showTimestamp && message.content.isNotBlank()) {
+                Text(
+                    text =
+                        com.m57.hermescontrol.ui.chat.formatTimestamp(
+                            message.finishTimestamp ?: message.timestamp,
+                            DateFormat.is24HourFormat(LocalContext.current),
+                        ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp).testTag("fullbleed_finish_time"),
+                )
+            }
         }
     }
 }
@@ -270,4 +201,22 @@ internal fun AssistantTurnHeader(
             )
         }
     }
+}
+
+/** One completion time for a finished response; its actions live on the prose menu. */
+@Composable
+internal fun ReplyFooterRow(
+    finishedAt: Long,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text =
+            com.m57.hermescontrol.ui.chat.formatTimestamp(
+                finishedAt,
+                DateFormat.is24HourFormat(LocalContext.current),
+            ),
+        modifier = modifier.testTag("fullbleed_finish_time"),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }

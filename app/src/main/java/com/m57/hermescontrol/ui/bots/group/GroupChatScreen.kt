@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -100,6 +99,8 @@ import com.m57.hermescontrol.ui.chat.MessageRole
 import com.m57.hermescontrol.ui.chat.components.ChatInputBar
 import com.m57.hermescontrol.ui.chat.components.ChatScrollToBottomFab
 import com.m57.hermescontrol.ui.chat.components.ConversationHeaderActions
+import com.m57.hermescontrol.ui.chat.components.ConversationLayout
+import com.m57.hermescontrol.ui.chat.components.quotedReplyField
 import com.m57.hermescontrol.ui.chat.components.rememberChatScrollController
 import com.m57.hermescontrol.ui.chat.components.tailContentKey
 import com.m57.hermescontrol.ui.chat.fullbleed.FullBleedAgentMessage
@@ -283,7 +284,7 @@ fun GroupChatScreen(
         },
         modifier = modifier,
     ) {
-        Column(
+        ConversationLayout(
             modifier =
                 Modifier
                     .fillMaxSize()
@@ -297,7 +298,31 @@ fun GroupChatScreen(
                                 showConversations = true
                             }
                         }
-                    }.imePadding(),
+                    },
+            onReply = { message -> inputFieldValue = quotedReplyField(message, inputFieldValue) },
+            composer = {
+                ChatInputBar(
+                    inputFieldValue = inputFieldValue,
+                    onInputChange = { inputFieldValue = it },
+                    onSend = handleSend,
+                    onMicTap = {},
+                    isListening = false,
+                    isAgentTyping = state.isSending,
+                    isConnected = true,
+                    commandCatalog =
+                        CommandCatalog(),
+                    attachmentsEnabled = false,
+                    microphoneEnabled = false,
+                    showModelControls = false,
+                    showCommandSuggestions = false,
+                    sendEnabled = canSend && !state.isLoading && !state.isSavingGroupSettings,
+                    onStop = viewModel::stopGeneration,
+                    onImeSend = handleSend,
+                    inputTestTag = "group_chat_input",
+                    sendTestTag = "group_chat_send_button",
+                    stopTestTag = "group_chat_stop_button",
+                )
+            },
         ) {
             AgentModeTabs(groups = true, conversation = conversationReturn)
             if (state.groupName.isNotBlank() && (!canSend || state.errorMessage != null) &&
@@ -641,28 +666,6 @@ fun GroupChatScreen(
                     }
                 }
             }
-
-            ChatInputBar(
-                inputFieldValue = inputFieldValue,
-                onInputChange = { inputFieldValue = it },
-                onSend = handleSend,
-                onMicTap = {},
-                isListening = false,
-                isAgentTyping = state.isSending,
-                isConnected = true,
-                commandCatalog =
-                    CommandCatalog(),
-                attachmentsEnabled = false,
-                microphoneEnabled = false,
-                showModelControls = false,
-                showCommandSuggestions = false,
-                sendEnabled = canSend && !state.isLoading && !state.isSavingGroupSettings,
-                onStop = viewModel::stopGeneration,
-                onImeSend = handleSend,
-                inputTestTag = "group_chat_input",
-                sendTestTag = "group_chat_send_button",
-                stopTestTag = "group_chat_stop_button",
-            )
         }
     }
 

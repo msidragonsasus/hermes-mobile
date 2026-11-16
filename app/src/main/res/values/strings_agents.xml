@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="shell_agent">Agent</string>
+    <string name="shell_agent">Hermes</string>
     <string name="agent_hub_intro">Choose an agent to review its connection and available features. Each agent has its own conversations and permissions.</string>
     <string name="agent_connection_unverified">Connection unverified</string>
     <string name="agent_bro_description">The connection from this app to your existing bro has not been verified. The existing bro-to-Hermes text relay does not establish this reverse connection.</string>

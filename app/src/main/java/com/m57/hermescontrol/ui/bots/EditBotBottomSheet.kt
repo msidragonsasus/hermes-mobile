@@ -47,11 +47,11 @@ import com.m57.hermescontrol.data.model.ProfileInfo
 import com.m57.hermescontrol.theme.parseHexColor
 import com.m57.hermescontrol.ui.common.BotAvatar
 
-private val AVAILABLE_SHAPES = listOf("circle", "square", "rounded", "hexagon")
+internal val BOT_AVATAR_SHAPES = listOf("circle", "square", "rounded", "hexagon")
 
 /** Avatar symbols; null keeps the name's initials. Keys resolve through [resolveAvatarIcon]. */
-private val AVAILABLE_ICONS = listOf(null, "robot", "brain", "code", "tool", "science", "bolt", "sensors", "plugin")
-private val PALETTE_COLORS =
+internal val BOT_AVATAR_ICONS = listOf(null, "robot", "brain", "code", "tool", "science", "bolt", "sensors", "plugin")
+internal val BOT_AVATAR_COLORS =
     listOf(
         "#4F46E5", // Indigo
         "#2563EB", // Blue
@@ -78,7 +78,7 @@ fun EditBotBottomSheet(
     var title by remember { mutableStateOf(meta?.title ?: bot.effectiveTitle) }
     var description by remember { mutableStateOf(meta?.description ?: bot.effectiveDescription) }
     var selectedShape by remember { mutableStateOf(meta?.avatar?.shape ?: "circle") }
-    var selectedColor by remember { mutableStateOf(meta?.avatar?.color ?: PALETTE_COLORS[0]) }
+    var selectedColor by remember { mutableStateOf(meta?.avatar?.color ?: BOT_AVATAR_COLORS[0]) }
     var selectedIcon by remember { mutableStateOf(meta?.avatar?.icon) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
@@ -196,7 +196,7 @@ fun EditBotBottomSheet(
                         .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                AVAILABLE_ICONS.forEach { icon ->
+                BOT_AVATAR_ICONS.forEach { icon ->
                     Box(
                         modifier =
                             Modifier
@@ -238,7 +238,7 @@ fun EditBotBottomSheet(
                         .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                AVAILABLE_SHAPES.forEach { shape ->
+                BOT_AVATAR_SHAPES.forEach { shape ->
                     FilterChip(
                         selected = selectedShape == shape,
                         onClick = { selectedShape = shape },
@@ -261,7 +261,7 @@ fun EditBotBottomSheet(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                PALETTE_COLORS.take(5).forEach { hex ->
+                BOT_AVATAR_COLORS.take(5).forEach { hex ->
                     val color = parseHexColor(hex, Color.Unspecified)
                     Box(
                         modifier =
@@ -287,7 +287,7 @@ fun EditBotBottomSheet(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                PALETTE_COLORS.drop(5).forEach { hex ->
+                BOT_AVATAR_COLORS.drop(5).forEach { hex ->
                     val color = parseHexColor(hex, Color.Unspecified)
                     Box(
                         modifier =

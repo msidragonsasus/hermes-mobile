@@ -13,6 +13,8 @@ import com.m57.hermescontrol.data.model.ProfilesResponse
 import com.m57.hermescontrol.data.remote.ApiClient
 import com.m57.hermescontrol.data.remote.NetworkResult
 import com.m57.hermescontrol.data.remote.OkHttpProvider
+import com.m57.hermescontrol.data.remote.SpecialistCapabilitiesState
+import com.m57.hermescontrol.data.remote.SpecialistsRepository
 import com.m57.hermescontrol.data.remote.safeApiCall
 import com.m57.hermescontrol.data.session.ProfileSwitchCoordinator
 import com.m57.hermescontrol.data.ws.HermesWsClient
@@ -53,9 +55,15 @@ data class BotsUiState(
     val showHidden: Boolean = false,
     val hiddenProfiles: Set<String> = emptySet(),
     val selectedTab: BotsTab = BotsTab.BOTS,
+    val capabilitiesState: SpecialistCapabilitiesState = SpecialistCapabilitiesState.Loading,
     val errorMessage: String? = null,
     val toastMessage: String? = null,
 ) {
+    val isGroupRetirementReady: Boolean
+        get() =
+            (capabilitiesState as? SpecialistCapabilitiesState.Supported)
+                ?.capabilities
+                ?.group_retirement_ready == true
     val hasHiddenBots: Boolean
         get() = profiles.any { it.isHidden || it.name in hiddenProfiles }
 
@@ -238,6 +246,7 @@ data class BotsUiState(
 class BotsViewModel(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     autoLoad: Boolean = true,
+    private val specialistsRepository: SpecialistsRepository = SpecialistsRepository(),
 ) : ViewModel(),
     ToastHost {
     private val _uiState = MutableStateFlow(BotsUiState())
@@ -286,6 +295,7 @@ class BotsViewModel(
                     safeApiCall { ApiClient.hermesApi.getProfiles() }
                 }
             val activeResult = safeApiCall { ApiClient.hermesApi.getActiveProfile() }
+            val capabilities = specialistsRepository.fetchCapabilities()
 
             if (profilesWithMeta != null) {
                 val activeName = (activeResult as? NetworkResult.Success)?.data?.active
@@ -296,6 +306,7 @@ class BotsViewModel(
                         profiles = profilesWithMeta,
                         activeProfileName = activeName ?: it.activeProfileName,
                         hiddenProfiles = AuthManager.getHiddenProfiles().toSet(),
+                        capabilitiesState = capabilities,
                         errorMessage = null,
                     )
                 }
@@ -308,6 +319,7 @@ class BotsViewModel(
                         profiles = profilesResult.data.profiles.orEmpty(),
                         activeProfileName = activeName ?: it.activeProfileName,
                         hiddenProfiles = AuthManager.getHiddenProfiles().toSet(),
+                        capabilitiesState = capabilities,
                         errorMessage = null,
                     )
                 }
@@ -319,6 +331,7 @@ class BotsViewModel(
                     it.copy(
                         isLoading = false,
                         isRefreshing = false,
+                        capabilitiesState = capabilities,
                         errorMessage = err,
                     )
                 }

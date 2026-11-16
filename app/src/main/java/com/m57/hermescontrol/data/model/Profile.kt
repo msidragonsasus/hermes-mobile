@@ -32,6 +32,7 @@ data class ProfileInfo(
     val canonical_session: CanonicalSessionInfo? = null,
     val last_session: ProfileSessionSummary? = null,
     val worker_session: ProfileWorkerSummary? = null,
+    val setup_completed: Boolean? = null,
 ) {
     fun botMeta(
         json: Json =
@@ -77,6 +78,12 @@ data class ProfileInfo(
 
     val isHidden: Boolean
         get() = botMeta()?.hidden == true
+
+    val isSetupIncomplete: Boolean
+        get() =
+            is_default != true &&
+                name != "default" &&
+                (setup_completed == false || botMeta()?.setup_completed == false)
 }
 
 @Serializable
@@ -118,6 +125,7 @@ data class BotRosterMeta(
     val groups: List<String>? = null,
     val group: String? = null,
     val created: Double? = null,
+    val setup_completed: Boolean? = null,
 ) {
     val allGroups: List<String>
         get() {

@@ -2,6 +2,7 @@ package com.m57.hermescontrol.ui.chat.fullbleed
 
 import com.m57.hermescontrol.ui.chat.ChatMessage
 import com.m57.hermescontrol.ui.chat.MessageRole
+import com.m57.hermescontrol.ui.chat.brainstorm.BrainstormParser
 
 /**
  * Turn model for the full-bleed chat renderer (issue #866).
@@ -219,6 +220,7 @@ fun messageIdToLazyIndex(
     replyFooters: List<ReplyFooter?> = emptyList(),
 ): Map<String, Int> {
     val map = mutableMapOf<String, Int>()
+    val duplicateBrainstormIds = BrainstormParser.duplicateBrainstormMessageIds(turns)
     var itemIndex = leadingItems
     turns.forEachIndexed { turnIndex, turn ->
         when (turn) {
@@ -238,6 +240,7 @@ fun messageIdToLazyIndex(
                         }
                 }
                 turn.entries.forEach { entry ->
+                    if (entry is AgentEntry.ToolRow && entry.message.id in duplicateBrainstormIds) return@forEach
                     if (!entry.visibleWhen(expanded)) return@forEach
                     when (entry) {
                         is AgentEntry.Prose -> {
@@ -246,6 +249,9 @@ fun messageIdToLazyIndex(
                         }
 
                         is AgentEntry.ToolRow -> {
+                            if (BrainstormParser.isBrainstormToolMessage(entry.message)) {
+                                map[entry.message.id] = itemIndex
+                            }
                             itemIndex++
                         }
 
@@ -256,9 +262,7 @@ fun messageIdToLazyIndex(
 
                         // Routine connection notices have no rendered item or search destination.
                         // The original entries remain intact for lifecycle and tool bookkeeping.
-                        is AgentEntry.ConnectionEvents -> {
-                            Unit
-                        }
+                        is AgentEntry.ConnectionEvents -> {}
                     }
                 }
                 if (replyFooters.getOrNull(turnIndex) != null) itemIndex++

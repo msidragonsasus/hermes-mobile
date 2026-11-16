@@ -67,4 +67,11 @@
     <string name="chat_settings_manage_bots">Bots</string>
     <string name="bots_worker_running">Working: %1$s</string>
     <string name="chat_settings_this_bot">%1$s settings</string>
+    <string name="drawer_status_connecting">Connecting…</string>
+    <string name="drawer_hermes_main">Hermes (Main)</string>
+    <string name="drawer_specialist_bots">Specialist bots</string>
+    <string name="drawer_bot_working">Working</string>
+    <string name="drawer_create_bot">Create new bot</string>
+    <string name="drawer_settings_management">Settings &amp; Management</string>
+    <string name="drawer_switch_profile_failed">Could not switch back to Hermes (Main)</string>
 </resources>

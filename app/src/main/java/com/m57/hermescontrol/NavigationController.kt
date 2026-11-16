@@ -19,6 +19,7 @@ data class PendingChatNavigation(
     val sessionId: String,
     val scrollToBottom: Boolean,
     val requestId: Long,
+    val profileName: String? = null,
 )
 
 @Serializable
@@ -45,6 +46,11 @@ object NavigationController {
     var pendingWorkerDestination: String? by mutableStateOf(null)
     var pendingChatPrefill: String? by mutableStateOf(null)
         private set
+    var pendingSpecialistSetupBot: String? by mutableStateOf(null)
+        private set
+    var pendingMainConversationRequestId: Long by mutableStateOf(0L)
+        private set
+    private var lastConsumedMainConversationRequestId = 0L
     private var shellNavigation: ShellNavigation? = null
 
     internal fun attachAuth(stack: NavBackStack<NavKey>) {
@@ -91,6 +97,13 @@ object NavigationController {
     var pendingChatNavigation: PendingChatNavigation? by mutableStateOf(null)
         private set
     val pendingSessionId: String? get() = pendingChatNavigation?.sessionId
+
+    fun pendingSessionIdForProfile(activeProfile: String?): String? {
+        val current = pendingChatNavigation ?: return null
+        val target = current.profileName?.takeIf { it.isNotBlank() } ?: return current.sessionId
+        val active = activeProfile?.takeIf { it.isNotBlank() } ?: "default"
+        return if (target == active) current.sessionId else null
+    }
 
     private var nextChatNavigationRequestId = 0L
     private var lastConsumedChatNavigationId = 0L
@@ -186,12 +199,60 @@ object NavigationController {
         stack.add(key)
     }
 
-    fun openChatSession(sessionId: String) {
-        queueChatNavigation(sessionId, scrollToBottom = false)
+    fun openChatSession(
+        sessionId: String,
+        profileName: String? = null,
+    ) {
+        queueChatNavigation(sessionId, scrollToBottom = false, profileName = profileName)
     }
 
-    fun openChatResult(sessionId: String) {
-        queueChatNavigation(sessionId, scrollToBottom = true)
+    fun openChatResult(
+        sessionId: String,
+        profileName: String? = null,
+    ) {
+        queueChatNavigation(sessionId, scrollToBottom = true, profileName = profileName)
+    }
+
+    fun requestSpecialistSetup(profileName: String) {
+        if (profileName.isNotBlank() && profileName != "default") {
+            pendingSpecialistSetupBot = profileName
+        }
+    }
+
+    fun consumePendingSpecialistSetup(profileName: String?): Boolean {
+        val normalized = profileName?.takeIf { it.isNotBlank() } ?: return false
+        return if (pendingSpecialistSetupBot == normalized) {
+            pendingSpecialistSetupBot = null
+            true
+        } else {
+            false
+        }
+    }
+
+    fun requestMainConversation() {
+        pendingSpecialistSetupBot = null
+        pendingMainConversationRequestId++
+    }
+
+    fun consumePendingMainConversationRequest(): Boolean {
+        val current = pendingMainConversationRequestId
+        return if (current > lastConsumedMainConversationRequestId) {
+            lastConsumedMainConversationRequestId = current
+            true
+        } else {
+            false
+        }
+    }
+
+    fun clearPendingChatNavigationForMismatch(targetProfile: String) {
+        if (pendingSpecialistSetupBot != null && pendingSpecialistSetupBot != targetProfile) {
+            pendingSpecialistSetupBot = null
+        }
+        val current = pendingChatNavigation ?: return
+        val expected = current.profileName?.takeIf { it.isNotBlank() }
+        if (expected == null || expected != targetProfile) {
+            pendingChatNavigation = null
+        }
     }
 
     fun openChatSessionFromNotification(sessionId: String) {
@@ -210,6 +271,7 @@ object NavigationController {
     private fun queueChatNavigation(
         sessionId: String,
         scrollToBottom: Boolean,
+        profileName: String? = null,
     ) {
         if (sessionId.isBlank()) return
         pendingAttentionNavigation = null
@@ -218,6 +280,7 @@ object NavigationController {
                 sessionId = sessionId,
                 scrollToBottom = scrollToBottom,
                 requestId = ++nextChatNavigationRequestId,
+                profileName = profileName?.takeIf { it.isNotBlank() },
             )
         // A notification received before login stays pending until an authenticated stack attaches.
         if (backStack?.any { roleOf(it) == NavigationRole.AUTH } != true) navigateTo(ChatScreen)
@@ -239,11 +302,14 @@ object NavigationController {
         pendingChatNavigation = restored
     }
 
-    fun consumePendingChatNavigation(): PendingChatNavigation? =
-        pendingChatNavigation.also {
-            if (it != null) lastConsumedChatNavigationId = maxOf(lastConsumedChatNavigationId, it.requestId)
-            pendingChatNavigation = null
-        }
+    fun consumePendingChatNavigation(activeProfile: String? = null): PendingChatNavigation? {
+        val current = pendingChatNavigation ?: return null
+        lastConsumedChatNavigationId = maxOf(lastConsumedChatNavigationId, current.requestId)
+        pendingChatNavigation = null
+        val target = current.profileName?.takeIf { it.isNotBlank() }
+        val active = activeProfile?.takeIf { it.isNotBlank() } ?: "default"
+        return if (target == null || target == active) current else null
+    }
 
     fun consumePendingSessionId(): String? = consumePendingChatNavigation()?.sessionId
 

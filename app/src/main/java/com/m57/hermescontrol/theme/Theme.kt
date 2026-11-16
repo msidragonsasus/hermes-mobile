@@ -113,6 +113,7 @@ fun HermesControlTheme(
         LocalHermesChartColors provides chartColorsFor(colorScheme.primary, darkTheme),
         LocalSpacing provides SpacingDefaults,
         LocalMotion provides MotionDefaults,
+        LocalConversationStyle provides ConversationStyle(),
     ) {
         MaterialExpressiveTheme(
             colorScheme = colorScheme,

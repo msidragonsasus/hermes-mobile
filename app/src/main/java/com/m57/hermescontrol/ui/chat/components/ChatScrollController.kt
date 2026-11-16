@@ -89,10 +89,28 @@ class ChatScrollController(
      */
     fun observeUserScrollPosition() {
         scope.launch {
-            snapshotFlow { listState.isAtBottom(bottomPixelTolerance) }
-                .distinctUntilChanged()
-                .collect { atBottom ->
-                    if (atBottom) {
+            var previousHeight = 0
+            snapshotFlow {
+                Triple(
+                    listState.isAtBottom(bottomPixelTolerance),
+                    listState.layoutInfo.viewportSize.height,
+                    listState.isScrollInProgress,
+                )
+            }.distinctUntilChanged()
+                .collect { (atBottom, height, scrolling) ->
+                    val resized = previousHeight > 0 && height != previousHeight
+                    previousHeight = height
+                    if (resized && isFollowingBottom && !scrolling) {
+                        // IME, attachments and a growing composer resize the viewport without
+                        // a reader gesture. Preserve follow intent; an older-history reader
+                        // keeps their existing LazyColumn anchor instead.
+                        isProgrammaticScroll = true
+                        try {
+                            scrollToBottomAwaitingLayout()
+                        } finally {
+                            isProgrammaticScroll = false
+                        }
+                    } else if (atBottom) {
                         isFollowingBottom = true
                         // Reaching the bottom means the reader caught up.
                         pendingCount = 0

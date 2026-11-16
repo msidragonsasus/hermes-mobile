@@ -72,15 +72,19 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.agents.BotConversations
+import com.m57.hermescontrol.agents.BotSettingsKey
 import com.m57.hermescontrol.data.model.ProfileInfo
+import com.m57.hermescontrol.data.remote.SpecialistCapabilitiesState
 import com.m57.hermescontrol.ui.chat.RichAnswerPrompt
 import com.m57.hermescontrol.ui.common.BotAvatar
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesPrimaryIndicator
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.InlineNotice
 import com.m57.hermescontrol.ui.common.LocalManagementScope
 import com.m57.hermescontrol.ui.common.NavIcon
+import com.m57.hermescontrol.ui.common.NoticeTone
 import com.m57.hermescontrol.ui.common.SkeletonListState
 import com.m57.hermescontrol.ui.common.ToastEffect
 import kotlinx.coroutines.launch
@@ -190,11 +194,19 @@ fun BotsScreen(
     }
 
     if (showCreateDialog) {
-        CreateBotDialog(
+        CreateSpecialistBotSheet(
             onDismiss = { showCreateDialog = false },
-            onCreate = { name, title, description, shape, color ->
-                viewModel.createBot(name, title, description, shape, color) {
-                    showCreateDialog = false
+            onCreated = { created ->
+                showCreateDialog = false
+                scope.launch {
+                    viewModel.loadBots(isRefresh = true)
+                    if (!BotConversations.openSpecialist(
+                            profileName = created.name,
+                            openSetupAfterLaunch = !created.setup_completed,
+                        )
+                    ) {
+                        viewModel.showToast("プロフィール切り替えに失敗しました。")
+                    }
                 }
             },
         )
@@ -262,17 +274,19 @@ fun BotsScreen(
             if (!isSearchActive) {
                 // One create action that follows the selected tab, instead of two look-alike icons.
                 val onGroups = pagerState.currentPage == BotsTab.GROUPS.ordinal
-                IconButton(
-                    onClick = { if (onGroups) showCreateGroupDialog = true else showCreateDialog = true },
-                    modifier = Modifier.testTag(if (onGroups) "bots_action_create_group" else "bots_action_create"),
-                ) {
-                    Icon(
-                        imageVector = if (onGroups) Icons.Filled.GroupAdd else Icons.Filled.Add,
-                        contentDescription =
-                            stringResource(
-                                if (onGroups) R.string.bots_action_create_group else R.string.bots_action_create,
-                            ),
-                    )
+                if (!onGroups || !state.isGroupRetirementReady) {
+                    IconButton(
+                        onClick = { if (onGroups) showCreateGroupDialog = true else showCreateDialog = true },
+                        modifier = Modifier.testTag(if (onGroups) "bots_action_create_group" else "bots_action_create"),
+                    ) {
+                        Icon(
+                            imageVector = if (onGroups) Icons.Filled.GroupAdd else Icons.Filled.Add,
+                            contentDescription =
+                                stringResource(
+                                    if (onGroups) R.string.bots_action_create_group else R.string.bots_action_create,
+                                ),
+                        )
+                    }
                 }
                 IconButton(
                     onClick = { isSearchActive = true },
@@ -427,16 +441,17 @@ fun BotsScreen(
                                                     activeBots = state.activeNowBots,
                                                     onSelectBot = { bot ->
                                                         scope.launch {
-                                                            viewModel.selectBot(bot)
                                                             val canonicalId =
                                                                 bot.canonical_session?.resolved_id
                                                                     ?: bot.canonical_session?.id
-                                                            if (!canonicalId.isNullOrBlank()) {
-                                                                NavigationController.openChatSession(canonicalId)
-                                                            } else {
-                                                                NavigationController.navigateTo(
-                                                                    com.m57.hermescontrol.ChatScreen,
+                                                            val opened =
+                                                                BotConversations.openSpecialist(
+                                                                    profileName = bot.name,
+                                                                    canonicalSessionId = canonicalId,
+                                                                    openSetupAfterLaunch = bot.isSetupIncomplete,
                                                                 )
+                                                            if (!opened) {
+                                                                viewModel.showToast("プロフィール切り替えに失敗しました。")
                                                             }
                                                         }
                                                     },
@@ -453,21 +468,22 @@ fun BotsScreen(
                                                 isActiveProfile = profile.name == state.activeProfileName,
                                                 onClick = {
                                                     scope.launch {
-                                                        viewModel.selectBot(profile)
                                                         val canonicalId =
                                                             profile.canonical_session?.resolved_id
                                                                 ?: profile.canonical_session?.id
-                                                        if (!canonicalId.isNullOrBlank()) {
-                                                            NavigationController.openChatSession(canonicalId)
-                                                        } else {
-                                                            NavigationController.navigateTo(
-                                                                com.m57.hermescontrol.ChatScreen,
+                                                        val opened =
+                                                            BotConversations.openSpecialist(
+                                                                profileName = profile.name,
+                                                                canonicalSessionId = canonicalId,
+                                                                openSetupAfterLaunch = profile.isSetupIncomplete,
                                                             )
+                                                        if (!opened) {
+                                                            viewModel.showToast("プロフィール切り替えに失敗しました。")
                                                         }
                                                     }
                                                 },
                                                 onEditClick = {
-                                                    editingBot = profile
+                                                    NavigationController.navigateTo(BotSettingsKey(profile.name))
                                                 },
                                                 onWorkerClick = {
                                                     val worker = profile.worker_session ?: return@BotCard
@@ -482,44 +498,50 @@ fun BotsScreen(
                     }
 
                     BotsTab.GROUPS -> {
-                        when {
-                            state.displayGroups.isEmpty() -> {
-                                EmptyState(
-                                    title = stringResource(R.string.bots_groups_empty_title),
-                                    subtitle = stringResource(R.string.bots_groups_empty_desc),
-                                    modifier = Modifier.fillMaxSize(),
-                                )
-                            }
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            GroupsRetirementNotice(
+                                capabilitiesState = state.capabilitiesState,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            )
+                            when {
+                                state.displayGroups.isEmpty() -> {
+                                    EmptyState(
+                                        title = stringResource(R.string.bots_groups_empty_title),
+                                        subtitle = stringResource(R.string.bots_groups_empty_desc),
+                                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                                    )
+                                }
 
-                            else -> {
-                                LazyColumn(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentPadding =
-                                        PaddingValues(
-                                            start = 16.dp,
-                                            end = 16.dp,
-                                            top = 8.dp,
-                                            bottom = 24.dp,
-                                        ),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                                ) {
-                                    items(
-                                        items = state.displayGroups,
-                                        key = { it.name },
-                                    ) { group ->
-                                        GroupCard(
-                                            group = group,
-                                            onClick = {
-                                                if (group.members.isNotEmpty()) {
-                                                    NavigationController.navigateTo(
-                                                        com.m57.hermescontrol.GroupChatKey(group.name),
-                                                    )
-                                                }
-                                            },
-                                            onDisbandClick = {
-                                                disbandingGroup = group
-                                            },
-                                        )
+                                else -> {
+                                    LazyColumn(
+                                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                                        contentPadding =
+                                            PaddingValues(
+                                                start = 16.dp,
+                                                end = 16.dp,
+                                                top = 4.dp,
+                                                bottom = 24.dp,
+                                            ),
+                                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                                    ) {
+                                        items(
+                                            items = state.displayGroups,
+                                            key = { it.name },
+                                        ) { group ->
+                                            GroupCard(
+                                                group = group,
+                                                onClick = {
+                                                    if (group.members.isNotEmpty()) {
+                                                        NavigationController.navigateTo(
+                                                            com.m57.hermescontrol.GroupChatKey(group.name),
+                                                        )
+                                                    }
+                                                },
+                                                onDisbandClick = {
+                                                    disbandingGroup = group
+                                                },
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -680,6 +702,14 @@ private fun BotCard(
                     )
                 }
 
+                if (profile.isSetupIncomplete) {
+                    Text(
+                        text = stringResource(R.string.specialist_detail_status_incomplete),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+
                 if (profile.effectiveDescription.isNotBlank()) {
                     Text(
                         text = profile.effectiveDescription,
@@ -826,6 +856,49 @@ private fun GroupCard(
                     tint = MaterialTheme.colorScheme.error,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun GroupsRetirementNotice(
+    capabilitiesState: SpecialistCapabilitiesState,
+    modifier: Modifier = Modifier,
+) {
+    when (capabilitiesState) {
+        SpecialistCapabilitiesState.Loading -> {
+            Unit
+        }
+
+        is SpecialistCapabilitiesState.Supported -> {
+            InlineNotice(
+                text =
+                    stringResource(
+                        if (capabilitiesState.capabilities.group_retirement_ready) {
+                            R.string.groups_retirement_ready_notice
+                        } else {
+                            R.string.groups_retirement_pending_notice
+                        },
+                    ),
+                tone = NoticeTone.Info,
+                modifier = modifier.testTag("groups_retirement_notice"),
+            )
+        }
+
+        is SpecialistCapabilitiesState.LegacyUnsupported -> {
+            InlineNotice(
+                text = stringResource(R.string.groups_retirement_legacy_notice),
+                tone = NoticeTone.Warning,
+                modifier = modifier.testTag("groups_retirement_notice"),
+            )
+        }
+
+        is SpecialistCapabilitiesState.Unavailable -> {
+            InlineNotice(
+                text = capabilitiesState.message,
+                tone = NoticeTone.Warning,
+                modifier = modifier.testTag("groups_retirement_notice"),
+            )
         }
     }
 }

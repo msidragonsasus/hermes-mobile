@@ -22,7 +22,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import com.m57.hermescontrol.ChatScreen
 import com.m57.hermescontrol.HermesControlApp
-import com.m57.hermescontrol.HistoryScreen
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.agents.BotConversations
@@ -188,14 +187,6 @@ internal fun ObservedActivityContent(
                             )
                         }
                     }
-                }
-            }
-            item {
-                TextButton(
-                    onClick = { NavigationController.navigateTo(HistoryScreen) },
-                    shapes = ButtonDefaults.shapes(),
-                ) {
-                    Text(stringResource(R.string.screen_history))
                 }
             }
         }

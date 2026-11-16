@@ -26,6 +26,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.data.model.BrainstormSnapshot
 import com.m57.hermescontrol.theme.LocalChatFontScale
 import com.m57.hermescontrol.ui.chat.ChatBubble
 import com.m57.hermescontrol.ui.chat.ChatMessage
@@ -38,6 +39,8 @@ import com.m57.hermescontrol.ui.chat.MessageRole
 import com.m57.hermescontrol.ui.chat.NativeUiProtocol
 import com.m57.hermescontrol.ui.chat.RichAnswerPrompt
 import com.m57.hermescontrol.ui.chat.ToolCallDivider
+import com.m57.hermescontrol.ui.chat.brainstorm.BrainstormCard
+import com.m57.hermescontrol.ui.chat.brainstorm.BrainstormParser
 import com.m57.hermescontrol.ui.chat.components.ChatScrollController
 import com.m57.hermescontrol.ui.chat.components.ClarifyBubble
 import com.m57.hermescontrol.ui.chat.components.ReasoningCard
@@ -88,6 +91,7 @@ fun FullBleedChatList(
     sessionKey: String? = null,
     showThinkingIndicator: Boolean = false,
     replyLifecycle: ReplyLifecycle = ReplyLifecycle(),
+    brainstormsById: Map<String, BrainstormSnapshot> = emptyMap(),
 ) {
     var expandedTurns by remember(sessionKey) { mutableStateOf(emptySet<String>()) }
     val planningCache = remember(viewModel) { RenderPlanningCache() }
@@ -118,6 +122,8 @@ fun FullBleedChatList(
         val toolMilestones = plan.milestones
         val turns = plan.turns
         val replyFooters = plan.replyFooters
+        val duplicateBrainstormIds = BrainstormParser.duplicateBrainstormMessageIds(turns)
+        val mergedBrainstorms = BrainstormParser.collectMergedFromMessages(messages, brainstormsById)
         // messageId → LazyColumn item index. The lazy list has EXTRA items
         // vs the message list (reasoning hoists, tool rows, reply footers), so
         // search-match scrolling must resolve the lazy index, not the message index.
@@ -262,10 +268,15 @@ fun FullBleedChatList(
                                         AgentTurnActivityRow(
                                             expanded = activityExpanded,
                                             hasReasoning = reasoningMessages.isNotEmpty(),
-                                            toolCount = turn.entries.count { it is AgentEntry.ToolRow },
+                                            toolCount =
+                                                turn.entries.count {
+                                                    it is AgentEntry.ToolRow &&
+                                                        !BrainstormParser.isBrainstormToolMessage(it.message)
+                                                },
                                             toolRunning =
                                                 turn.entries.any {
                                                     it is AgentEntry.ToolRow &&
+                                                        !BrainstormParser.isBrainstormToolMessage(it.message) &&
                                                         it.message.toolStatus ==
                                                         com.m57.hermescontrol.ui.chat.ToolStatus.RUNNING
                                                 },
@@ -294,6 +305,10 @@ fun FullBleedChatList(
                                 }
                             }
                             turn.entries.forEach entries@{ entry ->
+                                if (entry is AgentEntry.ToolRow && entry.message.id in duplicateBrainstormIds) {
+                                    entryIndex++
+                                    return@entries
+                                }
                                 if (!entry.visibleWhen(activityExpanded)) {
                                     entryIndex += if (entry is AgentEntry.ConnectionEvents) entry.messages.size else 1
                                     return@entries
@@ -337,6 +352,12 @@ fun FullBleedChatList(
                                                     } else {
                                                         FullBleedAgentMessage(
                                                             message = proseMessage,
+                                                            actionMessage =
+                                                                proseMessage.copy(
+                                                                    id = replyFooter?.responseId ?: proseMessage.id,
+                                                                    content = replyFooter?.text ?: proseMessage.content,
+                                                                    isStreaming = replyFooter == null,
+                                                                ),
                                                             showTurnHeader = showTurnHeader,
                                                             isDarkTheme = isDark,
                                                             // Highlight only bubbles that actually contain a match —
@@ -376,9 +397,23 @@ fun FullBleedChatList(
                                     is AgentEntry.ToolRow -> {
                                         val toolMessage = entry.message
                                         val milestone = toolMilestones[entryIndex]
+                                        val brainstormSnapshot =
+                                            BrainstormParser.resolveForToolMessage(toolMessage, mergedBrainstorms)
                                         item(key = "tool-${toolMessage.id}") {
-                                            Column(modifier = Modifier.padding(bottom = 2.dp)) {
-                                                FullBleedToolRow(toolMessage)
+                                            Column(
+                                                modifier =
+                                                    Modifier.padding(
+                                                        bottom = if (brainstormSnapshot != null) 8.dp else 2.dp,
+                                                    ),
+                                            ) {
+                                                if (brainstormSnapshot != null) {
+                                                    BrainstormCard(
+                                                        snapshot = brainstormSnapshot,
+                                                        modifier = Modifier.padding(horizontal = 16.dp),
+                                                    )
+                                                } else {
+                                                    FullBleedToolRow(toolMessage)
+                                                }
                                                 milestone?.let { count ->
                                                     ToolCallDivider(count = count, maxPerTurn = maxToolCallsPerTurn)
                                                 }
@@ -447,7 +482,6 @@ fun FullBleedChatList(
                                 val footerKey = replyFooter.responseId
                                 item(key = "reply-footer-$footerKey") {
                                     ReplyFooterRow(
-                                        text = replyFooter.text,
                                         finishedAt = replyFooter.finishedAt,
                                         modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
                                     )

@@ -181,6 +181,10 @@ existing code. A Material import or a rounded rectangle does not prove complianc
 
 ### User decisions (do not undo)
 
+- 2026-11-16: image attachments must be photo-first. Do not restore the small
+  thumbnail plus filename chip for pending photos, or a padded, tinted text
+  bubble around sent photos. Keep filenames in accessibility labels and the
+  existing viewer. Preserve image aspect ratio in the conversation.
 - 2026-10-19: no box-like, square input fields and no decorative outlines on
   inputs. Conversation entry reuses `ChatComposer`.
 - 2026-10-24: **no big rectangular cards.** The user called the card-stacked,
@@ -225,6 +229,44 @@ When the user rejects a design, record it here in the same change.
   `shape = MaterialTheme.shapes.medium`, label above or inside, readable focus,
   error and disabled states. Never the default 4dp square outline.
 - Multi-line composer: `ChatComposer` only.
+
+### Conversation layout (2026-11-16)
+
+Following the Muse UI investigation, conversation screens use a shared measured
+`ConversationLayout`: the timeline and the bottom composer are separate slots.
+The dock's actual height (attachments, model controls and notices included) defines
+the available viewport. Do not estimate it with a fixed spacer or a previous
+frame's `onSizeChanged` result. The enclosing scaffold owns system bars; the
+conversation layout owns IME padding.
+
+`LocalConversationStyle` supplies the common 840dp maximum reading width, 24dp
+composer radius, 56dp minimum input height and 48dp action targets. The composer
+is the explicit exception to the daily surface-radius scale below. Colors,
+typography and motion continue to come from the host Material theme. No Muse
+assets, proprietary code, new palette or content shadows are introduced.
+
+Attachments and command suggestions sit above the input capsule; model and
+reasoning controls sit below it on the page. Configured controls remain reachable
+with an empty draft. Normal chat, groups, OpenClaw and Career conversations reuse
+this layout and composer while retaining their own sending/authentication rules.
+
+Message actions use the shared `MessageActionHost`: long-press settled text to
+open an anchored, rounded icon-and-label menu. Reply quotes visible text into the
+existing draft without sending; Copy and Select are available to both roles.
+Selection opens a native selectable-text surface. Expose the same menu through
+the accessibility long-click action. Do not add permanent per-message copy
+footers or unsupported operations (individual-message deletion has no API).
+Embedded links and controls retain their own tap handling; streaming text does
+not open actions. Menu colors, shape and spacing use host theme tokens.
+
+Pending photos use an 88dp image strip above the composer, with a small circular
+remove affordance inside a 48dp target. Photos have no visible filename chip.
+Conversation photos sit directly on the page; user captions keep their own text
+bubble, and photo-only messages have no empty text surface. The shared image
+renderer fits the complete image within 320dp width and 360dp height, preserving
+portrait and landscape proportions. It also handles Markdown images, GIF controls,
+loading and failure states. The existing full-screen viewer remains the detail
+view. Theme shapes and colors apply to every image surface.
 
 ## Layout
 

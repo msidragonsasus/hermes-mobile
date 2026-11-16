@@ -189,6 +189,7 @@ object AppManagement {
     fun contains(stack: List<NavKey>): Boolean =
         stack.any {
             it in roots || it is com.m57.hermescontrol.agents.BotDefaultsKey ||
+                it is com.m57.hermescontrol.agents.BotSettingsKey ||
                 it is com.m57.hermescontrol.ExternalServiceDetailKey ||
                 it is com.m57.hermescontrol.McpConnectionSettingsKey ||
                 it == com.m57.hermescontrol.SettingsGoogleConnection ||

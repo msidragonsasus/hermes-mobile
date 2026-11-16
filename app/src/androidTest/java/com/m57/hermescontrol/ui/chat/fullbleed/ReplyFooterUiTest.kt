@@ -14,11 +14,13 @@ import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.MediumTest
 import androidx.test.platform.app.InstrumentationRegistry
@@ -29,6 +31,8 @@ import com.m57.hermescontrol.ui.chat.ChatSearchState
 import com.m57.hermescontrol.ui.chat.ChatViewModel
 import com.m57.hermescontrol.ui.chat.MessageRole
 import com.m57.hermescontrol.ui.chat.ToolStatus
+import com.m57.hermescontrol.ui.chat.acceptInput
+import com.m57.hermescontrol.ui.chat.admitTerminal
 import com.m57.hermescontrol.ui.chat.components.ChatScrollController
 import com.m57.hermescontrol.ui.chat.formatTimestamp
 import io.mockk.coEvery
@@ -155,6 +159,7 @@ class ReplyFooterUiTest {
                                 com.m57.hermescontrol.ui.chat.ResponseRecord(
                                     id = "fixture-response",
                                     messageIds = listOf("first", "tool", "last"),
+                                    authority = completedAuthority(listOf("first", "tool", "last")),
                                     userIds = listOf(),
                                     finishedAt = 1_700_000_060_000L,
                                 ),
@@ -162,7 +167,8 @@ class ReplyFooterUiTest {
                         ),
                 )
         }
-        compose.onAllNodesWithTag("fullbleed_copy").assertCountEquals(1)
+        compose.onAllNodesWithTag("fullbleed_copy").assertCountEquals(0)
+        debugSnapshot("footer")
         compose.onAllNodesWithTag("fullbleed_finish_time").assertCountEquals(1)
         compose
             .onAllNodes(
@@ -170,7 +176,8 @@ class ReplyFooterUiTest {
                 useUnmergedTree = true,
             ).assertCountEquals(0)
         assertHeaderHasNoTime(first)
-        compose.onNodeWithTag("fullbleed_copy").performClick()
+        compose.onAllNodesWithTag("fullbleed_agent_message")[0].performTouchInput { longClick(center) }
+        compose.onNodeWithTag("message_action_copy").assertIsDisplayed().performClick()
         compose.waitUntil { copied.get() != null }
         assertEquals("First **answer**\n\nLast answer", copied.get())
         assertNoSkip()
@@ -259,6 +266,7 @@ class ReplyFooterUiTest {
                                 com.m57.hermescontrol.ui.chat.ResponseRecord(
                                     id = "fixture-response",
                                     messageIds = listOf("a1", "a2"),
+                                    authority = completedAuthority(listOf("a1", "a2")),
                                     userIds = listOf("steer"),
                                     finishedAt = 1_700_000_060_000L,
                                 ),
@@ -266,22 +274,69 @@ class ReplyFooterUiTest {
                         ),
                 )
         }
-        compose.onAllNodesWithTag("fullbleed_copy").assertCountEquals(1)
+        compose.onAllNodesWithTag("fullbleed_copy").assertCountEquals(0)
+        debugSnapshot("footer")
         compose.onAllNodesWithTag("fullbleed_finish_time").assertCountEquals(1)
-        compose.onNodeWithTag("fullbleed_copy").performClick()
+        compose.onAllNodesWithTag("fullbleed_agent_message")[0].performTouchInput { longClick(center) }
+        compose.onNodeWithTag("message_action_copy").assertIsDisplayed().performClick()
         compose.waitUntil { copied.get() != null }
         assertEquals("A1\n\nA2", copied.get())
         assertNoSkip()
     }
 
     @Test
-    fun standaloneCallerDefaultsRetainItsExistingCopyAndTimestamp() {
+    fun standaloneCallerUsesCopyMenuAndTimestamp() {
         compose.setContent {
             MaterialTheme {
                 FullBleedAgentMessage(message = answer("standalone"), showTurnHeader = true, isDarkTheme = false)
             }
         }
-        compose.onAllNodesWithTag("fullbleed_copy").assertCountEquals(1)
+        compose.onAllNodesWithTag("fullbleed_copy").assertCountEquals(0)
+        debugSnapshot("footer")
         compose.onAllNodesWithTag("fullbleed_finish_time").assertCountEquals(1)
+        compose.onNodeWithTag("fullbleed_agent_message").performTouchInput { longClick(center) }
+        compose.onNodeWithTag("message_action_copy").assertIsDisplayed()
+    }
+
+    private fun debugSnapshot(name: String) {
+        compose.waitForIdle()
+        val inst =
+            androidx.test.platform.app.InstrumentationRegistry
+                .getInstrumentation()
+        val dir = java.io.File(inst.targetContext.getExternalFilesDir(null), "port-debug").apply { mkdirs() }
+        java.io.File(dir, "$name.png").outputStream().use {
+            inst.uiAutomation.takeScreenshot().compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+        }
+    }
+
+    // Use the deployed admission and terminal contract, rather than a legacy
+    // finishedAt flag (which intentionally cannot grant copy authority).
+    private fun completedAuthority(members: List<String>): com.m57.hermescontrol.ui.chat.ReplyAuthorityFacts {
+        val record =
+            com.m57.hermescontrol.ui.chat
+                .ResponseRecord(id = "fixture-response", messageIds = members)
+        val admitted =
+            com.m57.hermescontrol.ui.chat
+                .ResponseLedger(listOf(record))
+                .acceptInput(
+                    "fixture-attempt",
+                    record.id,
+                    null,
+                    true,
+                    "fixture-rpc",
+                    "STREAMING",
+                    "fixture-target",
+                    "fixture-session",
+                    1L,
+                    null,
+                    null,
+                    null,
+                ).responses
+                .single()
+        return admitted
+            .admitTerminal(
+                com.m57.hermescontrol.ui.chat
+                    .TerminalEvidence(1_700_000_060_000L, 2L, complete = true),
+            ).authority
     }
 }

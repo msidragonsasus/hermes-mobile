@@ -78,7 +78,7 @@ internal fun availableReasoningLevels(canDisableReasoning: Boolean?): List<Pair<
 fun friendlyModelName(model: String?): String? = model?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
 
 /**
- * Model and reasoning controls, shown under the input only while the user is composing.
+ * Model and reasoning controls on their own quiet row beneath the input capsule.
  * Plain text buttons (no filled chips) so nothing looks permanently "selected". The reasoning
  * button opens the floating level slider ([ReasoningLevelPanel]) above the composer.
  */

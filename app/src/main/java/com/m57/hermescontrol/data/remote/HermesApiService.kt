@@ -9,6 +9,8 @@ import com.m57.hermescontrol.data.model.AgentPluginInstallBody
 import com.m57.hermescontrol.data.model.AnalyticsResponse
 import com.m57.hermescontrol.data.model.AuxiliaryModelsResponse
 import com.m57.hermescontrol.data.model.BackupTriggerRequest
+import com.m57.hermescontrol.data.model.BrainstormSnapshot
+import com.m57.hermescontrol.data.model.BrainstormsListResponse
 import com.m57.hermescontrol.data.model.BulkDeleteRequest
 import com.m57.hermescontrol.data.model.BulkDeleteResponse
 import com.m57.hermescontrol.data.model.CheckpointsResponse
@@ -16,6 +18,8 @@ import com.m57.hermescontrol.data.model.ConfigSchemaResponse
 import com.m57.hermescontrol.data.model.ConfigUpdateRequest
 import com.m57.hermescontrol.data.model.CreateCronJobRequest
 import com.m57.hermescontrol.data.model.CreateProfileRequest
+import com.m57.hermescontrol.data.model.CreateSpecialistRequest
+import com.m57.hermescontrol.data.model.CreateSpecialistResponse
 import com.m57.hermescontrol.data.model.CreateTaskBody
 import com.m57.hermescontrol.data.model.CreateWebhookRequest
 import com.m57.hermescontrol.data.model.CredentialPoolResponse
@@ -109,6 +113,11 @@ import com.m57.hermescontrol.data.model.SkillHubSearchResponse
 import com.m57.hermescontrol.data.model.SkillHubSourcesResponse
 import com.m57.hermescontrol.data.model.SkillHubUninstallRequest
 import com.m57.hermescontrol.data.model.SkillScanResponse
+import com.m57.hermescontrol.data.model.SpecialistCapabilitiesResponse
+import com.m57.hermescontrol.data.model.SpecialistSetupConfirmRequest
+import com.m57.hermescontrol.data.model.SpecialistSetupDraftRequest
+import com.m57.hermescontrol.data.model.SpecialistSetupSnapshot
+import com.m57.hermescontrol.data.model.SpecialistTemplatesResponse
 import com.m57.hermescontrol.data.model.StatusResponse
 import com.m57.hermescontrol.data.model.SystemStatsResponse
 import com.m57.hermescontrol.data.model.TelegramOnboardingApplyRequest
@@ -655,6 +664,11 @@ interface HermesApiService {
     @GET("api/skills")
     suspend fun getSkills(): Response<List<Skill>>
 
+    @GET("api/skills")
+    suspend fun getSkillsForProfile(
+        @Query("profile") profile: String,
+    ): Response<List<Skill>>
+
     @GET("api/skills/hub/search")
     suspend fun searchSkillsHub(
         @Query("q") q: String,
@@ -690,17 +704,40 @@ interface HermesApiService {
         @Body body: ToggleSkillRequest,
     ): Response<Unit>
 
+    @PUT("api/skills/toggle")
+    suspend fun toggleSkillForProfile(
+        @Body body: ToggleSkillRequest,
+        @Query("profile") profile: String,
+    ): Response<Unit>
+
     @GET("api/cron/jobs")
     suspend fun getCronJobs(): Response<List<CronJob>>
+
+    @GET("api/cron/jobs")
+    suspend fun getCronJobsForProfile(
+        @Query("profile") profile: String,
+    ): Response<List<CronJob>>
 
     @POST("api/cron/jobs/{id}/pause")
     suspend fun pauseCronJob(
         @Path("id") id: String,
     ): Response<Unit>
 
+    @POST("api/cron/jobs/{id}/pause")
+    suspend fun pauseCronJobForProfile(
+        @Path("id") id: String,
+        @Query("profile") profile: String,
+    ): Response<Unit>
+
     @POST("api/cron/jobs/{id}/resume")
     suspend fun resumeCronJob(
         @Path("id") id: String,
+    ): Response<Unit>
+
+    @POST("api/cron/jobs/{id}/resume")
+    suspend fun resumeCronJobForProfile(
+        @Path("id") id: String,
+        @Query("profile") profile: String,
     ): Response<Unit>
 
     @GET("api/cron/jobs/{id}")
@@ -809,6 +846,48 @@ interface HermesApiService {
     suspend fun getProfileSetupCommand(
         @Path("name") name: String,
     ): Response<ProfileSetupCommandResponse>
+
+    // ── Specialists Setup & Parallel Brainstorms (M5 Step 3–4) ────────
+    @GET("api/specialists/capabilities")
+    suspend fun getSpecialistCapabilities(): Response<SpecialistCapabilitiesResponse>
+
+    @GET("api/specialists/templates")
+    suspend fun getSpecialistTemplates(): Response<SpecialistTemplatesResponse>
+
+    @POST("api/specialists")
+    suspend fun createSpecialist(
+        @Body body: CreateSpecialistRequest,
+    ): Response<CreateSpecialistResponse>
+
+    @GET("api/specialists/{name}/setup")
+    suspend fun getSpecialistSetup(
+        @Path("name") name: String,
+    ): Response<SpecialistSetupSnapshot>
+
+    @POST("api/specialists/{name}/setup/draft")
+    suspend fun generateSpecialistSetupDraft(
+        @Path("name") name: String,
+        @Body body: SpecialistSetupDraftRequest,
+    ): Response<SpecialistSetupSnapshot>
+
+    @POST("api/specialists/{name}/setup/confirm")
+    suspend fun confirmSpecialistSetup(
+        @Path("name") name: String,
+        @Body body: SpecialistSetupConfirmRequest,
+    ): Response<SpecialistSetupSnapshot>
+
+    @GET("api/specialists/brainstorms")
+    suspend fun getBrainstorms(
+        @Query("profile") profile: String = "default",
+        @Query("session_id") sessionId: String,
+    ): Response<BrainstormsListResponse>
+
+    @GET("api/specialists/brainstorms/{id}")
+    suspend fun getBrainstorm(
+        @Path("id") id: String,
+        @Query("profile") profile: String = "default",
+        @Query("session_id") sessionId: String,
+    ): Response<BrainstormSnapshot>
 
     @GET("api/tools/toolsets")
     suspend fun getToolsets(): Response<List<Toolset>>

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="shell_agent">Agent</string>
+    <string name="shell_agent">Hermes</string>
     <string name="agent_hub_intro">エージェントを選んで、接続状態と使える機能を確認できます。会話と権限はエージェントごとに分かれます。</string>
     <string name="agent_connection_unverified">接続未確認</string>
     <string name="agent_bro_description">このアプリから、いつものbroへの接続は未確認です。既存のbroからHermesへのテキスト中継だけでは、逆方向の接続は使えません。</string>

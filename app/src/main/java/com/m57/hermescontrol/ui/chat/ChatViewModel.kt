@@ -3,9 +3,9 @@ package com.m57.hermescontrol.ui.chat
 import android.app.Application
 import android.net.Uri
 import android.util.Log
-import com.m57.hermescontrol.BuildConfig
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.m57.hermescontrol.BuildConfig
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.local.AuthManager
@@ -14,6 +14,7 @@ import com.m57.hermescontrol.data.local.OutgoingDraftRepository
 import com.m57.hermescontrol.data.local.OutgoingDraftStore
 import com.m57.hermescontrol.data.local.SlashUsageStore
 import com.m57.hermescontrol.data.model.Attachment
+import com.m57.hermescontrol.data.model.BrainstormSnapshot
 import com.m57.hermescontrol.data.model.ModelCapabilities
 import com.m57.hermescontrol.data.model.ModelProvider
 import com.m57.hermescontrol.data.model.PinnedModel
@@ -24,6 +25,8 @@ import com.m57.hermescontrol.data.remote.ApiClient
 import com.m57.hermescontrol.data.remote.HermesApiService
 import com.m57.hermescontrol.data.remote.NetworkResult
 import com.m57.hermescontrol.data.remote.OkHttpProvider
+import com.m57.hermescontrol.data.remote.SpecialistApiOutcome
+import com.m57.hermescontrol.data.remote.SpecialistsRepository
 import com.m57.hermescontrol.data.remote.safeApiCall
 import com.m57.hermescontrol.data.session.ActiveSessionHolder
 import com.m57.hermescontrol.data.session.ProfileSwitchCoordinator
@@ -52,6 +55,7 @@ import com.m57.hermescontrol.domain.hermes.SessionRef
 import com.m57.hermescontrol.domain.hermes.SubmissionProofSource
 import com.m57.hermescontrol.domain.hermes.SubmissionResult
 import com.m57.hermescontrol.domain.hermes.draftTargetKey
+import com.m57.hermescontrol.ui.chat.brainstorm.BrainstormParser
 import com.m57.hermescontrol.ui.common.ActionProgressController
 import com.m57.hermescontrol.vault.VaultPromptUi
 import com.m57.hermescontrol.vault.vaultOrigin
@@ -462,6 +466,8 @@ data class ChatUiState(
     val btwState: BtwUiState? = null,
     /** Subagent delegation indicators (issue #538) — transient UI state. */
     val subagentIndicators: List<SubagentIndicator> = emptyList(),
+    /** Hydrated & live parallel brainstorm snapshots keyed by brainstorm_id (M5 Step 4). */
+    val brainstormsById: Map<String, BrainstormSnapshot> = emptyMap(),
     /** Agent todo / plan items (issue #736). */
     val todos: List<TodoItem> = emptyList(),
     // Session resume recovery (desktop parity: bounded auto-retry + error UI)
@@ -599,6 +605,7 @@ class ChatViewModel(
     private val clock: () -> Long = System::currentTimeMillis,
     private val streamingTestEnvironment: (() -> Boolean)? = null,
     private val streamingTokenClock: () -> Long = System::currentTimeMillis,
+    private val specialistsRepositoryOverride: SpecialistsRepository? = null,
 ) : AndroidViewModel(application) {
     constructor(application: Application) : this(application, startCleanup = true)
 
@@ -681,6 +688,10 @@ class ChatViewModel(
             if (field != value) todoHistoryMemo.clear()
             field = value
         }
+    private val resolvedSpecialistsRepository: SpecialistsRepository by lazy {
+        specialistsRepositoryOverride ?: SpecialistsRepository()
+    }
+    private var brainstormPollJob: Job? = null
     private var subagentSnapshotJob: Job? = null
     private var subagentSnapshotFailures = 0
     private var subagentSnapshotOwner: Pair<ConnectionScope, String>? = null
@@ -1310,7 +1321,9 @@ class ChatViewModel(
         fetchCommandCatalog()
         preloadModelOptions()
         val currentId = _uiState.value.currentSessionId
-        val requestedSession = NavigationController.pendingSessionId ?: initialSessionId
+        val requestedSession =
+            NavigationController.pendingSessionIdForProfile(AuthManager.activeProfileId.value)
+                ?: initialSessionId
         if (!requestedSession.isNullOrBlank() && requestedSession != currentId) {
             initialSessionId = null
             switchSession(requestedSession)
@@ -1394,7 +1407,8 @@ class ChatViewModel(
             }
             // The user (or a notification) may have opened something while we looked.
             val openedElsewhere =
-                _uiState.value.currentSessionId != null || NavigationController.pendingSessionId != null
+                _uiState.value.currentSessionId != null ||
+                    NavigationController.pendingSessionIdForProfile(AuthManager.activeProfileId.value) != null
             if (generation != sessionGeneration || (!userInitiated && openedElsewhere)) return@launch
             when (target) {
                 is MainConversation.Found -> {
@@ -2033,6 +2047,15 @@ class ChatViewModel(
                 // here — resetStreaming() would wipe streamingMessage +
                 // reasoningText and re-introduce the mid-turn reasoning vanish.
                 streamingController.clearStreamingBuffers()
+                if (event.name == "message_agent") {
+                    onMessageAgentToolStart(event.data)
+                }
+            }
+
+            is WsEvent.ToolComplete -> {
+                if (event.name == "message_agent") {
+                    onMessageAgentToolComplete(event.data)
+                }
             }
 
             is WsEvent.MessageInterim -> {
@@ -5226,6 +5249,11 @@ class ChatViewModel(
                         )
                     }
                     hydratedGeneration = generation
+                    hydrateBrainstormsForSession(
+                        sessionId = sessionId,
+                        generation = generation,
+                        profile = resyncScope?.serverProfileId ?: AuthManager.activeProfileId.value ?: "default",
+                    )
                     finishResumeWhenHydrated(generation)
                 }
 
@@ -5317,6 +5345,7 @@ class ChatViewModel(
         commitTranscript(TranscriptBarrier.NAVIGATION_FLUSH)
         replayResyncJob?.cancel()
         replayResyncOwner = null
+        brainstormPollJob?.cancel()
         subagentSnapshotJob?.cancel()
         // Earlier structural snapshots drain before the next claim in the same actor.
         // Undo, unlike navigation, explicitly revokes its old owner.
@@ -5390,6 +5419,7 @@ class ChatViewModel(
                 composerTextToRestore = null,
                 reactionKind = null,
                 subagentIndicators = emptyList(),
+                brainstormsById = emptyMap(),
                 todos = emptyList(),
                 resumeError = null,
                 isResumeRetrying = false,
@@ -6883,9 +6913,114 @@ class ChatViewModel(
         return isTestEnv == true
     }
 
+    // ── Parallel Brainstorms (M5 Step 4) ────────────────────────────────
+
+    internal fun onMessageAgentToolStart(data: Map<String, Any?>?) {
+        val obj = data?.toJsonElement() as? kotlinx.serialization.json.JsonObject ?: return
+        val parsed = BrainstormParser.parseFromJsonObject(obj, toolRunning = true) ?: return
+        mergeBrainstormSnapshot(parsed)
+        val bid =
+            (data["brainstorm_id"] as? String)?.takeIf { it.isNotBlank() }
+                ?: parsed.id.takeIf { !it.startsWith("inline-") }
+                ?: return
+        if (parsed.status == "running") {
+            val sessionId = _uiState.value.currentSessionId ?: return
+            val profile = AuthManager.activeProfileId.value?.takeIf { it.isNotBlank() } ?: "default"
+            startBrainstormPolling(bid, sessionId, sessionGeneration, profile)
+        }
+    }
+
+    internal fun onMessageAgentToolComplete(data: Map<String, Any?>?) {
+        brainstormPollJob?.cancel()
+        val obj = data?.toJsonElement() as? kotlinx.serialization.json.JsonObject ?: return
+        val parsed = BrainstormParser.parseFromJsonObject(obj, toolRunning = false)
+        if (parsed != null) {
+            mergeBrainstormSnapshot(parsed)
+        }
+        val bid = (data["brainstorm_id"] as? String)?.takeIf { it.isNotBlank() } ?: return
+        val sessionId = _uiState.value.currentSessionId ?: return
+        val generation = sessionGeneration
+        val profile = AuthManager.activeProfileId.value?.takeIf { it.isNotBlank() } ?: "default"
+        if (specialistsRepositoryOverride == null && isTestEnvironment()) return
+        viewModelScope.launch(ioDispatcher) {
+            val outcome = resolvedSpecialistsRepository.getBrainstorm(bid, sessionId = sessionId, profile = profile)
+            if (!isCurrentSessionRequest(sessionId, generation)) return@launch
+            if (outcome is SpecialistApiOutcome.Success) {
+                mergeBrainstormSnapshot(outcome.data)
+            }
+        }
+    }
+
+    internal fun hydrateBrainstormsForSession(
+        sessionId: String,
+        generation: Long,
+        profile: String,
+    ) {
+        if (specialistsRepositoryOverride == null && isTestEnvironment()) return
+        val cleanProfile = profile.takeIf { it.isNotBlank() } ?: "default"
+        viewModelScope.launch(ioDispatcher) {
+            val outcome = resolvedSpecialistsRepository.listBrainstorms(sessionId = sessionId, profile = cleanProfile)
+            if (!isCurrentSessionRequest(sessionId, generation)) return@launch
+            if (outcome is SpecialistApiOutcome.Success) {
+                outcome.data.forEach { mergeBrainstormSnapshot(it) }
+                val running = outcome.data.lastOrNull { it.status == "running" }
+                if (running != null && brainstormPollJob?.isActive != true) {
+                    startBrainstormPolling(running.id, sessionId, generation, cleanProfile)
+                }
+            }
+        }
+    }
+
+    private fun startBrainstormPolling(
+        brainstormId: String,
+        sessionId: String,
+        generation: Long,
+        profile: String,
+    ) {
+        if (specialistsRepositoryOverride == null && isTestEnvironment()) return
+        brainstormPollJob?.cancel()
+        brainstormPollJob =
+            viewModelScope.launch(ioDispatcher) {
+                repeat(40) {
+                    delay(1_500L)
+                    if (!isCurrentSessionRequest(sessionId, generation)) return@launch
+                    when (
+                        val outcome =
+                            resolvedSpecialistsRepository.getBrainstorm(
+                                id = brainstormId,
+                                sessionId = sessionId,
+                                profile = profile,
+                            )
+                    ) {
+                        is SpecialistApiOutcome.Success -> {
+                            if (!isCurrentSessionRequest(sessionId, generation)) return@launch
+                            mergeBrainstormSnapshot(outcome.data)
+                            if (outcome.data.status != "running") return@launch
+                        }
+
+                        is SpecialistApiOutcome.Unsupported -> {
+                            return@launch
+                        }
+
+                        else -> {
+                            Unit
+                        }
+                    }
+                }
+            }
+    }
+
+    private fun mergeBrainstormSnapshot(snapshot: BrainstormSnapshot) {
+        _uiState.update { state ->
+            val merged = BrainstormParser.mergeSnapshot(state.brainstormsById[snapshot.id], snapshot) ?: snapshot
+            state.copy(brainstormsById = state.brainstormsById + (snapshot.id to merged))
+        }
+    }
+
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
     override fun onCleared() {
+        brainstormPollJob?.cancel()
         cancelResumeDeadline()
         activeResumeRequestSequence = ++resumeRequestSequence
         todoHistoryMemo.clear()

@@ -5,11 +5,13 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
@@ -18,7 +20,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -28,6 +35,7 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
@@ -38,6 +46,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
@@ -46,9 +55,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
@@ -56,14 +68,17 @@ import androidx.navigation3.ui.NavDisplay
 import com.m57.hermescontrol.agents.AgentDetailKey
 import com.m57.hermescontrol.agents.AgentDetailScreen
 import com.m57.hermescontrol.agents.AgentHubScreen
+import com.m57.hermescontrol.agents.BotSettingsKey
 import com.m57.hermescontrol.career.text
 import com.m57.hermescontrol.data.local.AuthManager
+import com.m57.hermescontrol.data.model.ProfileInfo
+import com.m57.hermescontrol.data.remote.NetworkResult
+import com.m57.hermescontrol.data.session.ProfileSwitchCoordinator
 import com.m57.hermescontrol.data.ws.ConnectionStatus
 import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.navigation.ActivityScreen
 import com.m57.hermescontrol.navigation.AdvancedScreen
 import com.m57.hermescontrol.navigation.AgentScreen
-import com.m57.hermescontrol.navigation.AppManagement
 import com.m57.hermescontrol.navigation.AppsScreen
 import com.m57.hermescontrol.navigation.AttentionDetailKey
 import com.m57.hermescontrol.navigation.ShellTab
@@ -73,7 +88,9 @@ import com.m57.hermescontrol.navigation.rememberShellNavigation
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.ui.apps.MiniAppsScreen
 import com.m57.hermescontrol.ui.attention.AttentionDetailScreen
+import com.m57.hermescontrol.ui.bots.BotsViewModel
 import com.m57.hermescontrol.ui.common.AdvancedScreenContent
+import com.m57.hermescontrol.ui.common.BotAvatar
 import com.m57.hermescontrol.ui.common.DisableDrawerGestures
 import com.m57.hermescontrol.ui.common.DrawerGestureController
 import com.m57.hermescontrol.ui.common.LocalDrawerGestureController
@@ -126,8 +143,8 @@ private fun appEntryProvider(
             .OpenClawSettingsScreen()
     }
     entry<com.m57.hermescontrol.agents.BotSettingsKey> {
-        com.m57.hermescontrol.ui.bots
-            .BotsScreen(initialEditBot = it.profileName)
+        com.m57.hermescontrol.agents
+            .BotDetailScreen(profileName = it.profileName)
     }
     entry<com.m57.hermescontrol.agents.ChatSettingsKey> {
         com.m57.hermescontrol.agents
@@ -433,6 +450,7 @@ fun MainNavigation(sessionId: String? = null) {
         }
 
     val openDrawer: () -> Unit = { scope.launch { drawerState.open() } }
+    var showCreateSpecialistSheet by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     var lastBackPressTime by remember { mutableLongStateOf(0L) }
@@ -456,6 +474,15 @@ fun MainNavigation(sessionId: String? = null) {
         NavigationController.goBack()
     }
 
+    val botsViewModel: BotsViewModel? = if (hasToken) viewModel { BotsViewModel() } else null
+    val botsStateState = botsViewModel?.uiState?.collectAsStateWithLifecycle()
+    val botsState = botsStateState?.value
+    LaunchedEffect(hasToken, drawerState.targetValue) {
+        if (hasToken && drawerState.targetValue == DrawerValue.Open) {
+            botsViewModel?.loadBots(isRefresh = true)
+        }
+    }
+
     val shellMenu: (@Composable () -> Unit)? = if (hasToken && shell?.isAtRoot == true) ({ ShellMenu() }) else null
     val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val managementScope = hasToken && shell?.isInManagement == true
@@ -472,90 +499,247 @@ fun MainNavigation(sessionId: String? = null) {
             drawerState = drawerState,
             gesturesEnabled = gestureController.enabled,
             drawerContent = {
-                ModalDrawerSheet(
-                    modifier = Modifier.verticalScroll(rememberScrollState()),
-                ) {
-                    val connectionStatus by HermesWsClient.connectionStatus.collectAsState()
-                    val statusColor =
-                        when (connectionStatus) {
-                            ConnectionStatus.CONNECTED -> LocalHermesStatusColors.current.success
-
-                            ConnectionStatus.CONNECTING,
-                            ConnectionStatus.RECONNECTING,
-                            -> LocalHermesStatusColors.current.warning
-
-                            ConnectionStatus.DISCONNECTED,
-                            ConnectionStatus.NO_NETWORK,
-                            ConnectionStatus.AUTH_EXPIRED,
-                            -> LocalHermesStatusColors.current.error
-                        }
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 2.dp),
+                ModalDrawerSheet {
+                    Column(
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
                     ) {
-                        Text(
-                            text = stringResource(R.string.app_management_title),
-                            style =
-                                MaterialTheme.typography.headlineSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                ),
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Box(
+                        val connectionStatus by HermesWsClient.connectionStatus.collectAsState()
+                        val statusColor =
+                            when (connectionStatus) {
+                                ConnectionStatus.CONNECTED -> LocalHermesStatusColors.current.success
+
+                                ConnectionStatus.CONNECTING,
+                                ConnectionStatus.RECONNECTING,
+                                -> LocalHermesStatusColors.current.warning
+
+                                ConnectionStatus.DISCONNECTED,
+                                ConnectionStatus.NO_NETWORK,
+                                ConnectionStatus.AUTH_EXPIRED,
+                                -> LocalHermesStatusColors.current.error
+                            }
+                        val statusText =
+                            when (connectionStatus) {
+                                ConnectionStatus.CONNECTED -> stringResource(R.string.agent_selector_status_ready)
+
+                                ConnectionStatus.CONNECTING,
+                                ConnectionStatus.RECONNECTING,
+                                -> stringResource(R.string.drawer_status_connecting)
+
+                                ConnectionStatus.DISCONNECTED,
+                                ConnectionStatus.NO_NETWORK,
+                                ConnectionStatus.AUTH_EXPIRED,
+                                -> stringResource(R.string.agent_selector_status_unavailable)
+                            }
+                        val drawerItemColors =
+                            NavigationDrawerItemDefaults.colors(
+                                // Mono Expressive: selection is grey, not blue.
+                                selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                selectedTextColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        val activeProfile = careerProfile ?: botsState?.activeProfileName
+                        val switchFailedFallback = stringResource(R.string.drawer_switch_profile_failed)
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
                             modifier =
                                 Modifier
-                                    .size(10.dp)
-                                    .background(color = statusColor, shape = CircleShape),
-                        )
-                    }
-                    Text(
-                        text = stringResource(R.string.app_management_desc),
-                        modifier = Modifier.padding(start = 16.dp, bottom = 8.dp, end = 16.dp),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-                    for (section in AppManagement.sections) {
-                        Text(
-                            text = stringResource(section.titleRes).uppercase(),
-                            modifier =
-                                Modifier.padding(
-                                    start = 16.dp,
-                                    top = 8.dp,
-                                    bottom = 4.dp,
-                                    end = 16.dp,
-                                ),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        section.entries.forEach { entry ->
-                            NavigationDrawerItem(
-                                icon = { Icon(entry.icon, contentDescription = null) },
-                                label = { Text(stringResource(entry.labelRes)) },
-                                selected = currentScreen == entry.key,
-                                onClick = {
-                                    scope.launch { drawerState.close() }
-                                    NavigationController.navigateTo(entry.key)
-                                },
-                                colors =
-                                    NavigationDrawerItemDefaults.colors(
-                                        // Mono Expressive: selection is grey, not blue.
-                                        selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                        selectedTextColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                        selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    .fillMaxWidth()
+                                    .padding(start = 28.dp, top = 16.dp, end = 28.dp, bottom = 12.dp),
+                        ) {
+                            Text(
+                                text = "Hermes",
+                                style =
+                                    MaterialTheme.typography.headlineSmall.copy(
+                                        fontWeight = FontWeight.Bold,
                                     ),
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Box(
+                                modifier =
+                                    Modifier
+                                        .size(8.dp)
+                                        .background(color = statusColor, shape = CircleShape),
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = statusText,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
                             )
                         }
-                    }
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 28.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
 
-                    Spacer(modifier = Modifier.height(8.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    Spacer(modifier = Modifier.height(12.dp))
+                        NavigationDrawerItem(
+                            icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) },
+                            label = {
+                                Text(
+                                    text = stringResource(R.string.drawer_hermes_main),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                            selected =
+                                currentScreen == ChatScreen &&
+                                    (activeProfile.isNullOrBlank() || activeProfile == "default"),
+                            onClick = {
+                                scope.launch {
+                                    drawerState.close()
+                                    val opened =
+                                        com.m57.hermescontrol.agents.BotConversations
+                                            .openMain()
+                                    if (opened) {
+                                        botsViewModel?.loadBots(isRefresh = true)
+                                    } else {
+                                        Toast
+                                            .makeText(
+                                                context,
+                                                switchFailedFallback,
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                    }
+                                }
+                            },
+                            colors = drawerItemColors,
+                            modifier =
+                                Modifier
+                                    .padding(NavigationDrawerItemDefaults.ItemPadding)
+                                    .testTag("drawer_hermes_main"),
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 28.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                        )
+                        Text(
+                            text = stringResource(R.string.drawer_specialist_bots),
+                            modifier =
+                                Modifier.padding(
+                                    start = 28.dp,
+                                    top = 16.dp,
+                                    bottom = 4.dp,
+                                    end = 28.dp,
+                                ),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+
+                        val specialistBots =
+                            specialistDrawerBots(
+                                profiles = botsState?.profiles.orEmpty(),
+                                hiddenProfiles = botsState?.hiddenProfiles.orEmpty(),
+                                activeProfileName = activeProfile,
+                            )
+                        specialistBots.forEach { bot ->
+                            NavigationDrawerItem(
+                                icon = {
+                                    BotAvatar(
+                                        name = bot.name,
+                                        avatar = bot.botMeta()?.avatar,
+                                        size = 24.dp,
+                                        showPresence = false,
+                                    )
+                                },
+                                label = {
+                                    Text(
+                                        text = bot.effectiveTitle,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                },
+                                badge =
+                                    if (bot.worker_session != null) {
+                                        {
+                                            Surface(
+                                                shape = RoundedCornerShape(999.dp),
+                                                color = MaterialTheme.colorScheme.tertiaryContainer,
+                                                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                                            ) {
+                                                Text(
+                                                    text = stringResource(R.string.drawer_bot_working),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                selected = currentScreen == BotSettingsKey(bot.name),
+                                onClick = {
+                                    scope.launch { drawerState.close() }
+                                    NavigationController.navigateTo(BotSettingsKey(bot.name))
+                                },
+                                colors = drawerItemColors,
+                                modifier =
+                                    Modifier
+                                        .padding(NavigationDrawerItemDefaults.ItemPadding)
+                                        .testTag("drawer_bot_${bot.name}"),
+                            )
+                        }
+
+                        NavigationDrawerItem(
+                            icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                            label = {
+                                Text(
+                                    text = stringResource(R.string.drawer_create_bot),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                            selected = showCreateSpecialistSheet,
+                            onClick = {
+                                scope.launch { drawerState.close() }
+                                showCreateSpecialistSheet = true
+                            },
+                            colors = drawerItemColors,
+                            modifier =
+                                Modifier
+                                    .padding(NavigationDrawerItemDefaults.ItemPadding)
+                                    .testTag("drawer_create_bot"),
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 28.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        NavigationDrawerItem(
+                            icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                            label = {
+                                Text(
+                                    text = stringResource(R.string.drawer_settings_management),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                            selected = currentScreen == AdvancedScreen,
+                            onClick = {
+                                scope.launch { drawerState.close() }
+                                NavigationController.navigateTo(AdvancedScreen)
+                            },
+                            colors = drawerItemColors,
+                            modifier =
+                                Modifier
+                                    .padding(NavigationDrawerItemDefaults.ItemPadding)
+                                    .testTag("drawer_settings_management"),
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
                 }
             },
         ) {
@@ -588,9 +772,54 @@ fun MainNavigation(sessionId: String? = null) {
                 }
             }
         }
+        if (hasToken && showCreateSpecialistSheet) {
+            com.m57.hermescontrol.ui.bots.CreateSpecialistBotSheet(
+                onDismiss = { showCreateSpecialistSheet = false },
+                onCreated = { created ->
+                    showCreateSpecialistSheet = false
+                    scope.launch {
+                        botsViewModel?.loadBots(isRefresh = true)
+                        val opened =
+                            com.m57.hermescontrol.agents.BotConversations.openSpecialist(
+                                profileName = created.name,
+                                openSetupAfterLaunch = !created.setup_completed,
+                            )
+                        if (!opened) {
+                            Toast
+                                .makeText(
+                                    context,
+                                    context.getString(R.string.drawer_switch_profile_failed),
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                        }
+                    }
+                },
+            )
+        }
         if (hasToken) {
             com.m57.hermescontrol.ui.common
                 .AppUpdateHost(appUpdateViewModel)
         }
     }
 }
+
+internal fun specialistDrawerBots(
+    profiles: List<ProfileInfo>,
+    hiddenProfiles: Set<String>,
+    activeProfileName: String?,
+): List<ProfileInfo> =
+    profiles
+        .filter { profile ->
+            profile.is_default != true &&
+                profile.name != "default" &&
+                !profile.isHidden &&
+                profile.name !in hiddenProfiles
+        }.sortedWith(
+            compareByDescending<ProfileInfo> { it.worker_session != null }
+                .thenByDescending { it.name == activeProfileName }
+                .thenByDescending {
+                    it.canonical_session?.last_active
+                        ?: it.last_session?.last_active
+                        ?: 0.0
+                }.thenBy { it.name },
+        )

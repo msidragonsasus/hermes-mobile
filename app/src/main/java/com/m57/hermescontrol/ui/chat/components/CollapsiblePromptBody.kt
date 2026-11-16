@@ -75,9 +75,10 @@ internal fun CollapsiblePromptBody(
     surfaceColor: Color,
     currentSearchMatch: Boolean,
     modifier: Modifier = Modifier,
+    selectionEnabled: Boolean = true,
 ) {
     if (role != MessageRole.USER) {
-        SelectionContainer(modifier = modifier) {
+        PromptSelection(selectionEnabled, modifier) {
             Text(text = text, color = color, style = style)
         }
         return
@@ -125,7 +126,7 @@ internal fun CollapsiblePromptBody(
 
         Column {
             Box {
-                SelectionContainer {
+                PromptSelection(selectionEnabled) {
                     Text(
                         text = text,
                         color = color,
@@ -233,4 +234,13 @@ private fun measureCollapsedPrompt(
             0f
         }
     return CollapsedPromptMeasurement(overflows = overflows, fadeHeightPx = fadeHeightPx)
+}
+
+@Composable
+private fun PromptSelection(
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    if (enabled) SelectionContainer(modifier, content = content) else Box(modifier) { content() }
 }

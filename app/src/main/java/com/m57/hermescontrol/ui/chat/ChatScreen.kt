@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -59,8 +58,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -71,9 +73,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.m57.hermescontrol.ExternalActivityLifecycleGuard
-import com.m57.hermescontrol.HistoryScreen
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.agents.BotConversations
+import com.m57.hermescontrol.agents.BotSettingsKey
+import com.m57.hermescontrol.agents.ChatSettingsKey
+import com.m57.hermescontrol.agents.SpecialistSetupSheet
 import com.m57.hermescontrol.agents.agentLabel
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.model.Attachment
@@ -94,13 +99,14 @@ import com.m57.hermescontrol.ui.chat.components.ChatScrollToBottomFab
 import com.m57.hermescontrol.ui.chat.components.ChatTimelineNoPrefetchStrategy
 import com.m57.hermescontrol.ui.chat.components.ContextDetailSheet
 import com.m57.hermescontrol.ui.chat.components.ContextUsageChip
-import com.m57.hermescontrol.ui.chat.components.ConversationHistoryDrawer
+import com.m57.hermescontrol.ui.chat.components.ConversationLayout
 import com.m57.hermescontrol.ui.chat.components.ReactionHeartsOverlay
 import com.m57.hermescontrol.ui.chat.components.ReloginDialog
 import com.m57.hermescontrol.ui.chat.components.SearchBarRow
 import com.m57.hermescontrol.ui.chat.components.SideQuestionSheet
 import com.m57.hermescontrol.ui.chat.components.SubagentInspectionSheet
 import com.m57.hermescontrol.ui.chat.components.TaskProgressChip
+import com.m57.hermescontrol.ui.chat.components.quotedReplyField
 import com.m57.hermescontrol.ui.chat.components.rememberChatScrollController
 import com.m57.hermescontrol.ui.chat.components.shouldShowProgressChip
 import com.m57.hermescontrol.ui.chat.components.tailContentKey
@@ -109,7 +115,9 @@ import com.m57.hermescontrol.ui.common.ActionProgressDialog
 import com.m57.hermescontrol.ui.common.AppUpdateDialog
 import com.m57.hermescontrol.ui.common.CredentialWarningBanner
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.InlineNotice
 import com.m57.hermescontrol.ui.common.NavIcon
+import com.m57.hermescontrol.ui.common.NoticeTone
 import com.m57.hermescontrol.ui.model.components.ModelPickerDialog
 import com.m57.hermescontrol.ui.settings.AppUpdateViewModel
 import kotlinx.coroutines.delay
@@ -166,7 +174,6 @@ fun ChatScreen(
     val scrollController = rememberChatScrollController(listState, scrollScope)
     var isOlderPagingArmed by remember(state.currentSessionId) { mutableStateOf(false) }
     var showContextSheet by remember { mutableStateOf(false) }
-    var showConversationMenu by remember(state.currentSessionId) { mutableStateOf(false) }
     var pendingSavePath by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingSaveName by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingSaveMimeType by rememberSaveable { mutableStateOf<String?>(null) }
@@ -207,15 +214,6 @@ fun ChatScreen(
                 viewModel.syncCurrentSession()
                 viewModel.fetchContextUsage()
             }
-        }
-    }
-
-    // /resume · /history (issue #864): open the session history tab so the
-    // user picks a past session — client-side, no gateway round-trip.
-    LaunchedEffect(state.openHistoryRequested) {
-        if (state.openHistoryRequested) {
-            NavigationController.navigateTo(HistoryScreen)
-            viewModel.consumeOpenHistoryRequest()
         }
     }
 
@@ -480,13 +478,42 @@ fun ChatScreen(
         viewModel = viewModel,
     )
 
+    val botsViewModel: com.m57.hermescontrol.ui.bots.BotsViewModel =
+        viewModel {
+            com.m57.hermescontrol.ui.bots
+                .BotsViewModel()
+        }
+    val botsState by botsViewModel.uiState.collectAsStateWithLifecycle()
+    val activeProfileId by AuthManager.activeProfileId.collectAsStateWithLifecycle()
+    val activeProfileName =
+        activeProfileId?.takeIf { it.isNotBlank() }
+            ?: botsState.activeProfileName?.takeIf { it.isNotBlank() }
+            ?: "default"
+    LaunchedEffect(activeProfileName) {
+        botsViewModel.loadBots(isRefresh = true)
+    }
+    val activeAgent = botsState.profiles.firstOrNull { it.name == activeProfileName }
+    val activeTitle = activeAgent?.agentLabel() ?: BotConversations.label(activeProfileName) ?: "Hermes"
+    var setupSheetProfile by rememberSaveable { mutableStateOf<String?>(null) }
+    val pendingSetupBot = NavigationController.pendingSpecialistSetupBot
+    LaunchedEffect(activeProfileName, pendingSetupBot, state.currentSessionId) {
+        if (activeProfileName != "default" && NavigationController.consumePendingSpecialistSetup(activeProfileName)) {
+            setupSheetProfile = activeProfileName
+        }
+    }
+
     HermesScaffold(
         modifier = modifier,
         pinTopBar = true,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                com.m57.hermescontrol.agents
-                    .AgentSelector()
+                Text(
+                    text = activeTitle,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 // Connection status dot — red when offline, hidden when connected
                 if (!state.isConnected) {
                     Spacer(modifier = Modifier.width(8.dp))
@@ -519,37 +546,15 @@ fun ChatScreen(
             }
         },
         navigationIcon =
-            NavIcon.Menu(
-                onOpen = { showConversationMenu = true },
-                contentDescription = stringResource(R.string.chat_open_conversation_menu),
-                tonal = true,
-            ),
-        drawerGesturesEnabled = false,
+            onOpenDrawer?.let { open ->
+                NavIcon.Menu(
+                    onOpen = open,
+                    contentDescription = stringResource(R.string.content_desc_open_drawer),
+                    tonal = true,
+                )
+            },
+        drawerGesturesEnabled = true,
         showShellMenu = false,
-        overlay = {
-            ConversationHistoryDrawer(
-                currentSessionId = state.currentSessionId,
-                onSelectSession = { selectedId ->
-                    showConversationMenu = false
-                    if (selectedId != state.currentSessionId) NavigationController.openChatSession(selectedId)
-                },
-                currentModel = state.currentSessionModel,
-                onHistory = {
-                    showConversationMenu = false
-                    NavigationController.navigateTo(HistoryScreen)
-                },
-                onMainConversation = {
-                    showConversationMenu = false
-                    viewModel.showMainConversation()
-                },
-                onModel = {
-                    showConversationMenu = false
-                    viewModel.openModelPicker()
-                },
-                onDismiss = { showConversationMenu = false },
-                visible = showConversationMenu,
-            )
-        },
         snackbarHost = {
             SnackbarHost(snackbarHostState) { data ->
                 val statusColors = LocalHermesStatusColors.current
@@ -564,26 +569,180 @@ fun ChatScreen(
             }
         },
         actions = {
+            if (activeProfileName != "default") {
+                TextButton(
+                    onClick = {
+                        scrollScope.launch {
+                            if (BotConversations.openMain()) {
+                                botsViewModel.loadBots(isRefresh = true)
+                            }
+                        }
+                    },
+                    modifier = Modifier.testTag("chat_return_main_button"),
+                ) {
+                    Text(stringResource(R.string.specialist_detail_return_main))
+                }
+            }
             com.m57.hermescontrol.ui.chat.components.ConversationHeaderActions(
                 onNew = { viewModel.createNewSession() },
-                onSettings = { NavigationController.navigateTo(com.m57.hermescontrol.agents.ChatSettingsKey) },
+                onSettings = {
+                    if (activeProfileName != "default") {
+                        NavigationController.navigateTo(BotSettingsKey(activeProfileName))
+                    } else {
+                        NavigationController.navigateTo(ChatSettingsKey)
+                    }
+                },
                 // Topics change inside the one main conversation; past ones stay in the drawer.
                 showNew = false,
             )
         },
     ) { _ ->
-        Column(
+        ConversationLayout(
             modifier =
                 Modifier
                     .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.background)
-                    // Swipe right anywhere on the conversation opens the history drawer (ChatGPT
-                    // style). Horizontal scrollers (code blocks) consume their drags first.
-                    .conversationHistorySwipe { showConversationMenu = true }
-                    .imePadding(),
+                    .background(MaterialTheme.colorScheme.background),
+            onReply =
+                if (state.isConnected) {
+                    { message -> inputFieldValue = quotedReplyField(message, inputFieldValue) }
+                } else {
+                    null
+                },
+            composer = {
+                // Context-window meter (used / full) — sits above the composer so it
+                // stays visible while the session is active, grouped with the model
+                // it belongs to without crowding the title or the control row.
+                // Only worth a line once the window is filling up; below half it is just noise.
+                val contextFull = state.fullContextTokens
+                val contextUsed = state.usedContextTokens
+                if (contextFull != null && contextUsed != null && contextFull > 0 && contextUsed * 2 >= contextFull) {
+                    ContextUsageChip(
+                        usedTokens = contextUsed,
+                        fullTokens = state.fullContextTokens,
+                        compressionCount = state.compressionCount,
+                        onClick =
+                            if (state.contextBreakdown != null) {
+                                { showContextSheet = true }
+                            } else {
+                                null
+                            },
+                    )
+                }
+
+                ChatInputBar(
+                    inputFieldValue = inputFieldValue,
+                    onInputChange = { inputFieldValue = it },
+                    onSend = {
+                        viewModel.sendMessage(inputFieldValue.text)
+                        inputFieldValue = TextFieldValue("")
+                        // Jump to bottom after send (serialized through the controller).
+                        scrollController.jumpToBottom(animated = true)
+                    },
+                    onMicTap = {
+                        if (isListening) {
+                            isListening = false
+                        } else if (
+                            ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.RECORD_AUDIO,
+                            ) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            if (SpeechInputHelper.isSpeechInputAvailable(context)) {
+                                val intent = SpeechInputHelper.createSpeechIntent(micListeningPrompt)
+                                isListening = true
+                                launchExternalActivity {
+                                    try {
+                                        speechLauncher.launch(intent)
+                                    } catch (_: ActivityNotFoundException) {
+                                        isListening = false
+                                        scrollScope.launch {
+                                            snackbarHostState.showSnackbar(sttNotAvailableMsg)
+                                        }
+                                    }
+                                }
+                            } else {
+                                scrollScope.launch {
+                                    snackbarHostState.showSnackbar(sttNotAvailableMsg)
+                                }
+                            }
+                        } else {
+                            launchExternalActivity {
+                                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        }
+                    },
+                    queueOnSend = state.isAgentTyping || state.responseStatusUnknown || !state.isConnected,
+                    allowOfflineQueue = true,
+                    onSteer =
+                        if (state.isConnected && state.isAgentTyping && !state.responseStatusUnknown &&
+                            state.pendingAttachments.isEmpty()
+                        ) {
+                            {
+                                viewModel.sendMessage(inputFieldValue.text, steer = true)
+                                inputFieldValue = TextFieldValue("")
+                                scrollController.jumpToBottom(animated = true)
+                            }
+                        } else {
+                            null
+                        },
+                    isListening = isListening,
+                    isAgentTyping = state.isAgentTyping,
+                    responseStatusUnknown = state.responseStatusUnknown,
+                    isConnected = state.isConnected,
+                    commandCatalog = state.commandCatalog,
+                    slashUsageCounts = state.slashUsageCounts,
+                    pendingAttachments = state.pendingAttachments,
+                    onCameraTap = {
+                        try {
+                            val timeStamp =
+                                SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                            val photoFile =
+                                File.createTempFile("camera_${timeStamp}_", ".jpg", context.cacheDir)
+                            val uri =
+                                FileProvider.getUriForFile(
+                                    context,
+                                    "${context.packageName}.fileprovider",
+                                    photoFile,
+                                )
+                            pendingCameraUri = uri
+                            launchExternalActivity {
+                                cameraLauncher.launch(uri)
+                            }
+                        } catch (e: Exception) {
+                            Log.e("ChatScreen", "Camera launch failed", e)
+                        }
+                    },
+                    onImageTap = {
+                        launchExternalActivity {
+                            filePickerLauncher.launch("image/*")
+                        }
+                    },
+                    onFileTap = {
+                        launchExternalActivity {
+                            filePickerLauncher.launch("*/*")
+                        }
+                    },
+                    onRemoveAttachment = viewModel::removeAttachment,
+                    onPreviewAttachment = { attachment ->
+                        if (attachment.isImage) {
+                            viewingImage =
+                                ImageViewerModel(
+                                    model = attachment.uri,
+                                    name = attachment.name,
+                                    mimeType = attachment.mimeType,
+                                )
+                        }
+                    },
+                    // Composer toolbar wiring (PR 1)
+                    currentSessionModel = state.currentSessionModel,
+                    reasoningLevel = state.reasoningLevel,
+                    onModelTap = { viewModel.openModelPicker() },
+                    onReasoningTap = { level -> viewModel.setReasoningLevel(level) },
+                    canDisableReasoning = state.currentModelCapabilities?.can_disable_reasoning,
+                    supportsReasoning = state.currentModelCapabilities?.reasoning,
+                )
+            },
         ) {
-            com.m57.hermescontrol.agents
-                .AgentModeTabs(groups = false)
             ChatConnectionBanner(
                 connectionStatus = state.connectionStatus,
                 onReconnect = viewModel::reconnect,
@@ -637,6 +796,19 @@ fun ChatScreen(
                 onDiscard = viewModel::discardDraft,
                 onQueue = viewModel::queueDraft,
             )
+
+            if (activeProfileName != "default" && activeAgent?.isSetupIncomplete == true) {
+                InlineNotice(
+                    text = stringResource(R.string.specialist_setup_incomplete_banner),
+                    tone = NoticeTone.Warning,
+                    actionLabel = stringResource(R.string.specialist_setup_open_action),
+                    onAction = { setupSheetProfile = activeProfileName },
+                    modifier =
+                        Modifier
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                            .testTag("chat_setup_incomplete_notice"),
+                )
+            }
 
             AnimatedVisibility(
                 visible = searchState.isActive,
@@ -714,17 +886,10 @@ fun ChatScreen(
                         }
                     }
                 // Turn headers name the agent you are talking to, with its bot avatar.
-                val botsViewModel: com.m57.hermescontrol.ui.bots.BotsViewModel =
-                    viewModel {
-                        com.m57.hermescontrol.ui.bots
-                            .BotsViewModel()
-                    }
-                val botsState by botsViewModel.uiState.collectAsStateWithLifecycle()
-                val activeAgent = botsState.profiles.firstOrNull { it.name == botsState.activeProfileName }
                 val agentIdentity =
-                    remember(activeAgent) {
+                    remember(activeAgent, activeTitle) {
                         com.m57.hermescontrol.ui.chat.fullbleed.ChatAgentIdentity(
-                            name = activeAgent?.agentLabel() ?: "Hermes",
+                            name = activeTitle,
                             avatar = activeAgent?.botMeta()?.avatar,
                         )
                     }
@@ -764,6 +929,7 @@ fun ChatScreen(
                         replyLifecycle =
                             com.m57.hermescontrol.ui.chat.fullbleed
                                 .replyLifecycle(state, streamingState),
+                        brainstormsById = state.brainstormsById,
                     )
                 }
 
@@ -796,139 +962,6 @@ fun ChatScreen(
                     )
                 }
             }
-
-            // Context-window meter (used / full) — sits above the composer so it
-            // stays visible while the session is active, grouped with the model
-            // it belongs to without crowding the title or the control row.
-            // Only worth a line once the window is filling up; below half it is just noise.
-            val contextFull = state.fullContextTokens
-            val contextUsed = state.usedContextTokens
-            if (contextFull != null && contextUsed != null && contextFull > 0 && contextUsed * 2 >= contextFull) {
-                ContextUsageChip(
-                    usedTokens = contextUsed,
-                    fullTokens = state.fullContextTokens,
-                    compressionCount = state.compressionCount,
-                    onClick =
-                        if (state.contextBreakdown != null) {
-                            { showContextSheet = true }
-                        } else {
-                            null
-                        },
-                )
-            }
-
-            ChatInputBar(
-                inputFieldValue = inputFieldValue,
-                onInputChange = { inputFieldValue = it },
-                onSend = {
-                    viewModel.sendMessage(inputFieldValue.text)
-                    inputFieldValue = TextFieldValue("")
-                    // Jump to bottom after send (serialized through the controller).
-                    scrollController.jumpToBottom(animated = true)
-                },
-                onMicTap = {
-                    if (isListening) {
-                        isListening = false
-                    } else if (
-                        ContextCompat.checkSelfPermission(
-                            context,
-                            Manifest.permission.RECORD_AUDIO,
-                        ) == PackageManager.PERMISSION_GRANTED
-                    ) {
-                        if (SpeechInputHelper.isSpeechInputAvailable(context)) {
-                            val intent = SpeechInputHelper.createSpeechIntent(micListeningPrompt)
-                            isListening = true
-                            launchExternalActivity {
-                                try {
-                                    speechLauncher.launch(intent)
-                                } catch (_: ActivityNotFoundException) {
-                                    isListening = false
-                                    scrollScope.launch {
-                                        snackbarHostState.showSnackbar(sttNotAvailableMsg)
-                                    }
-                                }
-                            }
-                        } else {
-                            scrollScope.launch {
-                                snackbarHostState.showSnackbar(sttNotAvailableMsg)
-                            }
-                        }
-                    } else {
-                        launchExternalActivity {
-                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                        }
-                    }
-                },
-                queueOnSend = state.isAgentTyping || state.responseStatusUnknown || !state.isConnected,
-                allowOfflineQueue = true,
-                onSteer =
-                    if (state.isConnected && state.isAgentTyping && !state.responseStatusUnknown &&
-                        state.pendingAttachments.isEmpty()
-                    ) {
-                        {
-                            viewModel.sendMessage(inputFieldValue.text, steer = true)
-                            inputFieldValue = TextFieldValue("")
-                            scrollController.jumpToBottom(animated = true)
-                        }
-                    } else {
-                        null
-                    },
-                isListening = isListening,
-                isAgentTyping = state.isAgentTyping,
-                responseStatusUnknown = state.responseStatusUnknown,
-                isConnected = state.isConnected,
-                commandCatalog = state.commandCatalog,
-                slashUsageCounts = state.slashUsageCounts,
-                pendingAttachments = state.pendingAttachments,
-                onCameraTap = {
-                    try {
-                        val timeStamp =
-                            SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                        val photoFile =
-                            File.createTempFile("camera_${timeStamp}_", ".jpg", context.cacheDir)
-                        val uri =
-                            FileProvider.getUriForFile(
-                                context,
-                                "${context.packageName}.fileprovider",
-                                photoFile,
-                            )
-                        pendingCameraUri = uri
-                        launchExternalActivity {
-                            cameraLauncher.launch(uri)
-                        }
-                    } catch (e: Exception) {
-                        Log.e("ChatScreen", "Camera launch failed", e)
-                    }
-                },
-                onImageTap = {
-                    launchExternalActivity {
-                        filePickerLauncher.launch("image/*")
-                    }
-                },
-                onFileTap = {
-                    launchExternalActivity {
-                        filePickerLauncher.launch("*/*")
-                    }
-                },
-                onRemoveAttachment = viewModel::removeAttachment,
-                onPreviewAttachment = { attachment ->
-                    if (attachment.isImage) {
-                        viewingImage =
-                            ImageViewerModel(
-                                model = attachment.uri,
-                                name = attachment.name,
-                                mimeType = attachment.mimeType,
-                            )
-                    }
-                },
-                // Composer toolbar wiring (PR 1)
-                currentSessionModel = state.currentSessionModel,
-                reasoningLevel = state.reasoningLevel,
-                onModelTap = { viewModel.openModelPicker() },
-                onReasoningTap = { level -> viewModel.setReasoningLevel(level) },
-                canDisableReasoning = state.currentModelCapabilities?.can_disable_reasoning,
-                supportsReasoning = state.currentModelCapabilities?.reasoning,
-            )
         }
 
         if (showReloginDialog) {
@@ -1034,6 +1067,28 @@ fun ChatScreen(
             ImageViewerDialog(
                 image = image,
                 onDismiss = { viewingImage = null },
+            )
+        }
+
+        setupSheetProfile?.let { targetProfile ->
+            val targetTitle =
+                botsState.profiles.firstOrNull { it.name == targetProfile }?.agentLabel()
+                    ?: BotConversations.label(targetProfile)
+                    ?: targetProfile
+            SpecialistSetupSheet(
+                profileName = targetProfile,
+                displayTitle = targetTitle,
+                isChatConnected = state.isConnected,
+                canSendToCurrentChat = canSendNativeAction(state) && activeProfileName == targetProfile,
+                onSendConfirmedRoleMessage = { messageText ->
+                    viewModel.sendNativeAction(messageText).also { sent ->
+                        if (sent) {
+                            scrollController.jumpToBottom(animated = true)
+                        }
+                    }
+                },
+                onConfirmed = { botsViewModel.loadBots(isRefresh = true) },
+                onDismiss = { setupSheetProfile = null },
             )
         }
     }

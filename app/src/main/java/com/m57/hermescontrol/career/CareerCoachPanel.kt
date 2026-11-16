@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -52,6 +51,8 @@ import androidx.compose.ui.window.DialogProperties
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.chat.MarkdownText
 import com.m57.hermescontrol.ui.chat.components.ChatComposer
+import com.m57.hermescontrol.ui.chat.components.ConversationLayout
+import com.m57.hermescontrol.ui.chat.components.quotedReplyDraft
 import com.m57.hermescontrol.ui.chat.components.rememberChatScrollController
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.LoadingState
@@ -152,7 +153,50 @@ internal fun CareerCoachPanel(
         olderAnchor = null
     }
     var discardReview by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize().consumeWindowInsets(WindowInsets.navigationBars).imePadding()) {
+    ConversationLayout(
+        modifier = Modifier.fillMaxSize().consumeWindowInsets(WindowInsets.navigationBars),
+        onReply =
+            if (inputEnabled) {
+                { message -> actions.draft(quotedReplyDraft(message, state.draft)) }
+            } else {
+                null
+            },
+        composer = {
+            // An inline dock, not a new FAB. Returning here explicitly resumes tail following.
+            if (scroll.showFab(messages.isNotEmpty())) {
+                TextButton(
+                    onClick = scroll::resumeFollowing,
+                    modifier = Modifier.align(Alignment.End).testTag("career_coach_latest"),
+                    shapes = ButtonDefaults.shapes(),
+                ) {
+                    Icon(Icons.Default.ArrowDownward, contentDescription = null)
+                    Text(if (scroll.pendingCount > 0) "最新へ · 新しい返信 ${scroll.pendingCount}件" else "最新へ")
+                }
+            }
+            CareerReferenceButton(state, records, actions)
+            ChatComposer(
+                value = state.draft,
+                onValueChange = actions.draft,
+                onSend = {
+                    if (careerCanSend(state)) {
+                        scroll.jumpToBottom()
+                        actions.send(state.draft)
+                    }
+                },
+                inputEnabled = inputEnabled,
+                sendEnabled = careerCanSend(state),
+                placeholder = inputPlaceholder,
+                inputModifier =
+                    Modifier
+                        .focusRequester(inputFocus)
+                        .onFocusChanged { inputFocused = it.hasFocus }
+                        .semantics { contentDescription = "相談の入力欄" },
+                inputTestTag = "career_coach_input",
+                sendTestTag = "career_coach_send",
+            )
+            CareerModelButton(state, actions)
+        },
+    ) {
         CareerConversationStatus(state, actions) { discardReview = true }
         snapshot?.let { CareerConsultationContextButton(it.company_context, state.stale) }
         LazyColumn(
@@ -224,39 +268,6 @@ internal fun CareerCoachPanel(
                 }
             }
         }
-        // An inline dock, not a new FAB. Returning here explicitly resumes tail following.
-        if (scroll.showFab(messages.isNotEmpty())) {
-            TextButton(
-                onClick = scroll::resumeFollowing,
-                modifier = Modifier.align(Alignment.End).testTag("career_coach_latest"),
-                shapes = ButtonDefaults.shapes(),
-            ) {
-                Icon(Icons.Default.ArrowDownward, contentDescription = null)
-                Text(if (scroll.pendingCount > 0) "最新へ · 新しい返信 ${scroll.pendingCount}件" else "最新へ")
-            }
-        }
-        CareerReferenceButton(state, records, actions)
-        ChatComposer(
-            value = state.draft,
-            onValueChange = actions.draft,
-            onSend = {
-                if (careerCanSend(state)) {
-                    scroll.jumpToBottom()
-                    actions.send(state.draft)
-                }
-            },
-            inputEnabled = inputEnabled,
-            sendEnabled = careerCanSend(state),
-            placeholder = inputPlaceholder,
-            inputModifier =
-                Modifier
-                    .focusRequester(inputFocus)
-                    .onFocusChanged { inputFocused = it.hasFocus }
-                    .semantics { contentDescription = "相談の入力欄" },
-            inputTestTag = "career_coach_input",
-            sendTestTag = "career_coach_send",
-        )
-        CareerModelButton(state, actions)
     }
     if (discardReview) {
         AlertDialog(

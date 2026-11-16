@@ -82,6 +82,28 @@ private fun bidiTextDirection(isRtl: Boolean): TextDirection = if (isRtl) TextDi
  * bullet/ordered/task lists, > blockquotes, definition lists, tables, --- rules, footnotes, and
  * [links](url) / bare URLs, and inline/display LaTeX math using `$…$` / `$$…$$`.
  */
+
+internal enum class CodeFenceRenderKind {
+    NATIVE_UI,
+    INTELLIGENT_UI,
+    CODE_BLOCK,
+}
+
+internal fun resolveCodeFenceRenderKind(
+    language: String?,
+    complete: Boolean,
+    allowInteractiveContent: Boolean,
+): CodeFenceRenderKind =
+    when {
+        allowInteractiveContent && NativeUiProtocol.isNative(language) -> CodeFenceRenderKind.NATIVE_UI
+
+        allowInteractiveContent &&
+            IntelligentUiDocument.canPreview(language) &&
+            complete -> CodeFenceRenderKind.INTELLIGENT_UI
+
+        else -> CodeFenceRenderKind.CODE_BLOCK
+    }
+
 @Composable
 fun MarkdownText(
     text: String,
@@ -92,14 +114,16 @@ fun MarkdownText(
     modifier: Modifier = Modifier,
     onImageClick: ((ImageViewerModel) -> Unit)? = null,
     nativeUiIdentity: String? = LocalNativeUiMessage.current,
+    allowInteractiveContent: Boolean = true,
 ) {
     val statusColors = LocalHermesStatusColors.current
     val highlights = searchHighlightColors(statusColors)
     var selectedImage by remember { mutableStateOf<ImageViewerModel?>(null) }
     selectedImage?.let { image -> ImageViewerDialog(image, onDismiss = { selectedImage = null }) }
     val streamingBlocks =
-        remember(text, isStreaming) {
-            if (isStreaming &&
+        remember(text, isStreaming, allowInteractiveContent) {
+            if (allowInteractiveContent &&
+                isStreaming &&
                 Regex("(?m)^\\s*(`{3,}|~{3,})(hermes-ui-v2|hermes-ui|intelligent-ui|liveui)\\s*$").containsMatchIn(text)
             ) {
                 parseBlocks(text).takeIf { blocks ->
@@ -139,21 +163,27 @@ fun MarkdownText(
         for ((blockIndex, block) in blocks.withIndex()) {
             when (block) {
                 is MdBlock.Code -> {
-                    if (NativeUiProtocol.isNative(block.language)) {
-                        NativeUiCard(
-                            block.code,
-                            block.complete,
-                            nativeUiIdentity?.let { "$it:$blockIndex" },
-                            isStreaming,
-                        )
-                    } else if (IntelligentUiDocument.canPreview(block.language) && block.complete) {
-                        IntelligentUiCard(source = block.code, language = block.language)
-                    } else {
-                        com.m57.hermescontrol.ui.chat.components.CodeBlockCard(
-                            code = block.code,
-                            language = block.language,
-                            onCopy = { /* clipboard handled internally */ },
-                        )
+                    when (resolveCodeFenceRenderKind(block.language, block.complete, allowInteractiveContent)) {
+                        CodeFenceRenderKind.NATIVE_UI -> {
+                            NativeUiCard(
+                                block.code,
+                                block.complete,
+                                nativeUiIdentity?.let { "$it:$blockIndex" },
+                                isStreaming,
+                            )
+                        }
+
+                        CodeFenceRenderKind.INTELLIGENT_UI -> {
+                            IntelligentUiCard(source = block.code, language = block.language)
+                        }
+
+                        CodeFenceRenderKind.CODE_BLOCK -> {
+                            com.m57.hermescontrol.ui.chat.components.CodeBlockCard(
+                                code = block.code,
+                                language = block.language,
+                                onCopy = { /* clipboard handled internally */ },
+                            )
+                        }
                     }
                 }
 

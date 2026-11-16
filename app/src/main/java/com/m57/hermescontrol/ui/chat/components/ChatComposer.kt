@@ -9,8 +9,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -28,7 +26,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -56,14 +54,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -77,12 +77,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
-import coil3.compose.AsyncImage
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.model.Attachment
 import com.m57.hermescontrol.data.model.ProfileInfo
 import com.m57.hermescontrol.data.ws.CommandBlocklist
 import com.m57.hermescontrol.data.ws.CommandCatalog
+import com.m57.hermescontrol.theme.LocalConversationStyle
+import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.chat.ChatInputPolicy
 import com.m57.hermescontrol.ui.common.BotAvatar
 import com.m57.hermescontrol.util.BidiUtils
@@ -139,7 +140,7 @@ fun ChatComposer(
 
 /**
  * The chat input bar. Idle it is a single slim row — attach, text, mic — and the model and
- * thinking-depth controls slide in underneath only while the user is composing.
+ * thinking-depth controls sit in their own quiet row beneath the input capsule.
  */
 @Composable
 fun ChatInputBar(
@@ -190,24 +191,27 @@ fun ChatInputBar(
     keyboardOptions: KeyboardOptions? = null,
     visualTransformation: VisualTransformation = VisualTransformation.None,
 ) {
+    val style = LocalConversationStyle.current
+    val replyFocus = LocalConversationComposerFocus.current
+    val spacing = LocalSpacing.current
     val canSend = ChatInputPolicy.canSend(inputFieldValue.text, pendingAttachments, isConnected || allowOfflineQueue)
 
     // Attachment menu state
     var showAttachmentMenu by remember { mutableStateOf(false) }
     var isFocused by remember { mutableStateOf(false) }
 
-    // Composing = keyboard up or something to send; only then do the model controls appear.
+    // An unconfigured conversation reveals options when the user starts composing.
     val composing = isFocused || inputFieldValue.text.isNotEmpty() || pendingAttachments.isNotEmpty()
     var showReasoning by remember { mutableStateOf(false) }
     var reasoningDismissedAt by remember { mutableStateOf(0L) }
-    if (!composing) showReasoning = false
 
-    AnimatedVisibility(
-        visible = true,
-        enter = slideInVertically(initialOffsetY = { it }),
-        exit = slideOutVertically(targetOffsetY = { it }),
-    ) {
-        Column {
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
+        Column(
+            Modifier
+                .widthIn(max = style.maxWidth)
+                .fillMaxWidth()
+                .padding(horizontal = spacing.md, vertical = spacing.sm),
+        ) {
             // Floating reasoning slider above the composer. A popup so that any tap outside it
             // closes it; it is not focusable, so the keyboard stays up while it is open.
             Box(Modifier.fillMaxWidth()) {
@@ -228,98 +232,95 @@ fun ChatInputBar(
                     }
                 }
             }
-            Surface(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp),
-                shape = MaterialTheme.shapes.extraLarge,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            // Commands hidden from the suggestion menu — desktop/CLI-only and
+            // TUI-only commands that don't function on mobile (issue #574).
+            // Single source of truth: CommandBlocklist.UNSUPPORTED, which is
+            // also enforced at dispatch time (issue #576, deliverable #3).
+            val hiddenSlashDisplay = CommandBlocklist.UNSUPPORTED
+            val commandNames =
+                (
+                    commandCatalog.pairs.map { it[0] } +
+                        listOf("/btw", "/queue", "/fork", "/model", "/new", "/stop")
+                ).distinct()
+                    .filter { it.lowercase() !in hiddenSlashDisplay }
+
+            androidx.compose.animation.AnimatedVisibility(
+                visible =
+                    showCommandSuggestions && inputFieldValue.text.startsWith("/") &&
+                        !inputFieldValue.text.contains(" "),
+                enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(),
+                exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically(),
             ) {
-                Column {
-                    // Commands hidden from the suggestion menu — desktop/CLI-only and
-                    // TUI-only commands that don't function on mobile (issue #574).
-                    // Single source of truth: CommandBlocklist.UNSUPPORTED, which is
-                    // also enforced at dispatch time (issue #576, deliverable #3).
-                    val hiddenSlashDisplay = CommandBlocklist.UNSUPPORTED
-                    val commandNames =
-                        (
-                            commandCatalog.pairs.map { it[0] } +
-                                listOf("/btw", "/queue", "/fork", "/model", "/new", "/stop")
-                        ).distinct()
-                            .filter { it.lowercase() !in hiddenSlashDisplay }
-
-                    androidx.compose.animation.AnimatedVisibility(
-                        visible =
-                            showCommandSuggestions && inputFieldValue.text.startsWith("/") &&
-                                !inputFieldValue.text.contains(" "),
-                        enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(),
-                        exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically(),
+                val filteredCommands =
+                    ChatInputPolicy.sortSlashSuggestions(
+                        commandNames.filter { it.startsWith(inputFieldValue.text, ignoreCase = true) },
+                        slashUsageCounts,
+                    )
+                if (filteredCommands.isNotEmpty()) {
+                    androidx.compose.material3.Surface(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = spacing.sm),
+                        shape = MaterialTheme.shapes.large,
+                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
                     ) {
-                        val filteredCommands =
-                            ChatInputPolicy.sortSlashSuggestions(
-                                commandNames.filter { it.startsWith(inputFieldValue.text, ignoreCase = true) },
-                                slashUsageCounts,
-                            )
-                        if (filteredCommands.isNotEmpty()) {
-                            androidx.compose.material3.Surface(
-                                modifier =
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                                shape = MaterialTheme.shapes.large,
-                                color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                            ) {
-                                LazyColumn(
-                                    modifier = Modifier.heightIn(max = 200.dp),
-                                ) {
-                                    items(filteredCommands, key = { it }) { cmd ->
-                                        DropdownMenuItem(
-                                            text = {
-                                                Text(
-                                                    cmd,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = MaterialTheme.colorScheme.primary,
-                                                )
-                                            },
-                                            onClick = { onInputChange(ChatInputPolicy.commandFieldValue(cmd)) },
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Attachment preview chips
-                    AnimatedVisibility(
-                        visible = pendingAttachments.isNotEmpty(),
-                        enter = fadeIn() + expandVertically(),
-                        exit = fadeOut() + shrinkVertically(),
-                    ) {
-                        LazyRow(
-                            modifier =
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        LazyColumn(
+                            modifier = Modifier.heightIn(max = 200.dp),
                         ) {
-                            itemsIndexed(pendingAttachments) { index, attachment ->
-                                AttachmentChip(
-                                    attachment = attachment,
-                                    onPreview = { onPreviewAttachment(attachment) },
-                                    onRemove = { onRemoveAttachment(index) },
+                            items(filteredCommands, key = { it }) { cmd ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            cmd,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                    },
+                                    onClick = { onInputChange(ChatInputPolicy.commandFieldValue(cmd)) },
                                 )
                             }
                         }
                     }
+                }
+            }
 
+            // Shared attachment strip; images are photo-first thumbnails.
+            AnimatedVisibility(
+                visible = pendingAttachments.isNotEmpty(),
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically(),
+            ) {
+                LazyRow(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = spacing.sm),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    itemsIndexed(pendingAttachments) { index, attachment ->
+                        AttachmentChip(
+                            attachment = attachment,
+                            onPreview = { onPreviewAttachment(attachment) },
+                            onRemove = { onRemoveAttachment(index) },
+                        )
+                    }
+                }
+            }
+
+            Surface(
+                modifier = Modifier.fillMaxWidth().testTag("chat_composer_surface"),
+                shape = style.composerShape,
+                color = MaterialTheme.colorScheme.surfaceContainer,
+            ) {
+                Column {
                     // ── Input row: [attach] [text] [mic | send] ──
                     Row(
                         modifier =
                             Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                                .padding(horizontal = spacing.xs),
+                        verticalAlignment = Alignment.Bottom,
                     ) {
                         // Anchor the popup to its own button, independently of the input field.
                         if (showAttachmentButton) {
@@ -327,7 +328,7 @@ fun ChatInputBar(
                                 IconButton(
                                     onClick = { showAttachmentMenu = true },
                                     enabled = isConnected && attachmentsEnabled,
-                                    modifier = Modifier.size(44.dp).testTag("chat_attach_button"),
+                                    modifier = Modifier.size(style.actionSize).testTag("chat_attach_button"),
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Add,
@@ -399,10 +400,13 @@ fun ChatInputBar(
                                 modifier =
                                     Modifier
                                         .weight(1f)
-                                        .heightIn(min = 44.dp, max = 140.dp)
+                                        .heightIn(min = style.composerMinHeight, max = style.inputMaxHeight)
+                                        .then(replyFocus?.let { Modifier.focusRequester(it) } ?: Modifier)
                                         .onFocusChanged { isFocused = it.isFocused }
                                         .testTag(inputTestTag)
-                                        .then(inputModifier),
+                                        .semantics {
+                                            if (inputFieldValue.text.isEmpty()) contentDescription = placeholderText
+                                        }.then(inputModifier),
                                 enabled = inputEnabled,
                                 visualTransformation = visualTransformation,
                                 keyboardOptions =
@@ -446,7 +450,7 @@ fun ChatInputBar(
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
-                                                modifier = Modifier.fillMaxWidth(),
+                                                modifier = Modifier.fillMaxWidth().clearAndSetSemantics { },
                                             )
                                         }
                                         innerTextField()
@@ -461,7 +465,7 @@ fun ChatInputBar(
                             IconButton(
                                 onClick = onSteer,
                                 enabled = sendEnabled,
-                                modifier = Modifier.size(44.dp).testTag("chat_steer_button"),
+                                modifier = Modifier.size(style.actionSize).testTag("chat_steer_button"),
                             ) {
                                 Icon(
                                     Icons.AutoMirrored.Filled.Send,
@@ -481,7 +485,7 @@ fun ChatInputBar(
                                 FilledIconButton(
                                     onClick = onStop,
                                     shapes = IconButtonDefaults.shapes(),
-                                    modifier = Modifier.size(44.dp).testTag(stopTestTag),
+                                    modifier = Modifier.size(style.actionSize).testTag(stopTestTag),
                                 ) {
                                     Icon(
                                         Icons.Default.Stop,
@@ -493,7 +497,7 @@ fun ChatInputBar(
                                     onClick = onSend,
                                     enabled = canSend && sendEnabled,
                                     shapes = IconButtonDefaults.shapes(),
-                                    modifier = Modifier.size(44.dp).testTag(sendTestTag),
+                                    modifier = Modifier.size(style.actionSize).testTag(sendTestTag),
                                 ) {
                                     Icon(
                                         imageVector =
@@ -514,7 +518,7 @@ fun ChatInputBar(
                                             containerColor = MaterialTheme.colorScheme.error,
                                             contentColor = MaterialTheme.colorScheme.onError,
                                         ),
-                                    modifier = Modifier.size(44.dp).testTag("mic_stop_button"),
+                                    modifier = Modifier.size(style.actionSize).testTag("mic_stop_button"),
                                 ) {
                                     Icon(Icons.Default.Stop, contentDescription = "Stop listening")
                                 }
@@ -522,7 +526,7 @@ fun ChatInputBar(
                                 IconButton(
                                     onClick = onMicTap,
                                     enabled = isConnected && microphoneEnabled,
-                                    modifier = Modifier.size(44.dp).testTag("mic_button"),
+                                    modifier = Modifier.size(style.actionSize).testTag("mic_button"),
                                 ) {
                                     Icon(
                                         Icons.Default.Mic,
@@ -533,34 +537,33 @@ fun ChatInputBar(
                             }
                         }
                     }
-
-                    // ── Model / thinking depth: only while composing, so the idle bar stays one line ──
-                    AnimatedVisibility(
-                        visible = composing && showModelControls,
-                        enter = fadeIn() + expandVertically(),
-                        exit = fadeOut() + shrinkVertically(),
-                    ) {
-                        ComposerOptionsRow(
-                            currentSessionModel = currentSessionModel,
-                            reasoningLevel = reasoningLevel,
-                            onModelTap = onModelTap,
-                            onReasoningTap = {
-                                if (onReasoningPickerTap != null) {
-                                    onReasoningPickerTap()
-                                    return@ComposerOptionsRow
-                                }
-                                // The tap that closed the popup from outside also lands on this
-                                // button; don't reopen it straight away.
-                                val justClosed = android.os.SystemClock.uptimeMillis() - reasoningDismissedAt < 300
-                                showReasoning = !showReasoning && !justClosed
-                            },
-                            supportsReasoning = supportsReasoning,
-                            enabled = modelControlsEnabled,
-                            reasoningDisplayName = reasoningDisplayName,
-                            modifier = Modifier.testTag("chat_composer_toolbar"),
-                        )
-                    }
                 }
+            }
+            // Keep configured model controls discoverable without changing the input capsule.
+            AnimatedVisibility(
+                visible = showModelControls && (composing || currentSessionModel != null || reasoningLevel != null),
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically(),
+            ) {
+                ComposerOptionsRow(
+                    currentSessionModel = currentSessionModel,
+                    reasoningLevel = reasoningLevel,
+                    onModelTap = onModelTap,
+                    onReasoningTap = {
+                        if (onReasoningPickerTap != null) {
+                            onReasoningPickerTap()
+                            return@ComposerOptionsRow
+                        }
+                        // The tap that closed the popup from outside also lands on this
+                        // button; don't reopen it straight away.
+                        val justClosed = android.os.SystemClock.uptimeMillis() - reasoningDismissedAt < 300
+                        showReasoning = !showReasoning && !justClosed
+                    },
+                    supportsReasoning = supportsReasoning,
+                    enabled = modelControlsEnabled,
+                    reasoningDisplayName = reasoningDisplayName,
+                    modifier = Modifier.testTag("chat_composer_toolbar"),
+                )
             }
         }
     }
@@ -577,7 +580,25 @@ fun AttachmentChip(
     onRemove: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val thumbnail = attachment.uri
+    val style = LocalConversationStyle.current
+    if (attachment.isImage) {
+        Box(modifier.size(style.pendingImageSize)) {
+            GifImageThumbnail(
+                model = attachment.uri,
+                contentDescription = attachment.name,
+                isGif = attachment.isGif,
+                onClick = onPreview,
+                compact = true,
+            )
+            AttachmentRemoveButton(
+                name = attachment.name,
+                onRemove = onRemove,
+                modifier = Modifier.align(Alignment.TopEnd),
+                overImage = true,
+            )
+        }
+        return
+    }
     Surface(
         modifier = modifier,
         shape = MaterialTheme.shapes.medium,
@@ -587,28 +608,13 @@ fun AttachmentChip(
             modifier = Modifier.padding(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (attachment.isImage) {
-                AsyncImage(
-                    model = thumbnail,
-                    contentDescription = attachment.name,
-                    modifier =
-                        Modifier
-                            .size(40.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .clickable(onClick = onPreview)
-                            .testTag("attachment_preview"),
-                    contentScale = ContentScale.Crop,
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-            } else {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.InsertDriveFile,
-                    contentDescription = attachment.name,
-                    modifier = Modifier.size(24.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.InsertDriveFile,
+                contentDescription = attachment.name,
+                modifier = Modifier.size(24.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.width(4.dp))
             Text(
                 text = attachment.name,
                 style = MaterialTheme.typography.labelSmall,
@@ -617,12 +623,34 @@ fun AttachmentChip(
                 modifier = Modifier.widthIn(max = 120.dp),
             )
             Spacer(modifier = Modifier.width(4.dp))
-            IconButton(onClick = onRemove, modifier = Modifier.size(18.dp)) {
-                Icon(
-                    imageVector = Icons.Default.Close,
-                    contentDescription = stringResource(R.string.chat_attach_remove_desc),
-                    modifier = Modifier.size(14.dp),
-                )
+            AttachmentRemoveButton(attachment.name, onRemove)
+        }
+    }
+}
+
+@Composable
+private fun AttachmentRemoveButton(
+    name: String,
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier,
+    overImage: Boolean = false,
+) {
+    IconButton(
+        onClick = onRemove,
+        modifier = modifier.size(LocalConversationStyle.current.actionSize).testTag("attachment_remove"),
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = if (overImage) MaterialTheme.colorScheme.inverseSurface else Color.Transparent,
+            contentColor =
+                if (overImage) {
+                    MaterialTheme.colorScheme.inverseOnSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+        ) {
+            Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Close, stringResource(R.string.chat_attach_remove_named, name), Modifier.size(18.dp))
             }
         }
     }

@@ -43,6 +43,15 @@ class AppManagementTest {
             assertTrue(AppManagement.contains(listOf(ChatScreen, entry.key, ToolsetDetailKey("example"))))
         }
         assertTrue(AppManagement.contains(listOf(ChatScreen, AdvancedScreen)))
+        assertTrue(
+            AppManagement.contains(
+                listOf(
+                    ChatScreen,
+                    com.m57.hermescontrol.agents
+                        .BotSettingsKey("research"),
+                ),
+            ),
+        )
         assertFalse(AppManagement.contains(listOf(ChatScreen)))
         assertFalse(AppManagement.contains(listOf(ChatScreen, HistoryScreen)))
     }

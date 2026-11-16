@@ -1,14 +1,17 @@
 package com.m57.hermescontrol.agents
 
+import com.m57.hermescontrol.ChatScreen
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.NetworkResult
 import com.m57.hermescontrol.data.session.ProfileSwitchCoordinator
 
 /**
- * A session id only means something inside the profile (bot) that owns it: REST and the socket
- * are scoped to the active profile. Opening another bot's conversation or run result therefore
- * switches to that bot first, then opens the session.
+ * Shared canonical navigation coordinator between Hermes Main ("default") and specialist bots.
+ *
+ * All specialist conversations reuse the single canonical chat engine (`ChatScreen` / `ChatViewModel`).
+ * Switching profiles clears any cross-profile pending session navigation so another bot's session
+ * can never be rendered under Hermes Main (or vice versa).
  */
 object BotConversations {
     /** Display name of a bot: the default profile is "Hermes". */
@@ -19,11 +22,13 @@ object BotConversations {
             else -> profileName
         }
 
+    /** Normalized active profile id, defaulting to `"default"`. */
+    fun activeProfile(): String = AuthManager.activeProfileId.value?.takeIf { it.isNotBlank() } ?: "default"
+
     /** True when [profileName] names a bot other than the one currently active. */
     fun isOtherBot(profileName: String?): Boolean {
         if (profileName.isNullOrBlank()) return false
-        val active = AuthManager.activeProfileId.value ?: "default"
-        return profileName != active
+        return profileName != activeProfile()
     }
 
     /**
@@ -35,11 +40,60 @@ object BotConversations {
         profileName: String?,
         sessionId: String,
     ): Boolean {
-        if (isOtherBot(profileName)) {
-            val result = ProfileSwitchCoordinator.switchProfile(requireNotNull(profileName))
+        val target = profileName?.takeIf { it.isNotBlank() }
+        if (isOtherBot(target)) {
+            val result = ProfileSwitchCoordinator.switchProfile(requireNotNull(target))
+            if (result !is NetworkResult.Success) return false
+            NavigationController.clearPendingChatNavigationForMismatch(target)
+        }
+        NavigationController.openChatSession(sessionId, profileName = target)
+        return true
+    }
+
+    /**
+     * Open a specialist's dedicated canonical consultation (switching profile when needed).
+     * When [canonicalSessionId] is supplied it targets that exact canonical session; otherwise
+     * [ChatViewModel.handleGatewayReady] resolves the specialist's canonical `"Bot Chat"`.
+     */
+    suspend fun openSpecialist(
+        profileName: String,
+        canonicalSessionId: String? = null,
+        openSetupAfterLaunch: Boolean = false,
+    ): Boolean {
+        if (profileName.isBlank()) return false
+        val switchedNeeded = isOtherBot(profileName)
+        if (switchedNeeded) {
+            val result = ProfileSwitchCoordinator.switchProfile(profileName)
             if (result !is NetworkResult.Success) return false
         }
-        NavigationController.openChatSession(sessionId)
+        NavigationController.clearPendingChatNavigationForMismatch(profileName)
+        if (openSetupAfterLaunch && profileName != "default") {
+            NavigationController.requestSpecialistSetup(profileName)
+        }
+        if (!canonicalSessionId.isNullOrBlank()) {
+            NavigationController.openChatSession(canonicalSessionId, profileName = profileName)
+        } else {
+            NavigationController.navigateTo(ChatScreen)
+        }
+        return true
+    }
+
+    /**
+     * Return from a specialist conversation (or past session) to Hermes Main (`"default"`),
+     * restoring `"default"`'s canonical `"Bot Chat"` without leaking the specialist's session.
+     */
+    suspend fun openMain(canonicalSessionId: String? = null): Boolean {
+        if (isOtherBot("default")) {
+            val result = ProfileSwitchCoordinator.switchProfile("default")
+            if (result !is NetworkResult.Success) return false
+        }
+        NavigationController.clearPendingChatNavigationForMismatch("default")
+        if (!canonicalSessionId.isNullOrBlank()) {
+            NavigationController.openChatSession(canonicalSessionId, profileName = "default")
+        } else {
+            NavigationController.requestMainConversation()
+            NavigationController.navigateTo(ChatScreen)
+        }
         return true
     }
 }
