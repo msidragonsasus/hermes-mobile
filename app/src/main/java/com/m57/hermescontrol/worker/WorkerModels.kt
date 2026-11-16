@@ -1,7 +1,9 @@
 package com.m57.hermescontrol.worker
 
+import com.m57.hermescontrol.data.ws.toAny
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
@@ -184,9 +186,12 @@ object WorkerDecisionRequests {
 object WorkerWsParsers {
     private val ACTIVE_SUBAGENT_STATES = setOf("running", "queued", "steered")
 
-    fun parseCronManageJobs(result: Any?): List<WorkerScheduledJob> {
+    /** WS results arrive as [JsonElement] from the live client and as plain maps in tests. */
+    private fun plain(result: Any?): Any? = if (result is JsonElement) result.toAny() else result
+
+    fun parseCronManageJobs(raw: Any?): List<WorkerScheduledJob> {
         val rows =
-            when (result) {
+            when (val result = plain(raw)) {
                 is Map<*, *> -> (result["jobs"] as? List<*>) ?: (result["items"] as? List<*>) ?: emptyList<Any?>()
                 is List<*> -> result
                 else -> return emptyList()
@@ -194,7 +199,8 @@ object WorkerWsParsers {
         return rows.mapNotNull { entry ->
             val map = entry as? Map<*, *> ?: return@mapNotNull null
             val name = (map["name"] as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
-            val id = (map["id"] as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: name
+            val id =
+                ((map["id"] ?: map["job_id"]) as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: name
             val state = (map["state"] as? String)?.lowercase()
             val enabled =
                 when (val rawEnabled = map["enabled"]) {
@@ -222,7 +228,7 @@ object WorkerWsParsers {
     }
 
     fun parseSubagents(result: Any?): List<WorkerSubagent> {
-        val rows = (result as? Map<*, *>)?.get("subagents") as? List<*> ?: return emptyList()
+        val rows = (plain(result) as? Map<*, *>)?.get("subagents") as? List<*> ?: return emptyList()
         return rows.mapNotNull { entry ->
             val map = entry as? Map<*, *> ?: return@mapNotNull null
             val id = (map["subagent_id"] as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null

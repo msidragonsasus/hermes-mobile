@@ -1,5 +1,6 @@
 package com.m57.hermescontrol.worker
 
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -47,5 +48,25 @@ class WorkerComponentsTest {
             ).map { it.name }
 
         assertEquals(listOf("sooner", "later", "unknown", "paused"), ordered)
+    }
+
+    @Test
+    fun liveWsJsonResultsAreParsed() {
+        // The live client hands parsers a JsonElement with the server's job_id/next_run_at keys.
+        val raw =
+            Json.parseToJsonElement(
+                """{"success":true,"count":1,"jobs":[{"job_id":"f3340f6f7895","name":"記憶の整理",""" +
+                    """"schedule":"30 4 * * *","next_run_at":"2026-11-17T04:30:00+09:00","enabled":true}]}""",
+            )
+        val jobs = WorkerWsParsers.parseCronManageJobs(raw)
+        assertEquals(1, jobs.size)
+        assertEquals("f3340f6f7895", jobs[0].id)
+        assertEquals("2026-11-17T04:30:00+09:00", jobs[0].nextRunAt)
+
+        val subagents =
+            WorkerWsParsers.parseSubagents(
+                Json.parseToJsonElement("""{"subagents":[{"subagent_id":"s1","status":"running","goal":"g"}]}"""),
+            )
+        assertEquals(listOf("s1"), subagents.map { it.subagentId })
     }
 }

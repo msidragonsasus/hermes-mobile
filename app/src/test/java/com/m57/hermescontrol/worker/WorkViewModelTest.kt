@@ -49,14 +49,14 @@ class WorkViewModelTest {
 
         override suspend fun manageScheduledJob(
             action: String,
-            name: String,
+            jobId: String,
         ): Result<Unit> {
-            manageCalls += action to name
+            manageCalls += action to jobId
             jobs =
                 when (action) {
-                    "pause" -> jobs.map { if (it.name == name) it.copy(enabled = false) else it }
-                    "resume" -> jobs.map { if (it.name == name) it.copy(enabled = true) else it }
-                    "remove" -> jobs.filterNot { it.name == name }
+                    "pause" -> jobs.map { if (it.id == jobId) it.copy(enabled = false) else it }
+                    "resume" -> jobs.map { if (it.id == jobId) it.copy(enabled = true) else it }
+                    "remove" -> jobs.filterNot { it.id == jobId }
                     else -> jobs
                 }
             return Result.success(Unit)
@@ -134,7 +134,7 @@ class WorkViewModelTest {
                     .first()
             vm.toggleJobPause(firstJob)
             advanceUntilIdle()
-            assertEquals(listOf("pause" to "daily-check"), gateway.manageCalls)
+            assertEquals(listOf("pause" to "j1"), gateway.manageCalls)
             assertEquals(
                 false,
                 vm.uiState.value.scheduledJobs
@@ -147,7 +147,7 @@ class WorkViewModelTest {
                     .first(),
             )
             advanceUntilIdle()
-            assertEquals(listOf("pause" to "daily-check", "resume" to "daily-check"), gateway.manageCalls)
+            assertEquals(listOf("pause" to "j1", "resume" to "j1"), gateway.manageCalls)
             assertEquals(
                 true,
                 vm.uiState.value.scheduledJobs
@@ -177,7 +177,7 @@ class WorkViewModelTest {
             )
             vm.confirmDeleteJob()
             advanceUntilIdle()
-            assertEquals("remove" to "daily-check", gateway.manageCalls.last())
+            assertEquals("remove" to "j1", gateway.manageCalls.last())
             assertTrue(
                 vm.uiState.value.scheduledJobs
                     .isEmpty(),

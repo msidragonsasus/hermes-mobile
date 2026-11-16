@@ -51,9 +51,10 @@ interface WorkGatewayClient {
 
     suspend fun listScheduledJobs(): Result<List<WorkerScheduledJob>>
 
+    /** [jobId] is the server job id; `cron.manage` reads it from its `name` param. */
     suspend fun manageScheduledJob(
         action: String,
-        name: String,
+        jobId: String,
     ): Result<Unit>
 }
 
@@ -128,13 +129,13 @@ object DefaultWorkGatewayClient : WorkGatewayClient {
 
     override suspend fun manageScheduledJob(
         action: String,
-        name: String,
+        jobId: String,
     ): Result<Unit> =
         runCatching {
             HermesWsClient
                 .request(
                     WsMethods.CRON_MANAGE,
-                    mapOf("action" to action, "name" to name),
+                    mapOf("action" to action, "name" to jobId),
                     WS_TIMEOUT_MS,
                 ).await()
         }.map {}
@@ -301,7 +302,7 @@ class WorkViewModel(
         val action = if (job.enabled) "pause" else "resume"
         viewModelScope.launch {
             _uiState.update { it.copy(busyJobNames = it.busyJobNames + job.name) }
-            val result = safeCall { gateway.manageScheduledJob(action, job.name) }
+            val result = safeCall { gateway.manageScheduledJob(action, job.id) }
             if (result.isSuccess) {
                 val updated = safeCall { gateway.listScheduledJobs() }
                 _uiState.update { state ->
@@ -346,7 +347,7 @@ class WorkViewModel(
         if (target.name in _uiState.value.busyJobNames) return
         viewModelScope.launch {
             _uiState.update { it.copy(busyJobNames = it.busyJobNames + target.name) }
-            val result = safeCall { gateway.manageScheduledJob("remove", target.name) }
+            val result = safeCall { gateway.manageScheduledJob("remove", target.id) }
             if (result.isSuccess) {
                 val updated = safeCall { gateway.listScheduledJobs() }
                 _uiState.update { state ->
