@@ -217,6 +217,16 @@ existing code. A Material import or a rounded rectangle does not prove complianc
   routines. Worker rows put time in one muted, tabular trailing column
   (`WorkerTimeLabel`: `04:30`, `明日 04:30`). Routine actions (pause, resume,
   delete) live in the row's menu, not as per-row colored icons and badges.
+- 2026-11-17: chat approvals are decided in place (`ApprovalRequestCard`, same
+  structure as `WorkerApprovalObject`): heading, the exact operation in monospace,
+  「詳細」, 「拒否」 and the primary 「今回だけ許可」. A closed request folds to one quiet
+  line (「承認依頼・失効」) that still opens details. Rejected: an italic caption with a
+  status label and a lone 「依頼の詳細を確認」 link that forced a screen change to decide.
+  The detail screen names missing server fields once in one muted line, puts
+  server/profile/session/request IDs under 「技術情報」 with per-line labels, shows a
+  notice only when a response is blocked, and hides decision buttons once closed.
+  Rejected: a stack of identical 「不明（サーバーから未提供）」 rows, unlabeled ID dumps,
+  disabled buttons on an expired request, and a permanently disabled 「修正」 button.
 
 When the user rejects a design, record it here in the same change.
 

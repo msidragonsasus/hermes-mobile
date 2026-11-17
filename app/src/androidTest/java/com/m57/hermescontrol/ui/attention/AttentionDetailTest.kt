@@ -51,7 +51,12 @@ class AttentionDetailTest {
             }
         }
         compose.onNodeWithTag("attention_once").assertIsDisplayed()
-        compose.onNodeWithText(context.getString(R.string.attention_impact)).performScrollTo().assertIsDisplayed()
+        compose
+            .onNodeWithText(
+                context.getString(R.string.attention_impact),
+                substring = true,
+            ).performScrollTo()
+            .assertIsDisplayed()
         compose.onNodeWithText("original-request").performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("attention_once").performClick().assertIsNotEnabled()
         compose.onNodeWithTag("attention_deny").assertIsNotEnabled()

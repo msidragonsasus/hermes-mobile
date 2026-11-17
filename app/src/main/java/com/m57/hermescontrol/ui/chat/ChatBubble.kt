@@ -283,6 +283,14 @@ internal fun SystemBubble(
     }
 
     val approvalInfo = message.approvalInfo
+    if (approvalInfo != null) {
+        com.m57.hermescontrol.ui.attention.ApprovalRequestCard(
+            info = approvalInfo,
+            onRespond = { action -> onRespondApproval(message.id, action) },
+            modifier = modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+        return
+    }
 
     Column(
         modifier =
@@ -299,18 +307,6 @@ internal fun SystemBubble(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 ),
         )
-
-        if (approvalInfo != null) {
-            Spacer(Modifier.height(8.dp))
-            com.m57.hermescontrol.ui.attention.AttentionStatusLabel(
-                approvalInfo.status,
-                approvalInfo.responseEnabled,
-            )
-            approvalInfo.ref?.let { ref ->
-                com.m57.hermescontrol.ui.attention
-                    .AttentionOpenButton(ref)
-            }
-        }
     }
 }
 

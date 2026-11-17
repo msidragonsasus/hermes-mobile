@@ -1,7 +1,7 @@
 <resources>
     <string name="attention_open_details">依頼の詳細を確認</string>
     <string name="attention_detail_title">依頼の詳細</string>
-    <string name="attention_not_provided">不明（サーバーから未提供）</string>
+    <string name="attention_not_provided">未提供</string>
     <string name="attention_missing">この依頼を確認できません。以前の接続やアプリ起動時の通知の可能性があります。回答は送信しません。TodayまたはChatで現在の依頼を確認してください。</string>
     <string name="attention_pending">回答が必要です</string>
     <string name="attention_on_hold">元の接続と依頼を確認するまで回答を保留します</string>
@@ -15,11 +15,25 @@
     <string name="attention_reversibility">元に戻せるか</string>
     <string name="attention_permission">要求されている権限</string>
     <string name="attention_expiry">有効期限</string>
-    <string name="attention_source">依頼元のサーバー・プロファイル・セッション</string>
     <string name="attention_request">依頼ID</string>
     <string name="attention_question">質問ID</string>
-    <string name="attention_modify_unsupported">この接続では元の依頼の修正に対応していません。編集しただけで許可することもありません。</string>
+    <string name="attention_modify_unsupported">この接続では依頼内容の修正に対応していません。</string>
     <string name="attention_deny">拒否</string>
     <string name="attention_once">今回だけ許可</string>
-    <string name="attention_modify">修正</string>
+    <string name="attention_approval_heading">承認が必要です</string>
+    <string name="attention_operation">実行しようとしている操作</string>
+    <string name="attention_patterns">該当したルール</string>
+    <string name="attention_missing_fields">サーバーから提供されていない情報：%1$s</string>
+    <string name="attention_missing_separator">、</string>
+    <string name="attention_technical">技術情報</string>
+    <string name="attention_server">サーバー</string>
+    <string name="attention_connection_profile">接続プロファイル</string>
+    <string name="attention_server_profile">サーバープロファイル</string>
+    <string name="attention_session">セッション</string>
+    <string name="attention_expired_detail">この依頼は失効しました。回答は送信されません。</string>
+    <string name="attention_details_short">詳細</string>
+    <string name="attention_closed_label">承認依頼・%1$s</string>
+    <string name="attention_closed_expired">失効</string>
+    <string name="attention_closed_confirmed">回答済み</string>
+    <string name="attention_closed_unknown">結果不明</string>
 </resources>

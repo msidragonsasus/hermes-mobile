@@ -1,7 +1,7 @@
 <resources>
     <string name="attention_open_details">Review request</string>
     <string name="attention_detail_title">Request details</string>
-    <string name="attention_not_provided">Unknown — not provided by the server</string>
+    <string name="attention_not_provided">Not provided</string>
     <string name="attention_missing">This request cannot be verified. It may be from an earlier connection or app session. No response will be sent. Check a current request in Today or Chat.</string>
     <string name="attention_pending">Your response is needed</string>
     <string name="attention_on_hold">Response on hold until the original connection and request are verified</string>
@@ -15,11 +15,25 @@
     <string name="attention_reversibility">Reversibility</string>
     <string name="attention_permission">Requested permission</string>
     <string name="attention_expiry">Expiry</string>
-    <string name="attention_source">Original server, profiles and session</string>
     <string name="attention_request">Request ID</string>
     <string name="attention_question">Question ID</string>
-    <string name="attention_modify_unsupported">This connection does not support editing the original request. Editing never implies permission.</string>
+    <string name="attention_modify_unsupported">This connection does not support editing the request.</string>
     <string name="attention_deny">Reject</string>
     <string name="attention_once">Allow once</string>
-    <string name="attention_modify">Modify</string>
+    <string name="attention_approval_heading">Approval needed</string>
+    <string name="attention_operation">Operation to run</string>
+    <string name="attention_patterns">Matched rules</string>
+    <string name="attention_missing_fields">Not provided by the server: %1$s</string>
+    <string name="attention_missing_separator">, </string>
+    <string name="attention_technical">Technical details</string>
+    <string name="attention_server">Server</string>
+    <string name="attention_connection_profile">Connection profile</string>
+    <string name="attention_server_profile">Server profile</string>
+    <string name="attention_session">Session</string>
+    <string name="attention_expired_detail">This request has expired. No response will be sent.</string>
+    <string name="attention_details_short">Details</string>
+    <string name="attention_closed_label">Approval · %1$s</string>
+    <string name="attention_closed_expired">expired</string>
+    <string name="attention_closed_confirmed">answered</string>
+    <string name="attention_closed_unknown">result unknown</string>
 </resources>
