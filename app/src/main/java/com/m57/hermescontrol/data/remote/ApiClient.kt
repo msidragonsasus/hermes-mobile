@@ -71,7 +71,6 @@ object ApiClient {
                 .Builder()
                 .baseUrl(endpoint.baseUrl)
                 .client(tempOkHttp)
-                .addConverterFactory(GroupServerConverterFactory)
                 .addConverterFactory(OkHttpProvider.json.asConverterFactory("application/json".toMediaType()))
                 .build()
 
@@ -135,7 +134,6 @@ object ApiClient {
                 .Builder()
                 .baseUrl(AuthManager.endpointForBuild().baseUrl)
                 .client(okHttp)
-                .addConverterFactory(GroupServerConverterFactory)
                 .addConverterFactory(OkHttpProvider.json.asConverterFactory("application/json".toMediaType()))
                 .build()
                 .also { retrofit = it }

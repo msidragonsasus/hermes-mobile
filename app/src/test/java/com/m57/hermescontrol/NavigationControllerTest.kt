@@ -274,7 +274,6 @@ class NavigationControllerTest {
             "MemoryProviderDetailKey should NOT be primary",
             NavigationController.isPrimaryScreen(MemoryProviderDetailKey("mem")),
         )
-        assertFalse("GroupChatKey should NOT be primary", NavigationController.isPrimaryScreen(GroupChatKey("room")))
         assertFalse("AuthLoginScreen should NOT be primary", NavigationController.isPrimaryScreen(AuthLoginScreen))
     }
 

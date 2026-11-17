@@ -85,14 +85,12 @@ class BotsViewModelCapabilitiesTest {
             vm.loadBots()
             advanceUntilIdle()
             assertTrue(vm.uiState.value.capabilitiesState is SpecialistCapabilitiesState.Supported)
-            assertFalse(vm.uiState.value.isGroupRetirementReady)
 
             coEvery { mockApi.getSpecialistCapabilities() } returns
                 Response.error(404, """{"detail":"Not Found"}""".toResponseBody("application/json".toMediaType()))
             vm.loadBots(isRefresh = true)
             advanceUntilIdle()
             assertTrue(vm.uiState.value.capabilitiesState is SpecialistCapabilitiesState.LegacyUnsupported)
-            assertFalse(vm.uiState.value.isGroupRetirementReady)
 
             coEvery { mockApi.getSpecialistCapabilities() } returns
                 Response.success(
@@ -106,6 +104,5 @@ class BotsViewModelCapabilitiesTest {
             vm.loadBots(isRefresh = true)
             advanceUntilIdle()
             assertTrue(vm.uiState.value.capabilitiesState is SpecialistCapabilitiesState.Supported)
-            assertTrue(vm.uiState.value.isGroupRetirementReady)
         }
 }

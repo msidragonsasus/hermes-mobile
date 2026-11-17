@@ -25,12 +25,6 @@ import kotlinx.serialization.Serializable
 
 @Serializable data object BotsScreen : NavKey
 
-@Serializable data class GroupChatKey(
-    val groupName: String,
-    val conversationId: String? = null,
-    val newConversationId: String? = null,
-) : NavKey
-
 @Serializable data object ToolsetsScreen : NavKey
 
 @Serializable data class ToolsetDetailKey(

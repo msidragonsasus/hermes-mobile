@@ -12,7 +12,6 @@ import com.m57.hermescontrol.ConfigScreen
 import com.m57.hermescontrol.CronJobsScreen
 import com.m57.hermescontrol.FilesScreen
 import com.m57.hermescontrol.GatewayScreen
-import com.m57.hermescontrol.GroupChatKey
 import com.m57.hermescontrol.HistoryScreen
 import com.m57.hermescontrol.KanbanScreen
 import com.m57.hermescontrol.KeysScreen
@@ -154,7 +153,6 @@ class LegacyScreenContribution(
                     MemoryProviderDetailKey::class,
                     screens.size + 9,
                 ),
-                DestinationMetadata("legacy.group-chat", "hermes/group-chat", GroupChatKey::class, screens.size + 10),
                 DestinationMetadata(
                     "legacy.config-advanced",
                     "hermes/config-advanced",

@@ -147,58 +147,6 @@ class AgentHistoryDrawerTest {
     }
 
     @Test
-    fun groupFailureKeepsOrdinaryHistorySelectableWithoutClaimingAllHistoryFailed() {
-        var selected: String? = null
-        var retries = 0
-        compose.setContent {
-            HermesControlTheme {
-                ConversationMenuSheet(
-                    null,
-                    {},
-                    {},
-                    {},
-                    {},
-                    historyState =
-                        SessionsUiState(
-                            sessions = listOf(SessionInfo("ordinary", "Saved chat")),
-                            groupHistoryUnavailable = true,
-                        ),
-                    onSelectSession = { selected = it },
-                    onRefreshHistory = { retries++ },
-                )
-            }
-        }
-        compose.onNodeWithTag("conversation_group_history_error").assertIsDisplayed()
-        compose.onNodeWithTag("conversation_history_error").assertDoesNotExist()
-        compose.onNodeWithTag("conversation_history_empty").assertDoesNotExist()
-        compose.onNodeWithTag("conversation_session_ordinary").performClick()
-        compose.onNodeWithTag("conversation_history_retry").performClick()
-        compose.runOnIdle {
-            assertEquals("ordinary", selected)
-            assertEquals(1, retries)
-        }
-    }
-
-    @Test
-    fun failedGroupSourceIsNotPresentedAsAnEmptySuccessfulHistory() {
-        compose.setContent {
-            HermesControlTheme {
-                ConversationMenuSheet(
-                    null,
-                    {},
-                    {},
-                    {},
-                    {},
-                    historyState = SessionsUiState(groupHistoryUnavailable = true),
-                )
-            }
-        }
-        compose.onNodeWithTag("conversation_group_history_error").assertIsDisplayed()
-        compose.onNodeWithTag("conversation_history_error").assertDoesNotExist()
-        compose.onNodeWithTag("conversation_history_empty").assertDoesNotExist()
-    }
-
-    @Test
     fun loadingDoesNotPretendTheHistoryIsEmpty() {
         compose.setContent {
             HermesControlTheme {

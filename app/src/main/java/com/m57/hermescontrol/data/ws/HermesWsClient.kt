@@ -816,7 +816,6 @@ object HermesWsClient {
         val deferred: CompletableDeferred<Any?>,
         var timeoutJob: Job? = null,
         val writeScope: ConnectionScope? = null,
-        val groupCreate: Pair<GroupSessionAccess, String>? = null,
         val snapshotScope: ConnectionScope? = null,
         val expectedRuntimeId: String? = null,
         val snapshotStartedAt: Long = observationOrdinal.get(),
@@ -1257,179 +1256,6 @@ object HermesWsClient {
             }
         }
 
-    private val groupAccesses = mutableSetOf<GroupSessionAccess>()
-
-    internal fun openGroupAccess(
-        room: String,
-        members: Set<String>,
-        metadataProfile: String,
-    ): GroupSessionAccess? =
-        synchronized(outboundLock) {
-            val scope = _connectionScope.value ?: return@synchronized null
-            if (room.isBlank() || members.isEmpty() || members.any(String::isBlank) || metadataProfile.isBlank() ||
-                !matchesCurrentScope(scope) || !connected.get() || webSocket == null
-            ) {
-                return@synchronized null
-            }
-            GroupSessionAccess(scope, room, members.toSet(), metadataProfile).also { groupAccesses.add(it) }
-        }
-
-    internal fun isCurrentGroupAccess(access: GroupSessionAccess): Boolean =
-        synchronized(outboundLock) {
-            access in groupAccesses && matchesCurrentScope(access.scope) && connected.get() && webSocket != null
-        }
-
-    internal fun closeGroupAccess(access: GroupSessionAccess) =
-        synchronized(outboundLock) {
-            groupAccesses.remove(access)
-            access.sessions.clear()
-            access.acknowledgedCreates.clear()
-        }
-
-    internal fun createGroupMember(
-        access: GroupSessionAccess,
-        member: String,
-    ): ScopedRpcSubmission =
-        writeGroupSession(
-            access,
-            member,
-            null,
-            WsMethods.SESSION_CREATE,
-            mapOf("title" to "Group: ${access.room}", "source" to "desktop", "hidden" to true),
-        )
-
-    internal fun bindGroupMember(
-        access: GroupSessionAccess,
-        member: String,
-        runtimeId: String?,
-        storedId: String?,
-    ): GroupMemberSession =
-        synchronized(outboundLock) {
-            if (!isCurrentGroupAccess(access) || member !in access.members || runtimeId.isNullOrBlank() ||
-                access.acknowledgedCreates[member] != (runtimeId to storedId) ||
-                access.sessions.values.any {
-                    it.member != member &&
-                        listOfNotNull(it.runtimeSessionId, it.storedSessionId).any { id ->
-                            id == runtimeId ||
-                                id == storedId
-                        }
-                }
-            ) {
-                throw HermesRpcException("Group session unavailable", OfflineSendPolicy.NOT_SENT)
-            }
-            GroupMemberSession(member, runtimeId, storedId?.takeIf(String::isNotBlank), access).also {
-                access.sessions[member] = it
-            }
-        }
-
-    internal fun submitGroupMember(
-        access: GroupSessionAccess,
-        session: GroupMemberSession,
-        text: String,
-    ): ScopedRpcSubmission =
-        writeGroupSession(
-            access,
-            session.member,
-            session,
-            WsMethods.PROMPT_SUBMIT,
-            mapOf("session_id" to session.runtimeSessionId, "text" to text),
-        )
-
-    internal fun interruptGroupMember(
-        access: GroupSessionAccess,
-        session: GroupMemberSession,
-    ): ScopedRpcSubmission =
-        writeGroupSession(
-            access,
-            session.member,
-            session,
-            WsMethods.SESSION_INTERRUPT,
-            mapOf("session_id" to session.runtimeSessionId),
-        )
-
-    internal fun configureGroupSnapshot(
-        access: GroupSessionAccess,
-        snapshot: Map<String, Any?>,
-    ): ScopedRpcSubmission =
-        writeGroupSession(
-            access,
-            null,
-            null,
-            WsMethods.PROFILES_CONFIGURE,
-            mapOf("name" to access.metadataProfile, "ui_meta" to mapOf("hermes-bots-groups" to snapshot)),
-        )
-
-    /** Narrow group operations only: no arbitrary RPC, caller profile or session-ID override. */
-    private fun writeGroupSession(
-        access: GroupSessionAccess,
-        member: String?,
-        session: GroupMemberSession?,
-        method: String,
-        params: Map<String, Any>,
-    ): ScopedRpcSubmission =
-        synchronized(outboundLock) {
-            val response = CompletableDeferred<Any?>()
-            val routeAllowed =
-                when (method) {
-                    WsMethods.PROFILES_CONFIGURE -> {
-                        member == null && session == null
-                    }
-
-                    WsMethods.SESSION_CREATE -> {
-                        member in access.members && session == null
-                    }
-
-                    WsMethods.PROMPT_SUBMIT, WsMethods.SESSION_INTERRUPT -> {
-                        member in access.members && session != null && session.access === access &&
-                            access.sessions[member] === session
-                    }
-
-                    else -> {
-                        false
-                    }
-                }
-            val ws = webSocket
-            if (!routeAllowed || !isCurrentGroupAccess(access) || ws == null) {
-                response.completeExceptionally(HermesRpcException("Request not sent", OfflineSendPolicy.NOT_SENT))
-                return@synchronized ScopedRpcSubmission(null, false, response)
-            }
-            val fixedParams =
-                params.toMutableMap().apply {
-                    put("profile", member ?: access.metadataProfile)
-                }
-            val id = requestId.incrementAndGet().toString()
-            val request =
-                JsonRpcRequest(id = id, method = method, params = fixedParams.mapValues { it.value.toJsonElement() })
-            val encoded = OkHttpProvider.json.encodeToString(request)
-            if (!withinOutboundLimit(encoded)) {
-                response.completeExceptionally(HermesRpcException("Request not sent", OfflineSendPolicy.NOT_SENT))
-                return@synchronized ScopedRpcSubmission(id, false, response)
-            }
-            val replyPendingBeforeSend = pendingReply
-            pendingCalls[id] =
-                PendingCall(
-                    method,
-                    response,
-                    writeScope = access.scope,
-                    groupCreate = if (method == WsMethods.SESSION_CREATE && member != null) access to member else null,
-                )
-            if (method == WsMethods.PROMPT_SUBMIT) {
-                pendingPromptSubmits.add(id)
-                pendingReply = true
-            }
-            val accepted = ws.send(encoded)
-            if (!accepted) {
-                rejectNotSent(id, replyPendingBeforeSend)
-            } else {
-                pendingCalls[id]?.timeoutJob =
-                    wsScope.launch {
-                        delay(REQUEST_TIMEOUT_MS)
-                        resolvePending(id, null, JsonRpcError(-1, "Group acknowledgement unavailable"))
-                    }
-            }
-            ScopedRpcSubmission(id, accepted, response)
-        }
-
     /** Complete (or fail) a single pending call and cancel its timer. */
     private fun resolvePending(
         id: String,
@@ -1457,22 +1283,6 @@ object HermesWsClient {
             cacheTerminalCapability(call, result, error)
             removeQueuedMessage(id)
             call.timeoutJob?.cancel()
-            if (error == null) {
-                call.groupCreate?.let { (access, member) ->
-                    synchronized(outboundLock) {
-                        if (isCurrentGroupAccess(access)) {
-                            val raw = if (result is kotlinx.serialization.json.JsonElement) result.toAny() else result
-                            val values = raw as? Map<*, *>
-                            val payload = values?.get("result") as? Map<*, *> ?: values
-                            val runtimeId = payload?.get("session_id") as? String
-                            if (!runtimeId.isNullOrBlank()) {
-                                access.acknowledgedCreates[member] =
-                                    runtimeId to (payload?.get("stored_session_id") as? String)
-                            }
-                        }
-                    }
-                }
-            }
             if (error != null) {
                 call.deferred.completeExceptionally(HermesRpcException(error.message, error.code))
             } else {
@@ -1492,7 +1302,6 @@ object HermesWsClient {
             HermesRpcException("Connection lost — request cancelled"),
     ): Unit =
         synchronized(outboundLock) {
-            groupAccesses.clear()
             terminalCapability = null
             if (pendingCalls.isEmpty()) return
             val snapshot = pendingCalls.toList()

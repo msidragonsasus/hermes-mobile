@@ -126,10 +126,6 @@ private fun appEntryProvider(
     entry<AppsScreen> { MiniAppsScreen() }
     entry<AgentScreen> { AgentHubScreen(sessionId = sessionId, onOpenDrawer = openDrawer) }
     entry<AgentDetailKey> { AgentDetailScreen(it) }
-    entry<com.m57.hermescontrol.agents.AgentGroupsKey> {
-        com.m57.hermescontrol.agents
-            .AgentGroupsScreen(it.openClaw)
-    }
     entry<com.m57.hermescontrol.agents.BotDefaultsKey> {
         com.m57.hermescontrol.agents
             .BotDefaultsScreen(it.profileName)
@@ -326,16 +322,6 @@ private fun appEntryProvider(
         MemoryProviderDetailScreen(
             name = key.name,
             label = key.label,
-            onBack = { NavigationController.goBack() },
-        )
-    }
-
-    // ── Multi-Agent Group Chat Room ─────────────────────────────────────
-    entry<GroupChatKey> { key ->
-        com.m57.hermescontrol.ui.bots.group.GroupChatScreen(
-            groupName = key.groupName,
-            conversationId = key.conversationId,
-            newConversationId = key.newConversationId,
             onBack = { NavigationController.goBack() },
         )
     }

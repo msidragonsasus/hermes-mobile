@@ -13,14 +13,11 @@ import org.junit.Test
 
 class ShellNavigationTest {
     @Test
-    fun openClawAndGroupsKeepConversationScopeWhileDefaultsHidePrimaryTabs() {
+    fun openClawKeepsConversationScopeWhileDefaultsHidePrimaryTabs() {
         val navigation = shell()
         navigation.select(ShellTab.AGENT)
         val chat = com.m57.hermescontrol.openclaw.OpenClawChatKey
         val settings = com.m57.hermescontrol.openclaw.OpenClawSettingsKey
-        val groups =
-            com.m57.hermescontrol.agents
-                .AgentGroupsKey(openClaw = true)
         navigation.navigate(chat)
         assertFalse(navigation.isInManagement)
         navigation.navigate(settings)
@@ -28,14 +25,12 @@ class ShellNavigationTest {
         navigation.navigate(chat)
         assertFalse(navigation.isInManagement)
         assertEquals(listOf(ChatScreen, chat), navigation.backStack.toList())
-        navigation.navigate(groups)
-        assertFalse(navigation.isInManagement)
         navigation.navigate(
             com.m57.hermescontrol.agents
                 .BotDefaultsKey("other-bot"),
         )
         assertTrue(navigation.isInManagement)
-        navigation.navigate(groups)
+        navigation.navigate(chat)
         assertFalse(navigation.isInManagement)
     }
 

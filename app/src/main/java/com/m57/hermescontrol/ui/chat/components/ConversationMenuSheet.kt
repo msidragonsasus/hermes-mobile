@@ -97,7 +97,6 @@ fun ConversationMenuSheet(
     historyActivity: Map<String, SessionActivity> = emptyMap(),
     historyRechecking: Set<String> = emptySet(),
     historyStatusUnverified: Boolean = false,
-    groupKeys: Set<String> = emptySet(),
     drawerModifier: Modifier = Modifier,
     title: String? = null,
     primaryLabel: String? = null,
@@ -194,7 +193,6 @@ fun ConversationMenuSheet(
                         val searching = historyState.isSearchMode
                         val loading = if (searching) historyState.isSearching else historyState.isLoading
                         val error = if (searching) historyState.searchError else historyState.errorMessage
-                        val groupError = historyState.groupHistoryUnavailable
                         if (loading) {
                             item {
                                 LinearProgressIndicator(
@@ -202,21 +200,13 @@ fun ConversationMenuSheet(
                                 )
                             }
                         }
-                        if (error != null || groupError) {
+                        if (error != null) {
                             item {
                                 Column(Modifier.padding(spacing.md)) {
-                                    if (error != null) {
-                                        Text(
-                                            stringResource(R.string.agent_history_error),
-                                            modifier = Modifier.testTag("conversation_history_error"),
-                                        )
-                                    }
-                                    if (groupError) {
-                                        Text(
-                                            stringResource(R.string.agent_group_history_error),
-                                            modifier = Modifier.testTag("conversation_group_history_error"),
-                                        )
-                                    }
+                                    Text(
+                                        stringResource(R.string.agent_history_error),
+                                        modifier = Modifier.testTag("conversation_history_error"),
+                                    )
                                     TextButton(
                                         onClick = onRefreshHistory,
                                         modifier = Modifier.testTag("conversation_history_retry"),
@@ -234,10 +224,9 @@ fun ConversationMenuSheet(
                                 historyState,
                                 historyActivity,
                                 untitled,
-                                groupKeys,
                                 historyRechecking,
                             )
-                        if (!loading && error == null && !groupError && rows.isEmpty()) {
+                        if (!loading && error == null && rows.isEmpty()) {
                             item { HistoryEmpty(searching = searching) }
                         }
                         items(rows, key = { it.id }) { row ->

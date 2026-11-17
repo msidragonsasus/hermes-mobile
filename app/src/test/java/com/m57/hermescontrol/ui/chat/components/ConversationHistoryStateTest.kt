@@ -11,7 +11,6 @@ import com.m57.hermescontrol.domain.hermes.LiveStatus
 import com.m57.hermescontrol.domain.hermes.SessionActivity
 import com.m57.hermescontrol.domain.hermes.TransportConnection
 import com.m57.hermescontrol.domain.hermes.projectHistoryActivity
-import com.m57.hermescontrol.ui.bots.group.GroupHistoryEntry
 import com.m57.hermescontrol.ui.sessions.SessionsUiState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,61 +20,16 @@ import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ConversationHistoryStateTest {
     @Test
-    fun groupFailureDoesNotTurnSuccessfulOrdinaryHistoryIntoAnError() {
-        val ordinary = SessionsUiState(sessions = listOf(SessionInfo("ordinary", "Saved chat")), total = 1)
-        val merged = mergeConversationHistory(ordinary, listOf(group), false, true, "Untitled")
-
-        assertNull(merged.errorMessage)
-        assertNull(merged.searchError)
-        assertTrue(merged.groupHistoryUnavailable)
-        assertEquals(listOf("ordinary", group.key), merged.sessions.map { it.id })
-        assertEquals(ordinary.total, merged.total)
-    }
-
-    @Test
-    fun ordinaryFailureRemainsVisibleAlongsideUsableGroupHistory() {
-        val ordinary = SessionsUiState(errorMessage = "unavailable", searchError = "search unavailable")
-        val merged = mergeConversationHistory(ordinary, listOf(group), false, false, "Untitled")
-
-        assertEquals("unavailable", merged.errorMessage)
-        assertEquals("search unavailable", merged.searchError)
-        assertFalse(merged.groupHistoryUnavailable)
-        assertEquals(group.key, merged.sessions.single().id)
-    }
-
-    @Test
-    fun searchKeepsOrdinaryResultsWhenTheGroupSourceFailsAndRecoveryClearsOnlyItsWarning() {
-        val ordinary =
-            SessionsUiState(
-                searchQuery = "saved",
-                searchResults = listOf(SessionSearchResult("ordinary", "Saved result")),
-                hasMore = true,
-            )
-        val failed = mergeConversationHistory(ordinary, listOf(group), false, true, "Untitled")
-        assertEquals(listOf("ordinary", group.key), failed.searchResults.map { it.session_id })
-        assertNull(failed.searchError)
-        assertTrue(failed.hasMore)
-
-        val recovered = mergeConversationHistory(ordinary, listOf(group), false, false, "Untitled")
-        assertFalse(recovered.groupHistoryUnavailable)
-        assertEquals(failed.searchResults, recovered.searchResults)
-    }
-
-    @Test
-    fun listAndSearchRowsShareOneStatusMappingWhileGroupRowsStayQuiet() {
+    fun listAndSearchRowsShareOneStatusMapping() {
         val activity =
             mapOf(
                 "ordinary" to SessionActivity.RUNNING,
                 "hidden" to SessionActivity.NEEDS_INPUT,
-                group.key to SessionActivity.WAITING_APPROVAL,
             )
         val ordinary =
             SessionsUiState(
@@ -85,36 +39,22 @@ class ConversationHistoryStateTest {
                         SessionInfo("hidden", "Hidden", hidden = true),
                     ),
             )
-        val listRows =
-            conversationHistoryRows(
-                mergeConversationHistory(ordinary, listOf(group), false, false, "Untitled"),
-                activity,
-                "Untitled",
-                setOf(group.key),
-            )
+        val listRows = conversationHistoryRows(ordinary, activity, "Untitled")
         val searchRows =
             conversationHistoryRows(
-                mergeConversationHistory(
-                    ordinary.copy(
-                        searchQuery = "saved",
-                        searchResults =
-                            listOf(
-                                SessionSearchResult("ordinary", "snippet"),
-                                SessionSearchResult("ordinary", "again"),
-                            ),
-                    ),
-                    listOf(group),
-                    false,
-                    false,
-                    "Untitled",
+                ordinary.copy(
+                    searchQuery = "saved",
+                    searchResults =
+                        listOf(
+                            SessionSearchResult("ordinary", "snippet"),
+                            SessionSearchResult("ordinary", "again"),
+                        ),
                 ),
                 activity,
                 "Untitled",
-                setOf(group.key),
             )
 
-        // Group conversations have no run/request evidence in this protocol, so they stay quiet.
-        val expected = listOf("ordinary" to SessionActivity.RUNNING, group.key to null)
+        val expected = listOf("ordinary" to SessionActivity.RUNNING)
         assertEquals(expected, listRows.map { it.id to it.activity })
         assertEquals(expected, searchRows.map { it.id to it.activity })
         assertEquals(listRows.first().title, searchRows.first().title)
@@ -195,7 +135,7 @@ class ConversationHistoryStateTest {
         }
 
     @Test
-    fun recheckingFlagFollowsTheSameMappingAndNeverReachesGroupRows() {
+    fun recheckingFlagFollowsTheSameMapping() {
         val state =
             SessionsUiState(
                 sessions =
@@ -204,25 +144,20 @@ class ConversationHistoryStateTest {
                         SessionInfo("quiet", "静か"),
                     ),
             )
-        val merged = mergeConversationHistory(state, listOf(group), false, false, "Untitled")
         val rows =
             conversationHistoryRows(
-                merged,
-                mapOf("root" to SessionActivity.RUNNING, group.key to SessionActivity.RUNNING),
+                state,
+                mapOf("root" to SessionActivity.RUNNING),
                 "Untitled",
-                setOf(group.key),
-                rechecking = setOf("root", "quiet", group.key),
+                rechecking = setOf("root", "quiet"),
             )
-        // A rechecking ID without status (quiet) claims nothing; group archives never inherit it.
+        // A rechecking ID without status (quiet) claims nothing.
         assertEquals(
             listOf(
                 Triple("tip", SessionActivity.RUNNING, true),
                 Triple("quiet", null, false),
-                Triple(group.key, null, false),
             ),
             rows.map { Triple(it.id, it.activity, it.rechecking) },
         )
     }
-
-    private val group = GroupHistoryEntry("team", "saved", "Team", "Saved discussion", 1)
 }

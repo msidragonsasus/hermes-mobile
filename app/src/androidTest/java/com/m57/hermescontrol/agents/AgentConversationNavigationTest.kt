@@ -41,22 +41,6 @@ class AgentConversationNavigationTest {
     }
 
     @Test
-    fun groupTabIsOneTapFromOpenClawAndKeepsItsReturnDestination() {
-        val stack = attach(ChatScreen, OpenClawChatKey)
-        compose.setContent { MaterialTheme { AgentModeTabs(groups = false, conversation = OpenClawChatKey) } }
-        compose.onNodeWithTag("agent_tab_groups").assertIsDisplayed().performClick()
-        compose.runOnIdle { assertEquals(AgentGroupsKey(openClaw = true), stack.last()) }
-    }
-
-    @Test
-    fun conversationTabReturnsToOpenClawInsteadOfHermes() {
-        val stack = attach(ChatScreen, OpenClawChatKey, AgentGroupsKey(openClaw = true))
-        compose.setContent { MaterialTheme { AgentModeTabs(groups = true, conversation = OpenClawChatKey) } }
-        compose.onNodeWithTag("agent_tab_conversations").performClick()
-        compose.runOnIdle { assertEquals(listOf(ChatScreen, OpenClawChatKey), stack.toList()) }
-    }
-
-    @Test
     fun selectorOpensTheDedicatedOpenClawConversation() {
         val stack = attach(ChatScreen)
         compose.setContent { MaterialTheme { AgentSelector() } }

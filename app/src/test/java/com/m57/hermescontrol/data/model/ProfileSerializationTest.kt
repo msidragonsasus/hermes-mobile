@@ -140,46 +140,4 @@ class ProfileSerializationTest {
         assertEquals("", profile.effectiveDescription)
         assertFalse(profile.isHidden)
     }
-
-    @Test
-    fun testGroupChatSyncSnapshotSerialization() {
-        val snapshot =
-            GroupChatSyncSnapshot(
-                version = 3,
-                updatedAt = 1724000000L,
-                rooms =
-                    mapOf(
-                        "room-1" to
-                            GroupChatRoomMeta(
-                                id = "room-1",
-                                name = "War Room",
-                                members = listOf(JsonPrimitive("default"), JsonPrimitive("researcher")),
-                                picture = null,
-                                log =
-                                    listOf(
-                                        GroupChatSyncLogEntry(
-                                            id = "msg-1",
-                                            from = GroupChatSyncFrom(kind = "user", name = "You"),
-                                            text = "Let's review the code",
-                                            at = 1724000000L,
-                                        ),
-                                    ),
-                                updatedAt = 1724000000L,
-                                createdAt = 1723000000L,
-                            ),
-                    ),
-                deleted = mapOf("old-room" to 1723500000L),
-            )
-
-        val encoded = json.encodeToString(snapshot)
-        val decoded = json.decodeFromString<GroupChatSyncSnapshot>(encoded)
-        assertEquals(3, decoded.version)
-        assertEquals(1, decoded.rooms?.size)
-        val room = decoded.rooms?.get("room-1")
-        assertEquals("War Room", room?.name)
-        assertEquals(listOf("default", "researcher"), room?.memberNames)
-        assertEquals(1, room?.log?.size)
-        assertEquals("Let's review the code", room?.log?.first()?.text)
-        assertEquals(1723500000L, decoded.deleted?.get("old-room"))
-    }
 }

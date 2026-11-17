@@ -48,12 +48,6 @@ class ShellContribution : AppContribution {
                 1009,
             ),
             DestinationMetadata(
-                "shell.agent.groups",
-                "shell/agent/groups",
-                com.m57.hermescontrol.agents.AgentGroupsKey::class,
-                1010,
-            ),
-            DestinationMetadata(
                 "shell.agent.bot-defaults",
                 "shell/agent/bot-defaults",
                 com.m57.hermescontrol.agents.BotDefaultsKey::class,

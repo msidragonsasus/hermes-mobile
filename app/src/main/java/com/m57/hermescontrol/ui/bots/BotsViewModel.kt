@@ -6,8 +6,6 @@ import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.model.BotAvatarMeta
 import com.m57.hermescontrol.data.model.BotRosterMeta
 import com.m57.hermescontrol.data.model.CreateProfileRequest
-import com.m57.hermescontrol.data.model.GroupChatRoomMeta
-import com.m57.hermescontrol.data.model.GroupChatSyncSnapshot
 import com.m57.hermescontrol.data.model.ProfileInfo
 import com.m57.hermescontrol.data.model.ProfilesResponse
 import com.m57.hermescontrol.data.remote.ApiClient
@@ -20,7 +18,6 @@ import com.m57.hermescontrol.data.session.ProfileSwitchCoordinator
 import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.data.ws.WsMethods
 import com.m57.hermescontrol.data.ws.toJsonElement
-import com.m57.hermescontrol.ui.bots.group.orderedGroupMembers
 import com.m57.hermescontrol.ui.common.ToastHost
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -33,19 +30,6 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.decodeFromJsonElement
 
-enum class BotsTab {
-    BOTS,
-    GROUPS,
-}
-
-data class GroupInfo(
-    val name: String,
-    val members: List<ProfileInfo>,
-    val lastActivity: Long = 0L,
-    val displayName: String = name,
-    val legacyLog: List<com.m57.hermescontrol.data.model.GroupChatSyncLogEntry> = emptyList(),
-)
-
 data class BotsUiState(
     val isLoading: Boolean = false,
     val isRefreshing: Boolean = false,
@@ -54,161 +38,12 @@ data class BotsUiState(
     val searchQuery: String = "",
     val showHidden: Boolean = false,
     val hiddenProfiles: Set<String> = emptySet(),
-    val selectedTab: BotsTab = BotsTab.BOTS,
     val capabilitiesState: SpecialistCapabilitiesState = SpecialistCapabilitiesState.Loading,
     val errorMessage: String? = null,
     val toastMessage: String? = null,
 ) {
-    val isGroupRetirementReady: Boolean
-        get() =
-            (capabilitiesState as? SpecialistCapabilitiesState.Supported)
-                ?.capabilities
-                ?.group_retirement_ready == true
     val hasHiddenBots: Boolean
         get() = profiles.any { it.isHidden || it.name in hiddenProfiles }
-
-    val allGroups: List<GroupInfo>
-        get() {
-            val defaultProfile =
-                profiles.find { it.is_default == true || it.name == "default" }
-                    ?: profiles.firstOrNull()
-            val syncSnapshot = defaultProfile?.groupChatSyncSnapshot()
-            val deletedKeys =
-                syncSnapshot
-                    ?.deleted
-                    ?.keys
-                    .orEmpty()
-                    .map { it.lowercase() }
-
-            val groupNameMap = linkedMapOf<String, String>()
-
-            // 1. Collect from bot metadata (both `groups` array and `group` scalar)
-            for (profile in profiles) {
-                for (g in profile.botMeta()?.allGroups.orEmpty()) {
-                    val trimmed = g.trim()
-                    if (trimmed.isNotBlank()) {
-                        val lower = trimmed.lowercase()
-                        if (!groupNameMap.containsKey(lower)) {
-                            groupNameMap[lower] = trimmed
-                        }
-                    }
-                }
-            }
-
-            // 2. Collect from cross-device snapshot rooms (Desktop parity)
-            val snapshotRooms = syncSnapshot?.rooms.orEmpty()
-            for ((key, room) in snapshotRooms) {
-                if (room.tombstone == true) continue
-                val roomKeyLower = key.lowercase()
-                if (deletedKeys.contains(roomKeyLower) ||
-                    deletedKeys.contains("name:${room.name?.lowercase()}") ||
-                    deletedKeys.contains("id:${room.roomId?.lowercase()}")
-                ) {
-                    continue
-                }
-                val roomName =
-                    room.name?.trim()?.takeIf { it.isNotBlank() }
-                        ?: key.removePrefix("name:").removePrefix("id:").trim()
-                if (roomName.isNotBlank()) {
-                    val lower = roomName.lowercase()
-                    if (!groupNameMap.containsKey(lower)) {
-                        groupNameMap[lower] = roomName
-                    }
-                }
-            }
-
-            return groupNameMap.values
-                .map { gName ->
-                    val lower = gName.lowercase()
-                    val matchingRoom =
-                        snapshotRooms[gName]
-                            ?: snapshotRooms["name:$gName"]
-                            ?: snapshotRooms["id:$gName"]
-                            ?: snapshotRooms.values.find { it.name.equals(gName, ignoreCase = true) }
-
-                    val roomMemberNames = matchingRoom?.memberNames.orEmpty().map { it.lowercase() }
-
-                    val matchedProfiles =
-                        profiles
-                            .filter { profile ->
-                                val botGroups = profile.botMeta()?.allGroups.orEmpty()
-                                botGroups.any { it.equals(gName, ignoreCase = true) } ||
-                                    roomMemberNames.contains(profile.name.lowercase()) ||
-                                    roomMemberNames.contains(profile.effectiveTitle.lowercase())
-                            }.toMutableList()
-
-                    // If room listed members (e.g. remote bots or bots not in local profiles), ensure they are seated
-                    if (matchingRoom != null && roomMemberNames.isNotEmpty()) {
-                        for (mName in matchingRoom.memberNames) {
-                            val exists =
-                                matchedProfiles.any {
-                                    it.name.equals(mName, ignoreCase = true) ||
-                                        it.effectiveTitle.equals(mName, ignoreCase = true)
-                                }
-                            if (!exists) {
-                                val local = profiles.find { it.name.equals(mName, ignoreCase = true) }
-                                matchedProfiles.add(local ?: ProfileInfo(name = mName))
-                            }
-                        }
-                    }
-
-                    var groupMembers: List<ProfileInfo> = matchedProfiles
-
-                    // Fallback: If group name was composed from bot names (e.g. "default, scoutbot")
-                    if (groupMembers.isEmpty() && gName.contains(",")) {
-                        val targetNames = gName.split(",").map { it.trim().lowercase() }
-                        groupMembers = profiles.filter { targetNames.contains(it.name.lowercase()) }
-                    }
-
-                    val rosterOrder =
-                        matchingRoom?.memberNames.orEmpty().map { name ->
-                            groupMembers
-                                .find {
-                                    it.name.equals(
-                                        name,
-                                        true,
-                                    ) || it.effectiveTitle.equals(name, true)
-                                }?.name
-                                ?: name
-                        }
-                    groupMembers =
-                        orderedGroupMembers(
-                            com.m57.hermescontrol.ui.bots.group
-                                .orderedGroupMembers(groupMembers, rosterOrder),
-                            matchingRoom?.speakingOrder ?: rosterOrder,
-                        )
-
-                    val lastAt =
-                        matchingRoom?.log?.lastOrNull()?.at
-                            ?: matchingRoom?.updatedAt
-                            ?: 0L
-
-                    GroupInfo(
-                        name = gName,
-                        members = groupMembers,
-                        lastActivity = lastAt,
-                        displayName = matchingRoom?.displayName?.takeIf { it.isNotBlank() } ?: gName,
-                        legacyLog = matchingRoom?.log.orEmpty(),
-                    )
-                }.sortedWith(
-                    compareByDescending<GroupInfo> { it.lastActivity }
-                        .thenBy { it.name },
-                )
-        }
-
-    val displayGroups: List<GroupInfo>
-        get() {
-            val query = searchQuery.trim().lowercase()
-            return allGroups.filter { group ->
-                if (query.isBlank()) return@filter true
-                group.displayName.lowercase().contains(query) ||
-                    group.name.lowercase().contains(query) ||
-                    group.members.any {
-                        it.name.lowercase().contains(query) ||
-                            it.effectiveTitle.lowercase().contains(query)
-                    }
-            }
-        }
 
     val activeNowBots: List<ProfileInfo>
         get() {
@@ -343,10 +178,6 @@ class BotsViewModel(
         _uiState.update { it.copy(searchQuery = query) }
     }
 
-    fun setSelectedTab(tab: BotsTab) {
-        _uiState.update { it.copy(selectedTab = tab) }
-    }
-
     fun toggleShowHidden() {
         _uiState.update { it.copy(showHidden = !it.showHidden) }
     }
@@ -452,142 +283,6 @@ class BotsViewModel(
                         ?: "Failed to delete bot"
                 _uiState.update { it.copy(errorMessage = err) }
             }
-        }
-    }
-
-    fun createGroupChat(
-        groupName: String,
-        botNames: List<String>,
-        onSuccess: () -> Unit,
-    ) {
-        viewModelScope.launch(ioDispatcher) {
-            val currentProfiles = _uiState.value.profiles
-            // 1. Update bot metadata on each member bot
-            for (name in botNames) {
-                val bot = currentProfiles.find { it.name == name } ?: continue
-                val existingGroups = bot.botMeta()?.allGroups.orEmpty()
-                if (!existingGroups.any { it.equals(groupName, ignoreCase = true) }) {
-                    val updatedMeta =
-                        (bot.botMeta() ?: BotRosterMeta()).copy(
-                            groups = existingGroups + groupName,
-                            group = existingGroups.firstOrNull() ?: groupName,
-                        )
-                    try {
-                        wsClientConfigureBot(name, updatedMeta).await()
-                    } catch (_: Exception) {
-                    }
-                }
-            }
-
-            // 2. Also register room in hermes-bots-groups sync snapshot on default profile
-            try {
-                val defaultProfile =
-                    currentProfiles.find { it.is_default == true || it.name == "default" }
-                        ?: currentProfiles.firstOrNull()
-                if (defaultProfile != null) {
-                    val existingSnapshot =
-                        defaultProfile.groupChatSyncSnapshot()
-                            ?: GroupChatSyncSnapshot(version = 3, rooms = emptyMap())
-                    val roomKey = "name:$groupName"
-                    val newRoom =
-                        GroupChatRoomMeta(
-                            name = groupName,
-                            members = botNames.map { JsonPrimitive(it) },
-                            updatedAt = System.currentTimeMillis(),
-                            createdAt = System.currentTimeMillis(),
-                        )
-                    val updatedRooms = existingSnapshot.rooms.orEmpty() + (roomKey to newRoom)
-                    val updatedDeleted =
-                        existingSnapshot.deleted.orEmpty().filterKeys {
-                            !it.equals(roomKey, ignoreCase = true) && !it.equals(groupName, ignoreCase = true)
-                        }
-                    val newSnapshot =
-                        existingSnapshot.copy(
-                            version = 3,
-                            updatedAt = System.currentTimeMillis(),
-                            rooms = updatedRooms,
-                            deleted = updatedDeleted,
-                        )
-                    HermesWsClient
-                        .request(
-                            WsMethods.PROFILES_CONFIGURE,
-                            mapOf(
-                                "name" to defaultProfile.name,
-                                "ui_meta" to mapOf("hermes-bots-groups" to newSnapshot.toMap()),
-                            ),
-                        ).await()
-                }
-            } catch (_: Exception) {
-            }
-
-            loadBots()
-            onSuccess()
-        }
-    }
-
-    fun disbandGroupChat(
-        groupName: String,
-        onSuccess: () -> Unit,
-    ) {
-        viewModelScope.launch(ioDispatcher) {
-            val currentProfiles = _uiState.value.profiles
-            // 1. Remove from all member bots' metadata
-            for (bot in currentProfiles) {
-                val existingGroups = bot.botMeta()?.allGroups.orEmpty()
-                if (existingGroups.any { it.equals(groupName, ignoreCase = true) }) {
-                    val filtered = existingGroups.filterNot { it.equals(groupName, ignoreCase = true) }
-                    val updatedMeta =
-                        (bot.botMeta() ?: BotRosterMeta()).copy(
-                            groups = filtered,
-                            group = filtered.firstOrNull(),
-                        )
-                    try {
-                        wsClientConfigureBot(bot.name, updatedMeta).await()
-                    } catch (_: Exception) {
-                    }
-                }
-            }
-
-            // 2. Remove room from hermes-bots-groups snapshot and register tombstone in deleted map
-            try {
-                val defaultProfile =
-                    currentProfiles.find { it.is_default == true || it.name == "default" }
-                        ?: currentProfiles.firstOrNull()
-                if (defaultProfile != null) {
-                    val existingSnapshot = defaultProfile.groupChatSyncSnapshot()
-                    if (existingSnapshot != null) {
-                        val updatedRooms =
-                            existingSnapshot.rooms.orEmpty().filterKeys { key ->
-                                val room = existingSnapshot.rooms?.get(key)
-                                !key.equals(groupName, ignoreCase = true) &&
-                                    !key.equals("name:$groupName", ignoreCase = true) &&
-                                    !key.equals("id:$groupName", ignoreCase = true) &&
-                                    !(room?.name.equals(groupName, ignoreCase = true))
-                            }
-                        val deletedMap =
-                            existingSnapshot.deleted.orEmpty() + ("name:$groupName" to System.currentTimeMillis())
-                        val newSnapshot =
-                            existingSnapshot.copy(
-                                version = 3,
-                                updatedAt = System.currentTimeMillis(),
-                                rooms = updatedRooms,
-                                deleted = deletedMap,
-                            )
-                        HermesWsClient
-                            .request(
-                                WsMethods.PROFILES_CONFIGURE,
-                                mapOf(
-                                    "name" to defaultProfile.name,
-                                    "ui_meta" to mapOf("hermes-bots-groups" to newSnapshot.toMap()),
-                                ),
-                            ).await()
-                    }
-                }
-            } catch (_: Exception) {
-            }
-
-            loadBots()
-            onSuccess()
         }
     }
 

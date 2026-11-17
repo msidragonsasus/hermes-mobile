@@ -35,7 +35,6 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.R
-import com.m57.hermescontrol.agents.AgentModeTabs
 import com.m57.hermescontrol.data.model.SessionInfo
 import com.m57.hermescontrol.data.model.SessionSearchResult
 import com.m57.hermescontrol.data.ws.CommandCatalog
@@ -224,7 +223,6 @@ internal fun OpenClawConversation(
                 )
             },
         ) {
-            AgentModeTabs(groups = false, conversation = OpenClawChatKey)
             if (state.configured) {
                 ChatConnectionBanner(
                     connectionStatus =

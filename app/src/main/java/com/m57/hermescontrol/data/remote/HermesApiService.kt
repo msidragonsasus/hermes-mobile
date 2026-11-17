@@ -218,48 +218,6 @@ interface HermesApiService {
         @Body request: com.m57.hermescontrol.home.TodayInterest,
     ): com.m57.hermescontrol.home.TodayPlan
 
-    @PATCH("api/plugins/group_chat/conversations/{id}")
-    suspend fun renameGroupConversation(
-        @Path("id") id: String,
-        @Body request: com.m57.hermescontrol.ui.bots.group.GroupServerTitleRequest,
-        @Query("profile") profile: String =
-            com.m57.hermescontrol.data.local.AuthManager.activeProfileId.value ?: "default",
-    ): com.m57.hermescontrol.ui.bots.group.GroupServerSnapshot
-
-    @GET("api/plugins/group_chat/conversations")
-    suspend fun groupConversations(
-        @Query("profile") profile: String =
-            com.m57.hermescontrol.data.local.AuthManager.activeProfileId.value
-                ?: "default",
-    ): com.m57.hermescontrol.ui.bots.group.GroupServerHistory
-
-    @GET("api/plugins/group_chat/conversations/{id}")
-    suspend fun groupConversation(
-        @Path("id") id: String,
-        @Query("group") group: String,
-        @Query("profile") profile: String =
-            com.m57.hermescontrol.data.local.AuthManager.activeProfileId.value
-                ?: "default",
-    ): com.m57.hermescontrol.ui.bots.group.GroupServerSnapshot
-
-    @POST("api/plugins/group_chat/conversations/{id}/messages")
-    suspend fun sendGroupMessage(
-        @Path("id") id: String,
-        @Body request: com.m57.hermescontrol.ui.bots.group.GroupServerRequest,
-        @Query("profile") profile: String =
-            com.m57.hermescontrol.data.local.AuthManager.activeProfileId.value
-                ?: "default",
-    ): com.m57.hermescontrol.ui.bots.group.GroupServerSnapshot
-
-    @POST("api/plugins/group_chat/conversations/{id}/stop")
-    suspend fun stopGroupConversation(
-        @Path("id") id: String,
-        @Query("group") group: String,
-        @Query("profile") profile: String =
-            com.m57.hermescontrol.data.local.AuthManager.activeProfileId.value
-                ?: "default",
-    ): com.m57.hermescontrol.ui.bots.group.GroupServerSnapshot
-
     @GET("api/plugins/career/home")
     suspend fun careerHome(
         @Query("profile") profile: String,

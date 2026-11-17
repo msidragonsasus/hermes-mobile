@@ -2,7 +2,6 @@ package com.m57.hermescontrol.navigation
 
 import com.m57.hermescontrol.AuthLoginScreen
 import com.m57.hermescontrol.ChatScreen
-import com.m57.hermescontrol.GroupChatKey
 import com.m57.hermescontrol.HistoryScreen
 import com.m57.hermescontrol.LandingScreen
 import com.m57.hermescontrol.MemoryProviderDetailKey
@@ -91,7 +90,6 @@ class ContributionRegistryTest {
                 SettingsAbout::class,
                 ToolsetDetailKey::class,
                 MemoryProviderDetailKey::class,
-                GroupChatKey::class,
                 com.m57.hermescontrol.ConfigAdvancedScreen::class,
                 com.m57.hermescontrol.SettingsGoogleConnection::class,
                 com.m57.hermescontrol.SettingsPasswords::class,
@@ -101,8 +99,8 @@ class ContributionRegistryTest {
             ),
             specialized.map { it.keyType },
         )
-        assertEquals(44, legacy.size)
-        assertEquals(75, ScreenRegistry.contributions.destinations.size)
+        assertEquals(43, legacy.size)
+        assertEquals(73, ScreenRegistry.contributions.destinations.size)
         assertEquals(
             com.m57.hermescontrol.WorkScreen::class,
             ScreenRegistry.contributions.forRoute("worker/work")?.keyType,
@@ -167,9 +165,6 @@ class ContributionRegistryTest {
             com.m57.hermescontrol.career.CareerMailSettingsKey::class,
             ScreenRegistry.contributions.forRoute("career/mail-settings")?.keyType,
         )
-        val groupChat = specialized.single { it.keyType == GroupChatKey::class }
-        assertSame(groupChat, ScreenRegistry.contributions.forRoute("hermes/group-chat"))
-        assertSame(groupChat, ScreenRegistry.contributions.forKey(GroupChatKey::class))
         assertSame(
             specialized.single { it.keyType == com.m57.hermescontrol.ConfigAdvancedScreen::class },
             ScreenRegistry.contributions.forRoute("hermes/config-advanced"),

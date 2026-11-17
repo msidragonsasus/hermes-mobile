@@ -90,7 +90,6 @@ data class SessionsUiState(
     val searchResults: List<SessionSearchResult> = emptyList(),
     val searchError: String? = null,
     val showHidden: Boolean = false,
-    val groupHistoryUnavailable: Boolean = false,
 ) {
     val isSearchMode: Boolean get() = searchQuery.isNotBlank()
 

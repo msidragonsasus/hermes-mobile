@@ -99,10 +99,8 @@ fun BotsScreen(
     viewModel: BotsViewModel = viewModel { BotsViewModel() },
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val pagerState = rememberPagerState(initialPage = state.selectedTab.ordinal) { BotsTab.entries.size }
     var isSearchActive by remember { mutableStateOf(false) }
     var showCreateDialog by remember { mutableStateOf(false) }
-    var showCreateGroupDialog by remember { mutableStateOf(false) }
     var editingBot by remember { mutableStateOf<ProfileInfo?>(null) }
     var initialEditDone by rememberSaveable { mutableStateOf(false) }
     androidx.compose.runtime.LaunchedEffect(state.profiles, initialEditBot) {
@@ -112,61 +110,10 @@ fun BotsScreen(
             initialEditDone = true
         }
     }
-    var disbandingGroup by remember { mutableStateOf<GroupInfo?>(null) }
     val scope = rememberCoroutineScope()
-
-    LaunchedEffect(pagerState.currentPage) {
-        val targetTab = BotsTab.entries.getOrNull(pagerState.currentPage) ?: BotsTab.BOTS
-        if (state.selectedTab != targetTab) {
-            viewModel.setSelectedTab(targetTab)
-        }
-    }
-
-    LaunchedEffect(state.selectedTab) {
-        if (pagerState.currentPage != state.selectedTab.ordinal) {
-            pagerState.animateScrollToPage(state.selectedTab.ordinal)
-        }
-    }
 
     LaunchedEffect(Unit) {
         viewModel.loadBots()
-    }
-
-    disbandingGroup?.let { group ->
-        AlertDialog(
-            onDismissRequest = { disbandingGroup = null },
-            title = {
-                Text(
-                    text = stringResource(R.string.bots_group_disband_confirm_title, group.name),
-                    fontWeight = FontWeight.Bold,
-                )
-            },
-            text = {
-                Text(stringResource(R.string.bots_group_disband_confirm_msg))
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.disbandGroupChat(group.name) {
-                            disbandingGroup = null
-                        }
-                    },
-                    colors =
-                        ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error,
-                            contentColor = MaterialTheme.colorScheme.onError,
-                        ),
-                    shapes = ButtonDefaults.shapes(),
-                ) {
-                    Text(stringResource(R.string.bots_group_disband))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { disbandingGroup = null }, shapes = ButtonDefaults.shapes()) {
-                    Text(stringResource(R.string.action_cancel))
-                }
-            },
-        )
     }
 
     editingBot?.let { bot ->
@@ -212,18 +159,6 @@ fun BotsScreen(
         )
     }
 
-    if (showCreateGroupDialog) {
-        CreateGroupChatDialog(
-            availableBots = state.profiles,
-            onDismiss = { showCreateGroupDialog = false },
-            onCreateGroup = { groupName, botNames ->
-                viewModel.createGroupChat(groupName, botNames) {
-                    showCreateGroupDialog = false
-                }
-            },
-        )
-    }
-
     ToastEffect(
         toastMessage = state.toastMessage,
         onClearToast = { viewModel.clearToast() },
@@ -234,9 +169,9 @@ fun BotsScreen(
 
     HermesScaffold(
         modifier = modifier,
-        // Tabs + pager: an empty tab cannot scroll the collapsed bar back into view.
+        // An empty list cannot scroll the collapsed bar back into view.
         pinTopBar = true,
-        drawerGesturesEnabled = pagerState.currentPage == 0,
+        drawerGesturesEnabled = true,
         title = {
             if (isSearchActive) {
                 OutlinedTextField(
@@ -272,21 +207,14 @@ fun BotsScreen(
         navigationIcon = onOpenDrawer?.let { NavIcon.Menu(it) },
         actions = {
             if (!isSearchActive) {
-                // One create action that follows the selected tab, instead of two look-alike icons.
-                val onGroups = pagerState.currentPage == BotsTab.GROUPS.ordinal
-                if (!onGroups || !state.isGroupRetirementReady) {
-                    IconButton(
-                        onClick = { if (onGroups) showCreateGroupDialog = true else showCreateDialog = true },
-                        modifier = Modifier.testTag(if (onGroups) "bots_action_create_group" else "bots_action_create"),
-                    ) {
-                        Icon(
-                            imageVector = if (onGroups) Icons.Filled.GroupAdd else Icons.Filled.Add,
-                            contentDescription =
-                                stringResource(
-                                    if (onGroups) R.string.bots_action_create_group else R.string.bots_action_create,
-                                ),
-                        )
-                    }
+                IconButton(
+                    onClick = { showCreateDialog = true },
+                    modifier = Modifier.testTag("bots_action_create"),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = stringResource(R.string.bots_action_create),
+                    )
                 }
                 IconButton(
                     onClick = { isSearchActive = true },
@@ -323,228 +251,130 @@ fun BotsScreen(
         isRefreshing = state.isRefreshing,
         onRefresh = { viewModel.loadBots(isRefresh = true) },
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            PrimaryTabRow(
-                selectedTabIndex = pagerState.currentPage,
-                modifier = Modifier.fillMaxWidth(),
-                contentColor = MaterialTheme.colorScheme.onSurface,
-                indicator = { HermesPrimaryIndicator(pagerState.currentPage) },
-            ) {
-                Tab(
-                    selected = pagerState.currentPage == BotsTab.BOTS.ordinal,
-                    onClick = {
-                        scope.launch {
-                            pagerState.animateScrollToPage(BotsTab.BOTS.ordinal)
+        Box(
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .pointerInput(swipeOpensDrawer) {
+                        if (swipeOpensDrawer != null) {
+                            awaitEachGesture {
+                                awaitFirstDown(pass = PointerEventPass.Initial)
+                                var totalDragX = 0f
+                                var totalDragY = 0f
+                                while (true) {
+                                    val event = awaitPointerEvent(pass = PointerEventPass.Initial)
+                                    val change = event.changes.firstOrNull() ?: break
+                                    if (!change.pressed) break
+                                    val dx = change.position.x - change.previousPosition.x
+                                    totalDragY +=
+                                        kotlin.math.abs(change.position.y - change.previousPosition.y)
+                                    // A vertical list scroll that drifts right must not open the drawer.
+                                    if (totalDragY > totalDragX && totalDragY > 20f) break
+                                    if (dx > 0) {
+                                        totalDragX += dx
+                                        if (totalDragX > 75f) {
+                                            swipeOpensDrawer.invoke()
+                                            break
+                                        }
+                                    } else if (dx < -10f) {
+                                        break
+                                    }
+                                }
+                            }
                         }
                     },
-                    text = { Text(stringResource(R.string.bots_tab_all)) },
-                    icon = { Icon(Icons.Filled.SmartToy, contentDescription = null) },
-                )
-                Tab(
-                    selected = pagerState.currentPage == BotsTab.GROUPS.ordinal,
-                    onClick = {
-                        scope.launch {
-                            pagerState.animateScrollToPage(BotsTab.GROUPS.ordinal)
-                        }
-                    },
-                    text = {
-                        Text(
-                            if (state.allGroups.isNotEmpty()) {
-                                "${stringResource(R.string.bots_tab_groups)} (${state.allGroups.size})"
-                            } else {
-                                stringResource(R.string.bots_tab_groups)
-                            },
-                        )
-                    },
-                    icon = { Icon(Icons.Filled.Group, contentDescription = null) },
-                )
-            }
+        ) {
+            when {
+                state.isLoading && state.profiles.isEmpty() -> {
+                    SkeletonListState()
+                }
 
-            HorizontalPager(
-                state = pagerState,
-                modifier = Modifier.fillMaxSize(),
-            ) { page ->
-                when (BotsTab.entries.getOrElse(page) { BotsTab.BOTS }) {
-                    BotsTab.BOTS -> {
-                        Box(
-                            modifier =
-                                Modifier
-                                    .fillMaxSize()
-                                    .pointerInput(pagerState.currentPage, swipeOpensDrawer) {
-                                        if (pagerState.currentPage == 0 && swipeOpensDrawer != null) {
-                                            awaitEachGesture {
-                                                awaitFirstDown(pass = PointerEventPass.Initial)
-                                                var totalDragX = 0f
-                                                var totalDragY = 0f
-                                                while (true) {
-                                                    val event = awaitPointerEvent(pass = PointerEventPass.Initial)
-                                                    val change = event.changes.firstOrNull() ?: break
-                                                    if (!change.pressed) break
-                                                    val dx = change.position.x - change.previousPosition.x
-                                                    totalDragY +=
-                                                        kotlin.math.abs(change.position.y - change.previousPosition.y)
-                                                    // A vertical list scroll that drifts right must not open the drawer.
-                                                    if (totalDragY > totalDragX && totalDragY > 20f) break
-                                                    if (dx > 0) {
-                                                        totalDragX += dx
-                                                        if (totalDragX > 75f) {
-                                                            swipeOpensDrawer.invoke()
-                                                            break
-                                                        }
-                                                    } else if (dx < -10f) {
-                                                        break
-                                                    }
-                                                }
+                state.errorMessage != null && state.profiles.isEmpty() -> {
+                    ErrorState(
+                        message = state.errorMessage ?: "",
+                        onRetry = { viewModel.loadBots() },
+                    )
+                }
+
+                state.displayProfiles.isEmpty() -> {
+                    EmptyState(
+                        title = stringResource(R.string.bots_empty_title),
+                        subtitle = stringResource(R.string.bots_empty_description),
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+
+                else -> {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding =
+                            PaddingValues(
+                                start = 16.dp,
+                                end = 16.dp,
+                                top = 8.dp,
+                                bottom = 24.dp,
+                            ),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        // The strip is a shortcut for long lists; with a few bots it only
+                        // repeated the highlighted rows below.
+                        if (state.activeNowBots.isNotEmpty() && !isSearchActive &&
+                            state.displayProfiles.size > ACTIVE_STRIP_MIN_BOTS
+                        ) {
+                            item(key = "active_now_strip") {
+                                ActiveNowStrip(
+                                    activeBots = state.activeNowBots,
+                                    onSelectBot = { bot ->
+                                        scope.launch {
+                                            val canonicalId =
+                                                bot.canonical_session?.resolved_id
+                                                    ?: bot.canonical_session?.id
+                                            val opened =
+                                                BotConversations.openSpecialist(
+                                                    profileName = bot.name,
+                                                    canonicalSessionId = canonicalId,
+                                                    openSetupAfterLaunch = bot.isSetupIncomplete,
+                                                )
+                                            if (!opened) {
+                                                viewModel.showToast("プロフィール切り替えに失敗しました。")
                                             }
                                         }
                                     },
-                        ) {
-                            when {
-                                state.isLoading && state.profiles.isEmpty() -> {
-                                    SkeletonListState()
-                                }
-
-                                state.errorMessage != null && state.profiles.isEmpty() -> {
-                                    ErrorState(
-                                        message = state.errorMessage ?: "",
-                                        onRetry = { viewModel.loadBots() },
-                                    )
-                                }
-
-                                state.displayProfiles.isEmpty() -> {
-                                    EmptyState(
-                                        title = stringResource(R.string.bots_empty_title),
-                                        subtitle = stringResource(R.string.bots_empty_description),
-                                        modifier = Modifier.fillMaxSize(),
-                                    )
-                                }
-
-                                else -> {
-                                    LazyColumn(
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentPadding =
-                                            PaddingValues(
-                                                start = 16.dp,
-                                                end = 16.dp,
-                                                top = 8.dp,
-                                                bottom = 24.dp,
-                                            ),
-                                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                                    ) {
-                                        // The strip is a shortcut for long lists; with a few bots it only
-                                        // repeated the highlighted rows below.
-                                        if (state.activeNowBots.isNotEmpty() && !isSearchActive &&
-                                            state.displayProfiles.size > ACTIVE_STRIP_MIN_BOTS
-                                        ) {
-                                            item(key = "active_now_strip") {
-                                                ActiveNowStrip(
-                                                    activeBots = state.activeNowBots,
-                                                    onSelectBot = { bot ->
-                                                        scope.launch {
-                                                            val canonicalId =
-                                                                bot.canonical_session?.resolved_id
-                                                                    ?: bot.canonical_session?.id
-                                                            val opened =
-                                                                BotConversations.openSpecialist(
-                                                                    profileName = bot.name,
-                                                                    canonicalSessionId = canonicalId,
-                                                                    openSetupAfterLaunch = bot.isSetupIncomplete,
-                                                                )
-                                                            if (!opened) {
-                                                                viewModel.showToast("プロフィール切り替えに失敗しました。")
-                                                            }
-                                                        }
-                                                    },
-                                                )
-                                            }
-                                        }
-
-                                        items(
-                                            items = state.displayProfiles,
-                                            key = { it.name },
-                                        ) { profile ->
-                                            BotCard(
-                                                profile = profile,
-                                                isActiveProfile = profile.name == state.activeProfileName,
-                                                onClick = {
-                                                    scope.launch {
-                                                        val canonicalId =
-                                                            profile.canonical_session?.resolved_id
-                                                                ?: profile.canonical_session?.id
-                                                        val opened =
-                                                            BotConversations.openSpecialist(
-                                                                profileName = profile.name,
-                                                                canonicalSessionId = canonicalId,
-                                                                openSetupAfterLaunch = profile.isSetupIncomplete,
-                                                            )
-                                                        if (!opened) {
-                                                            viewModel.showToast("プロフィール切り替えに失敗しました。")
-                                                        }
-                                                    }
-                                                },
-                                                onEditClick = {
-                                                    NavigationController.navigateTo(BotSettingsKey(profile.name))
-                                                },
-                                                onWorkerClick = {
-                                                    val worker = profile.worker_session ?: return@BotCard
-                                                    scope.launch { BotConversations.open(profile.name, worker.id) }
-                                                },
-                                            )
-                                        }
-                                    }
-                                }
+                                )
                             }
                         }
-                    }
 
-                    BotsTab.GROUPS -> {
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            GroupsRetirementNotice(
-                                capabilitiesState = state.capabilitiesState,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                            )
-                            when {
-                                state.displayGroups.isEmpty() -> {
-                                    EmptyState(
-                                        title = stringResource(R.string.bots_groups_empty_title),
-                                        subtitle = stringResource(R.string.bots_groups_empty_desc),
-                                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                                    )
-                                }
-
-                                else -> {
-                                    LazyColumn(
-                                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                                        contentPadding =
-                                            PaddingValues(
-                                                start = 16.dp,
-                                                end = 16.dp,
-                                                top = 4.dp,
-                                                bottom = 24.dp,
-                                            ),
-                                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                                    ) {
-                                        items(
-                                            items = state.displayGroups,
-                                            key = { it.name },
-                                        ) { group ->
-                                            GroupCard(
-                                                group = group,
-                                                onClick = {
-                                                    if (group.members.isNotEmpty()) {
-                                                        NavigationController.navigateTo(
-                                                            com.m57.hermescontrol.GroupChatKey(group.name),
-                                                        )
-                                                    }
-                                                },
-                                                onDisbandClick = {
-                                                    disbandingGroup = group
-                                                },
+                        items(
+                            items = state.displayProfiles,
+                            key = { it.name },
+                        ) { profile ->
+                            BotCard(
+                                profile = profile,
+                                isActiveProfile = profile.name == state.activeProfileName,
+                                onClick = {
+                                    scope.launch {
+                                        val canonicalId =
+                                            profile.canonical_session?.resolved_id
+                                                ?: profile.canonical_session?.id
+                                        val opened =
+                                            BotConversations.openSpecialist(
+                                                profileName = profile.name,
+                                                canonicalSessionId = canonicalId,
+                                                openSetupAfterLaunch = profile.isSetupIncomplete,
                                             )
+                                        if (!opened) {
+                                            viewModel.showToast("プロフィール切り替えに失敗しました。")
                                         }
                                     }
-                                }
-                            }
+                                },
+                                onEditClick = {
+                                    NavigationController.navigateTo(BotSettingsKey(profile.name))
+                                },
+                                onWorkerClick = {
+                                    val worker = profile.worker_session ?: return@BotCard
+                                    scope.launch { BotConversations.open(profile.name, worker.id) }
+                                },
+                            )
                         }
                     }
                 }
@@ -764,141 +594,6 @@ private fun BotCard(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun GroupCard(
-    group: GroupInfo,
-    onClick: () -> Unit,
-    onDisbandClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Card(
-        shape = RoundedCornerShape(12.dp),
-        colors =
-            CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface,
-            ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        modifier =
-            modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .clickable(onClick = onClick)
-                .testTag("group_card_${group.name}"),
-    ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.primaryContainer,
-                modifier = Modifier.size(44.dp),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Filled.Group,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(24.dp),
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = group.displayName,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = stringResource(R.string.bots_group_members_count, group.members.size),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                if (group.members.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        group.members.take(4).forEach { member ->
-                            BotAvatar(
-                                name = member.name,
-                                avatar = member.botMeta()?.avatar,
-                                size = 20.dp,
-                                showPresence = false,
-                            )
-                        }
-                        if (group.members.size > 4) {
-                            Text(
-                                text = "+${group.members.size - 4}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-            }
-            IconButton(
-                onClick = onDisbandClick,
-                modifier = Modifier.testTag("group_disband_button_${group.name}"),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.DeleteOutline,
-                    contentDescription = stringResource(R.string.bots_group_disband),
-                    tint = MaterialTheme.colorScheme.error,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun GroupsRetirementNotice(
-    capabilitiesState: SpecialistCapabilitiesState,
-    modifier: Modifier = Modifier,
-) {
-    when (capabilitiesState) {
-        SpecialistCapabilitiesState.Loading -> {
-            Unit
-        }
-
-        is SpecialistCapabilitiesState.Supported -> {
-            InlineNotice(
-                text =
-                    stringResource(
-                        if (capabilitiesState.capabilities.group_retirement_ready) {
-                            R.string.groups_retirement_ready_notice
-                        } else {
-                            R.string.groups_retirement_pending_notice
-                        },
-                    ),
-                tone = NoticeTone.Info,
-                modifier = modifier.testTag("groups_retirement_notice"),
-            )
-        }
-
-        is SpecialistCapabilitiesState.LegacyUnsupported -> {
-            InlineNotice(
-                text = stringResource(R.string.groups_retirement_legacy_notice),
-                tone = NoticeTone.Warning,
-                modifier = modifier.testTag("groups_retirement_notice"),
-            )
-        }
-
-        is SpecialistCapabilitiesState.Unavailable -> {
-            InlineNotice(
-                text = capabilitiesState.message,
-                tone = NoticeTone.Warning,
-                modifier = modifier.testTag("groups_retirement_notice"),
-            )
         }
     }
 }
