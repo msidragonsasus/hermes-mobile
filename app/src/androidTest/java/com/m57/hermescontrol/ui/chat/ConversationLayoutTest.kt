@@ -61,6 +61,16 @@ import java.io.File
 
 /** Shared production UI with local presentation data only; never connects to an AI service. */
 class ConversationLayoutTest {
+    @Test
+    fun attachmentAndMicrophoneCentersMatchTheSingleLineInput() {
+        compose.setContent { Fixture() }
+        val attach = compose.onNodeWithTag("chat_attach_button").fetchSemanticsNode().boundsInRoot
+        val mic = compose.onNodeWithTag("mic_button").fetchSemanticsNode().boundsInRoot
+        val input = compose.onNodeWithTag("chat_input").fetchSemanticsNode().boundsInRoot
+        assertEquals(input.center.y, attach.center.y, 1f)
+        assertEquals(input.center.y, mic.center.y, 1f)
+    }
+
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
     private val draft = mutableStateOf(TextFieldValue(""))

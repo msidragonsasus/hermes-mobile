@@ -263,7 +263,8 @@ this layout and composer while retaining their own sending/authentication rules.
 Message actions use the shared `MessageActionHost`: long-press settled text to
 open an anchored, rounded icon-and-label menu. Reply quotes visible text into the
 existing draft without sending; Copy and Select are available to both roles.
-Selection opens a native selectable-text surface. Expose the same menu through
+Selection stays in the original message, preserving its rendered layout and links;
+never open a dialog or duplicate text surface for selection (2026-11-17 user decision). Expose the same menu through
 the accessibility long-click action. Do not add permanent per-message copy
 footers or unsupported operations (individual-message deletion has no API).
 Embedded links and controls retain their own tap handling; streaming text does

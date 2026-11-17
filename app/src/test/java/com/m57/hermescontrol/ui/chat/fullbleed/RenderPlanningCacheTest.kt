@@ -331,7 +331,12 @@ class RenderPlanningCacheTest {
             assertSame(lastEntry, agent.entries.toList().last())
             assertEquals(1, agent.entries.count { it === lastEntry })
             assertSame(anchor.replyFooters, output.replyFooters)
-            assertSame(anchor.messageIdToLazyIndex, output.messageIdToLazyIndex)
+            if (content.isBlank()) {
+                assertEquals(mapOf("a" to 0), output.messageIdToLazyIndex)
+                assertNotSame(anchor.messageIdToLazyIndex, output.messageIdToLazyIndex)
+            } else {
+                assertSame(anchor.messageIdToLazyIndex, output.messageIdToLazyIndex)
+            }
             assertSame(anchor.milestones, output.milestones)
         }
     }

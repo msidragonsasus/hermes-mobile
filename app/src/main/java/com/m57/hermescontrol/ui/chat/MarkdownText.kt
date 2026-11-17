@@ -115,6 +115,34 @@ fun MarkdownText(
     onImageClick: ((ImageViewerModel) -> Unit)? = null,
     nativeUiIdentity: String? = LocalNativeUiMessage.current,
     allowInteractiveContent: Boolean = true,
+    onOpenAttachment: ((com.m57.hermescontrol.data.model.Attachment) -> Unit)? = null,
+) {
+    MarkdownLinkScope(onOpenAttachment) {
+        MarkdownContent(
+            text,
+            textColor,
+            isStreaming,
+            searchQuery,
+            isCurrentMatch,
+            modifier,
+            onImageClick,
+            nativeUiIdentity,
+            allowInteractiveContent,
+        )
+    }
+}
+
+@Composable
+private fun MarkdownContent(
+    text: String,
+    textColor: Color,
+    isStreaming: Boolean,
+    searchQuery: String,
+    isCurrentMatch: Boolean,
+    modifier: Modifier,
+    onImageClick: ((ImageViewerModel) -> Unit)?,
+    nativeUiIdentity: String?,
+    allowInteractiveContent: Boolean,
 ) {
     val statusColors = LocalHermesStatusColors.current
     val highlights = searchHighlightColors(statusColors)
@@ -1537,11 +1565,11 @@ private fun parseInlineSource(
                 src.startsWith("[", i) -> {
                     val close = src.indexOf(']', i)
                     if (close != -1 && close + 1 < src.length && src[close + 1] == '(') {
-                        val urlEnd = src.indexOf(')', close + 2)
+                        val urlEnd = markdownLinkEnd(src, close + 2)
                         if (urlEnd != -1) {
                             val label = src.substring(i + 1, close)
                             val labelToAppend = if (isRtl) BidiUtils.wrapLtrIsolate(label) else label
-                            val url = src.substring(close + 2, urlEnd)
+                            val url = normalizeMarkdownLink(src.substring(close + 2, urlEnd))
                             pushLink(LinkAnnotation.Url(url))
                             withStyle(
                                 SpanStyle(

@@ -49,7 +49,15 @@ internal class RenderPlanningCache {
                 if (agent != null && prose != null && prose.message === cached.anchorStreaming) {
                     val replacement = AgentEntry.Prose(streamingMessage)
                     val replacementAgent = ChatTurn.Agent(ReplaceLast(agent.entries, replacement))
-                    val output = cached.anchor.copy(turns = ReplaceLast(cached.anchor.turns, replacementAgent))
+                    val nextTurns = ReplaceLast(cached.anchor.turns, replacementAgent)
+                    val indices =
+                        if (replacement.visibleWhen(false) == prose.visibleWhen(false)) {
+                            cached.anchor.messageIdToLazyIndex
+                        } else {
+                            // The first visible token adds a real item where an empty stream had none.
+                            messageIdToLazyIndex(nextTurns, leadingItems, expandedTurns, cached.anchor.replyFooters)
+                        }
+                    val output = cached.anchor.copy(turns = nextTurns, messageIdToLazyIndex = indices)
                     cached.currentStreaming = streamingMessage
                     cached.current = output
                     return output

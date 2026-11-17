@@ -11,6 +11,25 @@ import org.junit.Test
 
 class AgentTurnActivityTest {
     @Test
+    fun emptyStreamingProseHasNoInvisibleLazyItemWhenReasoningIsHoisted() {
+        val user = ChatMessage(id = "u", role = MessageRole.USER, content = "Question")
+        val reasoning =
+            ChatMessage(
+                id = "r",
+                role = MessageRole.ASSISTANT,
+                content = "",
+                reasoningText = "Trace",
+                isStreaming = true,
+            )
+        val answer = ChatMessage(id = "a", role = MessageRole.ASSISTANT, content = "Answer")
+        val turns = groupIntoTurns(listOf(user, reasoning, answer))
+        assertFalse(AgentEntry.Prose(reasoning).visibleWhen(false))
+        assertFalse(AgentEntry.Prose(reasoning).visibleWhen(true))
+        assertEquals(2, messageIdToLazyIndex(turns)["a"])
+        assertEquals(3, messageIdToLazyIndex(turns, expandedTurns = setOf("r"))["a"])
+    }
+
+    @Test
     fun answersAlwaysShowAndToolsFoldByDefault() {
         val prose = AgentEntry.Prose(ChatMessage(id = "answer", role = MessageRole.ASSISTANT, content = "Answer"))
         val tool = AgentEntry.ToolRow(ChatMessage(id = "tool", role = MessageRole.TOOL, content = "Output"))

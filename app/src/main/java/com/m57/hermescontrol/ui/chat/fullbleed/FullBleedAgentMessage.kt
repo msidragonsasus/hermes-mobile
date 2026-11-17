@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -82,7 +83,9 @@ internal fun FullBleedAgentMessage(
                     .testTag("fullbleed_agent_message"),
         ) {
             if (showTurnHeader) {
-                AssistantTurnHeader(message.timestamp, speakerName = speakerName, showTimestamp = showTimestamp)
+                DisableSelection {
+                    AssistantTurnHeader(message.timestamp, speakerName = speakerName, showTimestamp = showTimestamp)
+                }
             }
 
             if (showReasoning && message.reasoningText.isNotBlank()) {
@@ -94,10 +97,9 @@ internal fun FullBleedAgentMessage(
             }
 
             // Defense-in-depth: never render an empty prose block (blank bubble +
-            // message actions). Blank settled rows are tool-call placeholders that
-            // slipped through upstream mapping; streaming keeps rendering so the
-            // live cursor survives until the first delta lands.
-            if (message.content.isNotBlank() || message.isStreaming) {
+            // message actions). Until the first text delta, the turn's thinking
+            // indicator and activity row represent its progress.
+            if (message.content.isNotBlank()) {
                 MarkdownText(
                     text = message.content,
                     textColor = textColor,
@@ -105,6 +107,7 @@ internal fun FullBleedAgentMessage(
                     searchQuery = searchQuery,
                     isCurrentMatch = isCurrentMatch,
                     onImageClick = openImage,
+                    onOpenAttachment = onOpenAttachment,
                 )
             }
 

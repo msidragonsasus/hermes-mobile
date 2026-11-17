@@ -1,5 +1,6 @@
 package com.m57.hermescontrol.ui.chat.fullbleed
 
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
@@ -23,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.ui.chat.ChatMessage
 import com.m57.hermescontrol.ui.chat.brainstorm.BrainstormParser
+import com.m57.hermescontrol.ui.chat.components.ThinkingIndicator
 
 internal fun ChatTurn.Agent.tabKey(): String =
     when (val first = entries.first()) {
@@ -47,7 +49,7 @@ internal fun ChatTurn.Agent.hasActivity(): Boolean =
 internal fun AgentEntry.visibleWhen(activityExpanded: Boolean): Boolean =
     when (this) {
         is AgentEntry.Prose -> {
-            true
+            message.content.isNotBlank() || !message.attachments.isNullOrEmpty()
         }
 
         is AgentEntry.ToolRow -> {
@@ -73,6 +75,7 @@ internal fun AgentTurnActivityRow(
     toolCount: Int,
     toolRunning: Boolean,
     onToggle: () -> Unit,
+    thinking: Boolean = false,
 ) {
     val parts =
         buildList {
@@ -92,7 +95,11 @@ internal fun AgentTurnActivityRow(
                 .testTag("agent_turn_activity"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text = label, style = MaterialTheme.typography.labelMedium, color = color)
+        if (thinking) {
+            ThinkingIndicator(contentPadding = PaddingValues())
+        } else {
+            Text(text = label, style = MaterialTheme.typography.labelMedium, color = color)
+        }
         Spacer(modifier = Modifier.width(2.dp))
         Icon(
             imageVector =

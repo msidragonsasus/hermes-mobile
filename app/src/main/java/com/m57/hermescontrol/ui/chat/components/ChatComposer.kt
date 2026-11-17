@@ -192,6 +192,7 @@ fun ChatInputBar(
     visualTransformation: VisualTransformation = VisualTransformation.None,
 ) {
     val style = LocalConversationStyle.current
+    val actionPadding = ((style.composerMinHeight - style.actionSize) / 2).coerceAtLeast(0.dp)
     val replyFocus = LocalConversationComposerFocus.current
     val spacing = LocalSpacing.current
     val canSend = ChatInputPolicy.canSend(inputFieldValue.text, pendingAttachments, isConnected || allowOfflineQueue)
@@ -328,7 +329,12 @@ fun ChatInputBar(
                                 IconButton(
                                     onClick = { showAttachmentMenu = true },
                                     enabled = isConnected && attachmentsEnabled,
-                                    modifier = Modifier.size(style.actionSize).testTag("chat_attach_button"),
+                                    modifier =
+                                        Modifier
+                                            .padding(
+                                                vertical = actionPadding,
+                                            ).size(style.actionSize)
+                                            .testTag("chat_attach_button"),
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Add,
@@ -465,7 +471,12 @@ fun ChatInputBar(
                             IconButton(
                                 onClick = onSteer,
                                 enabled = sendEnabled,
-                                modifier = Modifier.size(style.actionSize).testTag("chat_steer_button"),
+                                modifier =
+                                    Modifier
+                                        .padding(
+                                            vertical = actionPadding,
+                                        ).size(style.actionSize)
+                                        .testTag("chat_steer_button"),
                             ) {
                                 Icon(
                                     Icons.AutoMirrored.Filled.Send,
@@ -485,7 +496,12 @@ fun ChatInputBar(
                                 FilledIconButton(
                                     onClick = onStop,
                                     shapes = IconButtonDefaults.shapes(),
-                                    modifier = Modifier.size(style.actionSize).testTag(stopTestTag),
+                                    modifier =
+                                        Modifier
+                                            .padding(
+                                                vertical = actionPadding,
+                                            ).size(style.actionSize)
+                                            .testTag(stopTestTag),
                                 ) {
                                     Icon(
                                         Icons.Default.Stop,
@@ -497,7 +513,12 @@ fun ChatInputBar(
                                     onClick = onSend,
                                     enabled = canSend && sendEnabled,
                                     shapes = IconButtonDefaults.shapes(),
-                                    modifier = Modifier.size(style.actionSize).testTag(sendTestTag),
+                                    modifier =
+                                        Modifier
+                                            .padding(
+                                                vertical = actionPadding,
+                                            ).size(style.actionSize)
+                                            .testTag(sendTestTag),
                                 ) {
                                     Icon(
                                         imageVector =
@@ -518,7 +539,12 @@ fun ChatInputBar(
                                             containerColor = MaterialTheme.colorScheme.error,
                                             contentColor = MaterialTheme.colorScheme.onError,
                                         ),
-                                    modifier = Modifier.size(style.actionSize).testTag("mic_stop_button"),
+                                    modifier =
+                                        Modifier
+                                            .padding(
+                                                vertical = actionPadding,
+                                            ).size(style.actionSize)
+                                            .testTag("mic_stop_button"),
                                 ) {
                                     Icon(Icons.Default.Stop, contentDescription = "Stop listening")
                                 }
@@ -526,7 +552,12 @@ fun ChatInputBar(
                                 IconButton(
                                     onClick = onMicTap,
                                     enabled = isConnected && microphoneEnabled,
-                                    modifier = Modifier.size(style.actionSize).testTag("mic_button"),
+                                    modifier =
+                                        Modifier
+                                            .padding(
+                                                vertical = actionPadding,
+                                            ).size(style.actionSize)
+                                            .testTag("mic_button"),
                                 ) {
                                     Icon(
                                         Icons.Default.Mic,

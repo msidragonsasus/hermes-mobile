@@ -118,14 +118,16 @@ class ThinkingIndicatorUiTest {
     }
 
     @Test
-    fun indicatorSitsBelowInterimCommentaryAndTheFoldedToolGroup() {
+    fun indicatorLivesInsideTheExpandableActivityInsteadOfLeavingATailGap() {
         renderList(showThinkingIndicator = true)
         val commentary = composeTestRule.onNodeWithText("まず確認します。").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("agent_turn_activity").assertIsDisplayed()
+        val activity = composeTestRule.onNodeWithTag("agent_turn_activity").assertIsDisplayed()
         val label = composeTestRule.onNodeWithText("思考中").assertIsDisplayed()
         assertTrue(
-            label.getUnclippedBoundsInRoot().top >= commentary.getUnclippedBoundsInRoot().bottom,
+            label.getUnclippedBoundsInRoot().bottom <= commentary.getUnclippedBoundsInRoot().top,
         )
+        assertTrue(activity.getUnclippedBoundsInRoot().top <= label.getUnclippedBoundsInRoot().top)
+        assertTrue(activity.getUnclippedBoundsInRoot().bottom >= label.getUnclippedBoundsInRoot().bottom)
     }
 
     @Test
@@ -182,8 +184,10 @@ class ThinkingIndicatorUiTest {
         composeTestRule.runOnIdle { phase.floatValue = 0.8f }
         composeTestRule.waitForIdle()
         val late = composeTestRule.onNodeWithTag("thinking_indicator").captureToImage().thirdsContrast(background)
-        assertTrue("dark=$dark early=$early", early.first() > early.last())
-        assertTrue("dark=$dark late=$late", late.last() > late.first())
+        // Compare the same glyph pixels between phases: separate Japanese glyphs
+        // have different stroke/antialias coverage even under a uniform color.
+        assertTrue("dark=$dark early=$early late=$late", early.first() > late.first())
+        assertTrue("dark=$dark early=$early late=$late", late.last() > early.last())
     }
 
     @Test
@@ -212,8 +216,10 @@ class ThinkingIndicatorUiTest {
 
     @Test
     fun runningAnimationMovesWithTheClock() {
-        renderLabel(dark = true) { ThinkingIndicator(animate = true) }
+        // Keep the infinite transition alive from its first composition. With
+        // autoAdvance enabled, the test scheduler cancels infinite animations.
         composeTestRule.mainClock.autoAdvance = false
+        renderLabel(dark = true) { ThinkingIndicator(animate = true) }
         composeTestRule.mainClock.advanceTimeBy(600)
         val first = composeTestRule.onNodeWithTag("thinking_indicator").captureToImage().toPixelMap()
         composeTestRule.mainClock.advanceTimeBy(900)

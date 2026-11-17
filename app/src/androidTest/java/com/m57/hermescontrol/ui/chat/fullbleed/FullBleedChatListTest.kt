@@ -50,6 +50,7 @@ class FullBleedChatListTest {
         messages: List<ChatMessage>,
         streamingMessage: ChatMessage? = null,
         clarify: Boolean = false,
+        thinking: Boolean = false,
     ) {
         composeTestRule.setContent {
             val listState = LazyListState()
@@ -71,6 +72,7 @@ class FullBleedChatListTest {
                 lastAnimatedMessageId = null,
                 onLastAnimatedMessageIdChange = {},
                 viewModel = mockk<ChatViewModel>(relaxed = true),
+                showThinkingIndicator = thinking,
                 clarifyRequest =
                     if (clarify) {
                         com.m57.hermescontrol.ui.chat.ClarifyUi(
@@ -82,6 +84,26 @@ class FullBleedChatListTest {
                     },
             )
         }
+    }
+
+    @Test
+    fun thinkingIsTheExpandableActivityAndEmptyProseDoesNotRender() {
+        render(
+            messages = listOf(msg("u", MessageRole.USER)),
+            streamingMessage =
+                msg(
+                    "r",
+                    MessageRole.ASSISTANT,
+                    content = "",
+                    isStreaming = true,
+                ).copy(reasoningText = "Trace"),
+            thinking = true,
+        )
+        composeTestRule.onNodeWithTag("agent_turn_activity").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("thinking_indicator", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onAllNodesWithTag("fullbleed_agent_message").assertCountEquals(0)
+        composeTestRule.onNodeWithTag("agent_turn_activity").performClick()
+        composeTestRule.onNodeWithText("Trace").assertIsDisplayed()
     }
 
     @Test

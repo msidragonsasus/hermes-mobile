@@ -124,9 +124,10 @@ fun ReasoningCard(
     reasoningText: String,
     isStreaming: Boolean = false,
     modifier: Modifier = Modifier,
+    initiallyExpanded: Boolean = false,
 ) {
     val context = LocalContext.current
-    var expanded by remember { mutableStateOf(false) }
+    var expanded by remember { mutableStateOf(initiallyExpanded) }
     var fullHeight by remember { mutableStateOf(false) }
     var copied by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()

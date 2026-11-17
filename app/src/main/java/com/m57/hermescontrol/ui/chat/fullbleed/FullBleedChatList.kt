@@ -121,6 +121,7 @@ fun FullBleedChatList(
             )
         val toolMilestones = plan.milestones
         val turns = plan.turns
+        val thinkingInActivity = showThinkingIndicator && (turns.lastOrNull() as? ChatTurn.Agent)?.hasActivity() == true
         val replyFooters = plan.replyFooters
         val duplicateBrainstormIds = BrainstormParser.duplicateBrainstormMessageIds(turns)
         val mergedBrainstorms = BrainstormParser.collectMergedFromMessages(messages, brainstormsById)
@@ -266,6 +267,7 @@ fun FullBleedChatList(
                                             showTimestamp = false,
                                         )
                                         AgentTurnActivityRow(
+                                            thinking = thinkingInActivity && turnIndex == turns.lastIndex,
                                             expanded = activityExpanded,
                                             hasReasoning = reasoningMessages.isNotEmpty(),
                                             toolCount =
@@ -299,6 +301,7 @@ fun FullBleedChatList(
                                             ReasoningCard(
                                                 reasoningText = reasoning.reasoningText,
                                                 isStreaming = reasoning.isStreaming,
+                                                initiallyExpanded = true,
                                             )
                                         }
                                     }
@@ -493,7 +496,7 @@ fun FullBleedChatList(
 
                 // 「思考中」 after everything the turn already shows, including
                 // interim commentary and folded tool rows, while it still works.
-                if (showThinkingIndicator) {
+                if (showThinkingIndicator && !thinkingInActivity) {
                     item(key = "thinking-indicator") {
                         ThinkingIndicator(modifier = Modifier.padding(bottom = 6.dp))
                     }

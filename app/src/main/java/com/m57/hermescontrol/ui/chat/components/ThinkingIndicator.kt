@@ -6,19 +6,16 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.colorspace.ColorSpaces
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -52,6 +49,7 @@ private val SHIMMER_COLOR_SPACE = ColorSpaces.ExtendedSrgb
 fun ThinkingIndicator(
     modifier: Modifier = Modifier,
     animate: Boolean = rememberAnimationsEnabled(),
+    contentPadding: PaddingValues = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
 ) {
     if (animate) {
         val transition = rememberInfiniteTransition(label = "thinking_shimmer")
@@ -62,52 +60,42 @@ fun ThinkingIndicator(
                 animationSpec = infiniteRepeatable(tween(THINKING_SHIMMER_PERIOD_MS, easing = LinearEasing)),
                 label = "thinking_shimmer_phase",
             )
-        ThinkingLabel(phase = { phase.value }, modifier = modifier)
+        ThinkingLabel(phase = { phase.value }, modifier = modifier, contentPadding = contentPadding)
     } else {
-        ThinkingLabel(phase = null, modifier = modifier)
+        ThinkingLabel(phase = null, modifier = modifier, contentPadding = contentPadding)
     }
 }
 
 /**
- * The label at a fixed shimmer [phase] (0..1, read only while drawing), or
+ * The label at a fixed shimmer [phase] (0..1), or
  * static when null. Separate so render checks can pin the phase.
  */
 @Composable
 internal fun ThinkingLabel(
     phase: (() -> Float)?,
     modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
 ) {
-    // Theme values are read here, before entering the draw lambda.
     val base = MaterialTheme.colorScheme.onSurfaceVariant
     val peak = base.withLightnessOf(MaterialTheme.colorScheme.onSurface)
-    val shimmer =
+    val textStyle =
         if (phase == null) {
-            Modifier
+            MaterialTheme.typography.bodyMedium.copy(color = base)
         } else {
-            Modifier
-                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                .drawWithContent {
-                    drawContent()
-                    drawRect(
-                        brush =
-                            Brush.horizontalGradient(
-                                *thinkingShimmerStops(phase(), base, peak),
-                                startX = 0f,
-                                endX = size.width,
-                            ),
-                        blendMode = BlendMode.SrcIn,
-                    )
-                }
+            // Native text brushes clip to glyphs and update with Compose's animation clock.
+            MaterialTheme.typography.bodyMedium.copy(
+                brush = Brush.horizontalGradient(*thinkingShimmerStops(phase(), base, peak)),
+            )
         }
-    Text(
+    // Material Text supplies a fallback color that overrides a brush-only style.
+    // BasicText preserves the theme typography and the glyph gradient together.
+    BasicText(
         text = stringResource(R.string.chat_thinking_indicator),
-        style = MaterialTheme.typography.bodyMedium,
-        color = base,
+        style = textStyle,
         modifier =
             modifier
-                .padding(horizontal = 16.dp, vertical = 6.dp)
-                .testTag("thinking_indicator")
-                .then(shimmer),
+                .padding(contentPadding)
+                .testTag("thinking_indicator"),
     )
 }
 

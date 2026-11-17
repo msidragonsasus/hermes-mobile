@@ -1,40 +1,35 @@
 package com.m57.hermescontrol.ui.chat.components
 
 import android.content.ClipData
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.absoluteOffset
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.rememberSelectionState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Reply
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.geometry.Offset
@@ -49,12 +44,12 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.chat.ChatMessage
 import com.m57.hermescontrol.ui.chat.MessageRole
 import com.m57.hermescontrol.ui.chat.RichAnswerPrompt
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -91,6 +86,7 @@ internal fun MessageActionHost(
 ) {
     var expanded by remember(message.id) { mutableStateOf(false) }
     var selecting by remember(message.id) { mutableStateOf(false) }
+    val selectionState = rememberSelectionState()
     var press by remember(message.id) { mutableStateOf(Offset.Zero) }
     val text = messageActionText(message)
     val available = !message.isStreaming && text.isNotBlank()
@@ -100,7 +96,7 @@ internal fun MessageActionHost(
     val spacing = LocalSpacing.current
     val menuLabel = stringResource(R.string.chat_message_actions)
     val gestures =
-        if (available) {
+        if (available && !selecting) {
             Modifier
                 .pointerInput(message.id) {
                     detectTapGestures(onLongPress = {
@@ -116,8 +112,27 @@ internal fun MessageActionHost(
         } else {
             Modifier
         }
+    BackHandler(enabled = selecting) {
+        selectionState.clear()
+        selecting = false
+    }
+    LaunchedEffect(selecting) {
+        if (selecting) {
+            // Wait for the original rendered text to register its selection geometry.
+            withFrameNanos { }
+            selectionState.selectAll()
+            snapshotFlow { selectionState.selectedTexts }.first { it.isEmpty() }
+            selecting = false
+        }
+    }
     Box(modifier.then(gestures)) {
-        content()
+        if (selecting && available) {
+            SelectionContainer(state = selectionState, modifier = Modifier.testTag("message_selection_text")) {
+                content()
+            }
+        } else {
+            content()
+        }
         // The anchor follows the pressed point, including a tall message scrolled partway offscreen.
         Box(Modifier.absoluteOffset { IntOffset(press.x.roundToInt(), press.y.roundToInt()) }.size(0.dp)) {
             DropdownMenu(
@@ -160,35 +175,6 @@ internal fun MessageActionHost(
                     },
                     modifier = Modifier.heightIn(min = 48.dp).testTag("message_action_select"),
                 )
-            }
-        }
-    }
-    if (selecting && available) {
-        Dialog(onDismissRequest = { selecting = false }) {
-            Surface(shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.surfaceContainer) {
-                Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).padding(spacing.lg)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            stringResource(R.string.chat_message_select),
-                            Modifier.weight(1f),
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                        IconButton(
-                            onClick = { selecting = false },
-                            modifier = Modifier.testTag("message_selection_close"),
-                        ) {
-                            Icon(Icons.Outlined.Close, stringResource(R.string.chat_message_close_selection))
-                        }
-                    }
-                    SelectionContainer(
-                        Modifier
-                            .weight(1f, fill = false)
-                            .verticalScroll(rememberScrollState())
-                            .testTag("message_selection_text"),
-                    ) {
-                        Text(text, style = MaterialTheme.typography.bodyLarge)
-                    }
-                }
             }
         }
     }
