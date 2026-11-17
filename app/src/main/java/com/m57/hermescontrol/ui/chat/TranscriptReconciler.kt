@@ -678,20 +678,39 @@ private fun foldUnprovenLocalTurns(
                     !backed(it.id) && it.approvalInfo == null && it.clarifyInfo == null
             }
         if (replies.any { it.isStreaming || it.toolStatus == ToolStatus.RUNNING }) continue
+        // Live streaming attaches the turn's reasoning to the final answer; history stores it on
+        // the row that produced it (often the tool-call row). Within this proven span that trace
+        // is kept, so it does not make the answer look lossy.
+        val spanTrace =
+            span
+                .filter { raw[it].role == "assistant" }
+                .map { raw[it].reasoningText }
+                .filter { it.isNotBlank() }
+
+        fun compact(text: String) = text.filterNot(Char::isWhitespace)
+
+        fun traceKeptInSpan(local: ChatMessage): Boolean {
+            val trace = compact(local.reasoningText)
+            return trace.isNotEmpty() &&
+                (trace == compact(spanTrace.joinToString("")) || spanTrace.any { compact(it) == trace })
+        }
         for (local in replies) {
             val match =
                 available.firstOrNull { server ->
-                    local.foldsLosslesslyInto(server) &&
-                        (
-                            local.role != MessageRole.TOOL ||
-                                (
-                                    local.toolCallId.isNotBlank() && server.toolCallId == local.toolCallId &&
-                                        available.count { it.toolCallId == local.toolCallId } == 1
-                                )
-                        )
+                    val uniqueCall =
+                        local.toolCallId.isNotBlank() && server.toolCallId == local.toolCallId &&
+                            available.count { it.toolCallId == local.toolCallId } == 1
+                    if (local.role == MessageRole.TOOL) {
+                        uniqueCall &&
+                            (local.foldsLosslesslyInto(server) || local.finishedToolFoldsByCallInto(server))
+                    } else {
+                        local.foldsLosslesslyInto(server, traceKeptElsewhere = traceKeptInSpan(local))
+                    }
                 } ?: continue
             available -= match
-            substitutes[local.id] = match.withLocalPresentation(local)
+            // Live tool presentation (name, status, finish time) is not in history; adopting it
+            // would change on the next sync, so a folded tool is shown exactly as stored.
+            substitutes[local.id] = if (local.role == MessageRole.TOOL) match else match.withLocalPresentation(local)
         }
         if (substitutes.isEmpty()) continue
         val absorbedIds = substitutes.values.map { it.id }.toSet()
@@ -728,11 +747,15 @@ private fun foldUnprovenLocalTurns(
  * local-only transient data. Missing reasoning is carried forward by [withLocalPresentation].
  * Equal visible text alone is not proof that nothing is lost.
  */
-private fun ChatMessage.foldsLosslesslyInto(server: ChatMessage): Boolean {
+private fun ChatMessage.foldsLosslesslyInto(
+    server: ChatMessage,
+    traceKeptElsewhere: Boolean = false,
+): Boolean {
     fun normalized(text: String) = text.replace("\r\n", "\n").trim()
     if (role != server.role || normalized(bodyForStorage()).isEmpty()) return false
     if (normalized(bodyForStorage()) != normalized(server.bodyForStorage())) return false
-    if (reasoningText.isNotBlank() && (server.reasoningText.isNotBlank() || server.hasServerDisplayProjection) &&
+    if (!traceKeptElsewhere && reasoningText.isNotBlank() &&
+        (server.reasoningText.isNotBlank() || server.hasServerDisplayProjection) &&
         normalized(reasoningText) != normalized(server.reasoningText)
     ) {
         return false
@@ -743,6 +766,17 @@ private fun ChatMessage.foldsLosslesslyInto(server: ChatMessage): Boolean {
     val kept = server.attachments.orEmpty().map { Triple(it.retainedSourceAddress(), it.name, it.mimeType) }
     return attachments.orEmpty().all { Triple(it.retainedSourceAddress(), it.name, it.mimeType) in kept }
 }
+
+/**
+ * A finished live tool bubble holds the tool.complete event payload, never the stored result, so
+ * its body cannot equal the history row. Inside a proven turn the unique call id (checked by the
+ * caller) identifies the row; risk findings and attachments stay local-only and refuse the fold.
+ */
+private fun ChatMessage.finishedToolFoldsByCallInto(server: ChatMessage): Boolean =
+    role == MessageRole.TOOL && server.role == MessageRole.TOOL &&
+        (toolStatus == ToolStatus.COMPLETED || toolStatus == ToolStatus.FAILED) &&
+        toolOutputRiskData == null && attachments.isNullOrEmpty() &&
+        (displayKind == null || displayKind == server.displayKind)
 
 /** Only call after an exact row/alias match, or a fold within a proven turn. */
 private fun ChatMessage.withRetainedReasoning(local: ChatMessage?): ChatMessage {
