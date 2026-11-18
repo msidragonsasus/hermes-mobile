@@ -21,7 +21,7 @@ internal fun canonicalMessageId(
 
 /** One identity-only reconcile for hydrate, older pages and sync. No text/clock matching. */
 internal fun reconcileTranscript(
-    state: ChatUiState,
+    input: ChatUiState,
     target: String,
     session: String,
     raw: List<SessionMessage>,
@@ -29,6 +29,7 @@ internal fun reconcileTranscript(
     latest: Boolean,
     older: Boolean = false,
 ): ChatUiState {
+    val state = adoptRewrittenRows(input, target, session, raw, newestPage = latest && offset == 0 && !older)
     val addresses = raw.mapNotNull { it.id?.toLong()?.takeIf { row -> row > 0 } }
     if (addresses.size != addresses.distinct().size) return state // Invalid addresses prove nothing.
     // The legacy mapper's latest-mode IDs can collide (row id == null-row
@@ -575,6 +576,198 @@ internal fun reconcileTranscript(
             live = state.isAgentTyping || state.responseStatusUnknown,
         )
     return state.copy(messages = foldedMessages, responseLedger = foldedLedger, stagedCanonicalMessages = staged)
+}
+
+/**
+ * Context compression re-inserts the kept transcript under NEW row ids and deactivates the old
+ * rows (same `message_uid`, same content and timestamp). Row identity alone then shows every
+ * rewritten message twice: the cached old row and the new one. Before reconciling:
+ * - a row whose uid was seen under an older row id takes that older identity's place
+ *   (messages, aliases and every receipt/authority reference move to the new row id);
+ * - a turn that was submitted before the rewrite and completed after it has an opening row
+ *   that no longer exists; when its complete receipt is fully witnessed on the newest page and
+ *   that page also holds rows older than the opening row, the opening row is the rewritten
+ *   user row and is rebound to the receipt's user row instead of quarantining the turn;
+ * - on the newest page, a cached server row that lies between returned rows but is no longer
+ *   returned was deactivated by a rewrite or rewind and is dropped.
+ */
+private fun adoptRewrittenRows(
+    state: ChatUiState,
+    target: String,
+    session: String,
+    raw: List<SessionMessage>,
+    newestPage: Boolean,
+): ChatUiState {
+    val rawRows = raw.mapNotNull { it.id?.toLong()?.takeIf { row -> row > 0 } }.toSet()
+    if (rawRows.isEmpty()) return state
+    val uidByRow =
+        raw
+            .mapNotNull { row ->
+                val id = row.id?.toLong()?.takeIf { it > 0 } ?: return@mapNotNull null
+                row.message_uid?.takeIf(String::isNotBlank)?.let { id to it }
+            }.toMap()
+    var ledger = state.responseLedger
+    val remap = mutableMapOf<Long, Long>()
+    for ((row, uid) in uidByRow) {
+        ledger.canonicalUids
+            .filter { (old, oldUid) -> oldUid == uid && old != row && old !in rawRows }
+            .keys
+            .forEach { remap[it] = row }
+    }
+    if (newestPage) {
+        val lowest = rawRows.min()
+        for (record in ledger.responses) {
+            val opening = record.authority.opening?.userRowId ?: continue
+            if (opening in rawRows || opening <= lowest || opening in remap) continue
+            val terminal =
+                record.authority.terminals.firstOrNull {
+                    it.complete == true && it.safe && it.userRowId != null && it.userRowId != opening &&
+                        it.rowIds.isNotEmpty() && rawRows.containsAll(it.rowIds)
+                } ?: continue
+            val user = terminal.userRowId ?: continue
+            if (raw.singleOrNull { it.id?.toLong() == user }?.let { it.role == "user" && it.display_kind == null } !=
+                true
+            ) {
+                continue
+            }
+            remap[opening] = user
+        }
+    }
+
+    fun moved(row: Long) = remap[row] ?: row
+
+    // References are row ids or row-id lists rendered as text ("10", "[10, 11]").
+    val rowListRef = Regex("""\[?\d+(, \d+)*]?""")
+
+    fun movedRef(ref: String) =
+        if (!rowListRef.matches(ref)) {
+            ref
+        } else {
+            Regex("""\d+""").replace(ref) { m ->
+                m.value
+                    .toLongOrNull()
+                    ?.let(remap::get)
+                    ?.toString() ?: m.value
+            }
+        }
+
+    fun rowsOf(ref: String) =
+        if (!rowListRef.matches(ref)) {
+            emptyList()
+        } else {
+            Regex("""\d+""").findAll(ref).mapNotNull { it.value.toLongOrNull() }.toList()
+        }
+    var messages = state.messages
+    if (remap.isNotEmpty()) {
+        val renamed =
+            remap.entries.associate { (old, new) ->
+                canonicalMessageId(target, session, old) to canonicalMessageId(target, session, new)
+            }
+        val present = messages.map { it.id }.toSet()
+        messages =
+            messages.mapNotNull { message ->
+                val next = renamed[message.id] ?: return@mapNotNull message
+                if (next in present) null else message.copy(id = next)
+            }
+
+        fun facts(f: ReplyAuthorityFacts): ReplyAuthorityFacts {
+            val opening = f.opening?.let { it.copy(userRowId = it.userRowId?.let(::moved)) }
+            val terminals =
+                f.terminals.map {
+                    it.copy(
+                        rowIds = it.rowIds.map(::moved).distinct(),
+                        userRowId = it.userRowId?.let(::moved),
+                        finalRowId = it.finalRowId?.let(::moved),
+                    )
+                }
+            // A binding or exhaustiveness conflict that only existed between a row and its
+            // rewritten copy is gone once both name the same row.
+            val witnessed = terminals.filter { it.complete == true && it.safe }.flatMap { it.rowIds }.toSet()
+            val revocations =
+                f.revocations
+                    .map { it.copy(references = it.references.map(::movedRef)) }
+                    .filterNot { revocation ->
+                        val rows = revocation.references.flatMap(::rowsOf)
+                        when (revocation.reason) {
+                            "opening-binding" -> {
+                                rows.size == revocation.references.size && rows.size >= 2 &&
+                                    rows.distinct().size == 1
+                            }
+
+                            "complete-exhaustiveness" -> {
+                                rows.isNotEmpty() && witnessed.containsAll(rows)
+                            }
+
+                            else -> {
+                                false
+                            }
+                        }
+                    }
+            return f.copy(
+                opening = opening,
+                openingObservations = f.openingObservations.map { it.copy(userRowId = it.userRowId?.let(::moved)) },
+                controls = f.controls.map { it.copy(userRowId = it.userRowId?.let(::moved)) },
+                queued = f.queued?.let { it.copy(userRowId = it.userRowId?.let(::moved)) },
+                terminals = terminals,
+                local = f.local?.let { it.copy(rowIds = it.rowIds.map(::moved).distinct()) },
+                canonical = f.canonical?.let { it.copy(rowIds = it.rowIds.map(::moved).distinct()) },
+                revocations = revocations,
+            )
+        }
+        ledger =
+            ledger.copy(
+                responses =
+                    ledger.responses.map { record ->
+                        record.copy(
+                            messageIds = record.messageIds.map { renamed[it] ?: it }.distinct(),
+                            userIds = record.userIds.map { renamed[it] ?: it }.distinct(),
+                            userRowIds = record.userRowIds.map(::moved).distinct(),
+                            canonicalRowIds = record.canonicalRowIds.map(::moved).distinct(),
+                            canonicalFinalAssistantRowId = record.canonicalFinalAssistantRowId?.let(::moved),
+                            authority = facts(record.authority),
+                        )
+                    },
+                aliases =
+                    ledger.aliases.entries
+                        .sortedBy { (row, _) -> if (row.toLongOrNull() in remap) 1 else 0 }
+                        .associate { (row, id) -> movedRef(row) to (renamed[id] ?: id) },
+                canonicalRoles = ledger.canonicalRoles.mapKeys { (row, _) -> moved(row) },
+                canonicalVisibleRows = ledger.canonicalVisibleRows.map(::moved).distinct(),
+                canonicalUids = ledger.canonicalUids.filterKeys { it !in remap },
+                pendingInputs = ledger.pendingInputs,
+            )
+    }
+    if (newestPage) {
+        val lowest = rawRows.min()
+        val highest = rawRows.max()
+        val dead =
+            messages
+                .filter { message ->
+                    val row = canonicalRowOf(message.id, target, session) ?: return@filter false
+                    row in lowest..highest && row !in rawRows
+                }.map { it.id }
+                .toSet()
+        if (dead.isNotEmpty()) messages = messages.filterNot { it.id in dead }
+    }
+    ledger = ledger.copy(canonicalUids = ledger.canonicalUids + uidByRow)
+    return if (messages === state.messages && ledger == state.responseLedger) {
+        state
+    } else {
+        state.copy(messages = messages, responseLedger = ledger)
+    }
+}
+
+/** The row of a [canonicalMessageId] for this target and session, or null. */
+private fun canonicalRowOf(
+    id: String,
+    target: String,
+    session: String,
+): Long? {
+    val prefix = canonicalMessageId(target, session, 0).substringBeforeLast(":") + ":"
+    if (!id.startsWith(prefix)) return null
+    return runCatching {
+        String(Base64.getUrlDecoder().decode(id.removePrefix(prefix)), Charsets.UTF_8).toLong()
+    }.getOrNull()
 }
 
 /**

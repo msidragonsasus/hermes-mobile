@@ -58,6 +58,11 @@ data class SessionMessage(
     val display_metadata: JsonElement? = null,
     /** Authoritative display-only body; physical content remains available for export. */
     val display_content: JsonElement? = null,
+    /**
+     * Stable message identity across row rewrites. Context compression re-inserts the kept
+     * transcript under NEW row ids and deactivates the old rows; the uid stays the same.
+     */
+    val message_uid: String? = null,
 ) {
     val timestampText: String?
         get() = (timestamp as? JsonPrimitive)?.content

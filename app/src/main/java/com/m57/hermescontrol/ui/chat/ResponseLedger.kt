@@ -29,6 +29,8 @@ data class ResponseLedger(
     val requiresCorrelation: Boolean = false,
     val aliases: Map<String, String> = emptyMap(),
     val canonicalRoles: Map<Long, String> = emptyMap(),
+    /** Server `message_uid` per observed row; a rewritten row keeps its uid under a new row id. */
+    val canonicalUids: Map<Long, String> = emptyMap(),
     val canonicalVisibleRows: List<Long> = emptyList(),
     val pendingInputs: Map<String, String> = emptyMap(),
     val pendingSubmissions: Map<String, String> = emptyMap(),
