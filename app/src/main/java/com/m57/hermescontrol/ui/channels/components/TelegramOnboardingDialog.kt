@@ -20,7 +20,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -35,6 +34,7 @@ import com.m57.hermescontrol.R
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.ui.channels.ChannelsUiState
 import com.m57.hermescontrol.ui.channels.OnboardingPhase
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.localizedMessage
 
 @Composable
@@ -147,7 +147,7 @@ internal fun TelegramOnboardingDialog(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            OutlinedTextField(
+                            HermesTextField(
                                 value = state.onboardingNewAllowedId,
                                 onValueChange = onNewAllowedIdChange,
                                 placeholder = { Text(stringResource(R.string.tg_onboarding_user_id_placeholder)) },

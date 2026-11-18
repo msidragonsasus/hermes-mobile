@@ -4,12 +4,14 @@ import android.app.Application
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -46,7 +48,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -79,11 +80,10 @@ import com.m57.hermescontrol.ui.common.ActionProgressDialog
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.NavIcon
-import com.m57.hermescontrol.ui.common.SectionHeader
 import com.m57.hermescontrol.ui.common.PrimaryPillButton
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.clickable
+import com.m57.hermescontrol.ui.common.SectionHeader
 import com.m57.hermescontrol.ui.common.SkeletonListState
 import com.m57.hermescontrol.ui.common.StatusBadge
 import com.m57.hermescontrol.ui.common.StatusBadgeType
@@ -916,12 +916,11 @@ private fun LazyListScope.credentialsSection(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(spacing.sm),
                 ) {
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.credProvider,
                         onValueChange = viewModel::updateCredProvider,
                         label = { Text(stringResource(R.string.system_credentials_provider)) },
                         singleLine = true,
-                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.weight(1f),
                         textStyle = MaterialTheme.typography.bodySmall,
                     )
@@ -931,22 +930,20 @@ private fun LazyListScope.credentialsSection(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(spacing.sm),
                 ) {
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.credKey,
                         onValueChange = viewModel::updateCredKey,
                         label = { Text(stringResource(R.string.system_credentials_api_key)) },
                         singleLine = true,
-                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.weight(1f),
                         textStyle = MaterialTheme.typography.bodySmall,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     )
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.credLabel,
                         onValueChange = viewModel::updateCredLabel,
                         label = { Text(stringResource(R.string.system_credentials_label)) },
                         singleLine = true,
-                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.weight(1f),
                         textStyle = MaterialTheme.typography.bodySmall,
                     )
@@ -1365,36 +1362,32 @@ private fun LazyListScope.shellHooksSection(
                 title = { Text(stringResource(R.string.system_hooks_modal_title)) },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
-                        OutlinedTextField(
+                        HermesTextField(
                             value = state.hookEvent,
                             onValueChange = viewModel::updateHookEvent,
                             label = { Text(stringResource(R.string.system_hooks_field_event)) },
                             singleLine = true,
-                            shape = MaterialTheme.shapes.medium,
                             modifier = Modifier.fillMaxWidth(),
                         )
-                        OutlinedTextField(
+                        HermesTextField(
                             value = state.hookCommand,
                             onValueChange = viewModel::updateHookCommand,
                             label = { Text(stringResource(R.string.system_hooks_field_command)) },
                             singleLine = true,
-                            shape = MaterialTheme.shapes.medium,
                             modifier = Modifier.fillMaxWidth(),
                         )
-                        OutlinedTextField(
+                        HermesTextField(
                             value = state.hookMatcher,
                             onValueChange = viewModel::updateHookMatcher,
                             label = { Text(stringResource(R.string.system_hooks_field_matcher)) },
                             singleLine = true,
-                            shape = MaterialTheme.shapes.medium,
                             modifier = Modifier.fillMaxWidth(),
                         )
-                        OutlinedTextField(
+                        HermesTextField(
                             value = state.hookTimeout,
                             onValueChange = viewModel::updateHookTimeout,
                             label = { Text(stringResource(R.string.system_hooks_field_timeout)) },
                             singleLine = true,
-                            shape = MaterialTheme.shapes.medium,
                             modifier = Modifier.fillMaxWidth(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         )

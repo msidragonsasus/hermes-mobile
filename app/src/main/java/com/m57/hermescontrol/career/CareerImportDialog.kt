@@ -14,7 +14,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -27,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import com.m57.hermescontrol.theme.LocalSpacing
+import com.m57.hermescontrol.ui.common.HermesTextField
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -95,7 +95,7 @@ internal fun CareerImportDialog(
                     )
                 }
                 if (uri != null && preview == null) {
-                    OutlinedTextField(
+                    HermesTextField(
                         value = passphrase,
                         onValueChange = {
                             passphrase = it

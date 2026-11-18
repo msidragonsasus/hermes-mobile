@@ -31,7 +31,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.SecondaryScrollableTabRow
 import androidx.compose.material3.Tab
@@ -57,6 +56,7 @@ import com.m57.hermescontrol.miniapp.sdui.CareerMyPageSduiKey
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.HermesSecondaryIndicator
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.NavIcon
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
@@ -442,7 +442,7 @@ internal fun CareerCompanyPager(
                                     ) { Text("全企業を更新") }
                                 }
                                 mailActions?.invoke()
-                                OutlinedTextField(query, {
+                                HermesTextField(query, {
                                     query = it
                                 }, label = { Text("メールを検索") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                                 if (detail?.mail?.isNotEmpty() == true ||

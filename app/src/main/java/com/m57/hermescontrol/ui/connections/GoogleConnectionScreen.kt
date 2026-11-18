@@ -19,7 +19,6 @@ import androidx.compose.material.icons.filled.Work
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -44,6 +43,7 @@ import com.m57.hermescontrol.career.careerScope
 import com.m57.hermescontrol.career.findActivity
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SettingsAvatar
 import com.m57.hermescontrol.ui.common.SettingsGroup
@@ -273,12 +273,11 @@ internal fun GoogleConnectionContent(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
                     Text(account.email)
-                    OutlinedTextField(
+                    HermesTextField(
                         value = label,
                         onValueChange = { if (it.length <= 40) label = it },
                         label = { Text("例：就活、個人、学校") },
                         singleLine = true,
-                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.testTag("google_account_label"),
                     )
                 }

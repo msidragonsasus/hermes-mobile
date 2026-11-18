@@ -29,7 +29,6 @@ import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -65,6 +64,7 @@ import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.LoadingState
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SearchBar
@@ -412,13 +412,12 @@ internal fun LoginField(
     keyboard: KeyboardType = KeyboardType.Text,
     contentType: ContentType? = null,
 ) {
-    TextField(
+    HermesTextField(
         value = value,
         onValueChange = onChange,
         label = { Text(stringResource(label)) },
         singleLine = true,
         enabled = !busy,
-        shape = MaterialTheme.shapes.large,
         keyboardOptions = KeyboardOptions(keyboardType = keyboard, autoCorrectEnabled = false),
         visualTransformation =
             if (keyboard ==

@@ -41,7 +41,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -82,6 +81,7 @@ import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.FilterChipRow
 import com.m57.hermescontrol.ui.common.FlatListRow
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.LoadingState
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SearchBar
@@ -89,8 +89,8 @@ import com.m57.hermescontrol.ui.common.SettingsFootnote
 import com.m57.hermescontrol.ui.common.SettingsGroupLabel
 import com.m57.hermescontrol.ui.common.SettingsListItem
 import com.m57.hermescontrol.ui.common.SettingsMenuItem
-import com.m57.hermescontrol.ui.common.SettingsRow
 import com.m57.hermescontrol.ui.common.SettingsPanel
+import com.m57.hermescontrol.ui.common.SettingsRow
 import com.m57.hermescontrol.ui.common.SkeletonListState
 import com.m57.hermescontrol.ui.common.ToastEffect
 import com.m57.hermescontrol.ui.common.listItemSpacing
@@ -1096,7 +1096,7 @@ fun SkillEditorDialog(
                         }
 
                         else -> {
-                            OutlinedTextField(
+                            HermesTextField(
                                 value = contentText,
                                 onValueChange = { contentText = it },
                                 modifier =

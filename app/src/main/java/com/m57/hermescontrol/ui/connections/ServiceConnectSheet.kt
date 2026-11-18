@@ -21,7 +21,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -35,6 +34,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.model.McpCatalogEnvVar
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.PrimaryPillButton
 import com.m57.hermescontrol.ui.common.SettingsGroup
 import com.m57.hermescontrol.ui.common.SettingsRow
@@ -102,13 +102,12 @@ internal fun ServiceConnectSheet(
             }
             if (plan is ServiceConnectPlan.Install && envFields.isNotEmpty() && !status.busy) {
                 envFields.forEach { field ->
-                    TextField(
+                    HermesTextField(
                         value = envValues[field.key].orEmpty(),
                         onValueChange = { onEnv(field.key, it) },
                         label = { Text("${field.label ?: field.key}${if (field.required) "（必須）" else ""}") },
                         supportingText = field.description?.let { { Text(it) } },
                         singleLine = true,
-                        shape = MaterialTheme.shapes.medium,
                         visualTransformation =
                             if (field.secret) PasswordVisualTransformation() else VisualTransformation.None,
                         keyboardOptions =

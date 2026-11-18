@@ -43,7 +43,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -81,6 +80,7 @@ import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.HermesSecondaryIndicator
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.InListSectionHeaderPadding
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SearchBar
@@ -425,7 +425,7 @@ fun McpServersScreen(
                         }
                     }
                     Spacer(modifier = Modifier.height(spacing.xs))
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.importJsonInput,
                         onValueChange = viewModel::updateImportJsonInput,
                         placeholder = {
@@ -546,23 +546,21 @@ internal fun AddServerSection(
 
                 Spacer(modifier = Modifier.height(spacing.sm))
 
-                OutlinedTextField(
+                HermesTextField(
                     value = state.addServerName,
                     onValueChange = viewModel::updateAddServerName,
                     label = { Text(stringResource(R.string.mcp_servers_field_name)) },
                     singleLine = true,
-                    shape = MaterialTheme.shapes.medium,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(modifier = Modifier.height(spacing.sm))
 
                 if (state.addMode == AddServerMode.HTTP) {
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.addServerUrl,
                         onValueChange = viewModel::updateAddServerUrl,
                         label = { Text(stringResource(R.string.mcp_servers_field_url)) },
                         singleLine = true,
-                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.fillMaxWidth(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     )
@@ -596,32 +594,29 @@ internal fun AddServerSection(
                     }
                     if (state.addServerAuth == "header") {
                         Spacer(modifier = Modifier.height(spacing.sm))
-                        OutlinedTextField(
+                        HermesTextField(
                             value = state.addServerBearerToken,
                             onValueChange = viewModel::updateAddServerBearerToken,
                             label = { Text(stringResource(R.string.mcp_servers_field_bearer_token)) },
                             singleLine = true,
-                            shape = MaterialTheme.shapes.medium,
                             visualTransformation = remember { PasswordVisualTransformation() },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
                 } else {
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.addServerCommand,
                         onValueChange = viewModel::updateAddServerCommand,
                         label = { Text(stringResource(R.string.mcp_servers_field_command)) },
                         singleLine = true,
-                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Spacer(modifier = Modifier.height(spacing.sm))
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.addServerArgs,
                         onValueChange = viewModel::updateAddServerArgs,
                         label = { Text(stringResource(R.string.mcp_servers_field_args)) },
                         singleLine = true,
-                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -934,21 +929,19 @@ private fun EnvVarSection(
             horizontalArrangement = Arrangement.spacedBy(spacing.sm),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            OutlinedTextField(
+            HermesTextField(
                 value = state.envKeyInput,
                 onValueChange = viewModel::updateEnvKey,
                 label = { Text(stringResource(R.string.mcp_servers_env_key)) },
                 singleLine = true,
-                shape = MaterialTheme.shapes.medium,
                 modifier = Modifier.weight(1f),
             )
-            OutlinedTextField(
+            HermesTextField(
                 value = state.envValueInput,
                 onValueChange = viewModel::updateEnvValue,
                 label = { Text(stringResource(R.string.mcp_servers_env_value)) },
                 visualTransformation = PasswordVisualTransformation(),
                 singleLine = true,
-                shape = MaterialTheme.shapes.medium,
                 modifier = Modifier.weight(1f),
             )
         }

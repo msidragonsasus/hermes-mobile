@@ -43,7 +43,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
@@ -81,6 +80,7 @@ import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesPrimaryIndicator
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.InlineNotice
 import com.m57.hermescontrol.ui.common.LocalManagementScope
 import com.m57.hermescontrol.ui.common.NavIcon
@@ -174,7 +174,7 @@ fun BotsScreen(
         drawerGesturesEnabled = true,
         title = {
             if (isSearchActive) {
-                OutlinedTextField(
+                HermesTextField(
                     value = state.searchQuery,
                     onValueChange = { viewModel.setSearchQuery(it) },
                     placeholder = { Text(stringResource(R.string.bots_search_placeholder)) },

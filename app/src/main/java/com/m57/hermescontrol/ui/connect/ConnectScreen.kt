@@ -37,7 +37,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -61,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.PressureBanner
 
 @Composable
@@ -225,7 +225,7 @@ fun ConnectScreen(
                 }
 
                 AnimatedVisibility(visible = state.saveProfile) {
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.profileName,
                         onValueChange = viewModel::onProfileNameChange,
                         label = { Text(stringResource(R.string.connect_profile_name)) },
@@ -278,7 +278,7 @@ fun ConnectScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         HorizontalDivider()
-                        OutlinedTextField(
+                        HermesTextField(
                             value = state.baseUrl,
                             onValueChange = viewModel::onBaseUrlChange,
                             label = { Text(stringResource(R.string.connect_server_url_label)) },
@@ -303,7 +303,7 @@ fun ConnectScreen(
                                 )
                             }
                         }
-                        OutlinedTextField(
+                        HermesTextField(
                             value = state.token,
                             onValueChange = viewModel::onTokenChange,
                             label = { Text(stringResource(R.string.settings_field_token)) },

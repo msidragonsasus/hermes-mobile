@@ -34,7 +34,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -81,6 +80,7 @@ import com.m57.hermescontrol.ui.common.BotAvatar
 import com.m57.hermescontrol.ui.common.CompactListRow
 import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.InlineNotice
 import com.m57.hermescontrol.ui.common.LoadingState
 import com.m57.hermescontrol.ui.common.NavIcon
@@ -450,21 +450,19 @@ internal fun BotDetailScreen(
                             tone = NoticeTone.Info,
                         )
                         state.error?.let { InlineNotice(text = it, tone = NoticeTone.Error) }
-                        OutlinedTextField(
+                        HermesTextField(
                             value = descDraft,
                             onValueChange = { descDraft = it },
                             label = { Text(stringResource(R.string.bots_create_desc_label)) },
                             singleLine = true,
-                            shape = MaterialTheme.shapes.medium,
                             modifier = Modifier.fillMaxWidth().testTag("detail_desc_input"),
                         )
-                        OutlinedTextField(
+                        HermesTextField(
                             value = soulDraft,
                             onValueChange = { soulDraft = it },
                             label = { Text("SOUL.md") },
                             minLines = 6,
                             maxLines = 14,
-                            shape = MaterialTheme.shapes.medium,
                             modifier = Modifier.fillMaxWidth().testTag("detail_soul_input"),
                         )
                         Row(

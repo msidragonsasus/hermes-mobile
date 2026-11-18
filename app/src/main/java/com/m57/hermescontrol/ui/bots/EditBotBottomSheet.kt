@@ -24,7 +24,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -46,6 +45,7 @@ import com.m57.hermescontrol.data.model.BotAvatarMeta
 import com.m57.hermescontrol.data.model.ProfileInfo
 import com.m57.hermescontrol.theme.parseHexColor
 import com.m57.hermescontrol.ui.common.BotAvatar
+import com.m57.hermescontrol.ui.common.HermesTextField
 
 internal val BOT_AVATAR_SHAPES = listOf("circle", "square", "rounded", "hexagon")
 
@@ -161,7 +161,7 @@ fun EditBotBottomSheet(
                 )
             }
 
-            OutlinedTextField(
+            HermesTextField(
                 value = title,
                 onValueChange = { title = it },
                 label = { Text(stringResource(R.string.bots_create_title_label)) },
@@ -171,7 +171,7 @@ fun EditBotBottomSheet(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            OutlinedTextField(
+            HermesTextField(
                 value = description,
                 onValueChange = { description = it },
                 label = { Text(stringResource(R.string.bots_create_desc_label)) },

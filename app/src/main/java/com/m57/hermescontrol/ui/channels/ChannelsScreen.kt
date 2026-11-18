@@ -23,7 +23,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -50,14 +49,15 @@ import com.m57.hermescontrol.ui.channels.components.PlatformCard
 import com.m57.hermescontrol.ui.channels.components.TelegramOnboardingDialog
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
-import com.m57.hermescontrol.ui.common.rememberHasLoaded
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SearchBar
 import com.m57.hermescontrol.ui.common.SkeletonListState
 import com.m57.hermescontrol.ui.common.ToastEffect
 import com.m57.hermescontrol.ui.common.listContentPadding
 import com.m57.hermescontrol.ui.common.listItemSpacing
+import com.m57.hermescontrol.ui.common.rememberHasLoaded
 
 // ── Validation helpers ──────────────────────────────────────────────────
 
@@ -317,7 +317,7 @@ internal fun ConfigureForm(
     Spacer(modifier = Modifier.height(8.dp))
 
     envFields.forEach { field ->
-        OutlinedTextField(
+        HermesTextField(
             value = inputValues[field.key].orEmpty(),
             onValueChange = {
                 inputValues[field.key] = it

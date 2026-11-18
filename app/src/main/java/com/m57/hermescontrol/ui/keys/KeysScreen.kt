@@ -57,7 +57,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -93,6 +92,7 @@ import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.FlatListRow
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SearchBar
 import com.m57.hermescontrol.ui.common.SectionHeader
@@ -424,7 +424,7 @@ private fun AddKeyDialog(
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
+                HermesTextField(
                     value = newKeyName,
                     onValueChange = onNameChange,
                     modifier = Modifier.fillMaxWidth(),
@@ -442,7 +442,7 @@ private fun AddKeyDialog(
                     enabled = !isAdding,
                 )
 
-                OutlinedTextField(
+                HermesTextField(
                     value = newKeyValue,
                     onValueChange = onValueChange,
                     modifier = Modifier.fillMaxWidth(),
@@ -649,7 +649,7 @@ private fun EnvVarCard(
             // Value Display Box (Single-line, horizontally scrollable) or Edit Form
             if (isEditing) {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    OutlinedTextField(
+                    HermesTextField(
                         value = editedValue,
                         onValueChange = { editedValue = it },
                         modifier = Modifier.fillMaxWidth(),

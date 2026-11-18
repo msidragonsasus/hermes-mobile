@@ -29,7 +29,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -51,13 +50,14 @@ import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.model.KanbanTask
 import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesPrimaryIndicator
-import com.m57.hermescontrol.ui.common.rememberHasLoaded
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SearchBar
 import com.m57.hermescontrol.ui.common.SkeletonListState
 import com.m57.hermescontrol.ui.common.ToastEffect
 import com.m57.hermescontrol.ui.common.localizedMessage
+import com.m57.hermescontrol.ui.common.rememberHasLoaded
 
 private const val DEFAULT_COLUMN = "todo"
 
@@ -382,14 +382,14 @@ fun AddTaskDialog(
         title = { Text(stringResource(R.string.kanban_add_new_task)) },
         text = {
             Column {
-                OutlinedTextField(
+                HermesTextField(
                     value = title,
                     onValueChange = { title = it },
                     label = { Text(stringResource(R.string.kanban_task_title)) },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
+                HermesTextField(
                     value = desc,
                     onValueChange = { desc = it },
                     label = { Text(stringResource(R.string.kanban_task_desc)) },
@@ -499,7 +499,7 @@ private fun CompleteTaskDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.kanban_complete_title)) },
         text = {
-            OutlinedTextField(
+            HermesTextField(
                 value = summary,
                 onValueChange = { summary = it },
                 label = { Text(stringResource(R.string.kanban_complete_summary_label)) },

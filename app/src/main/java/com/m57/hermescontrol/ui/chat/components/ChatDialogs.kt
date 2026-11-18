@@ -11,7 +11,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -28,6 +27,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
+import com.m57.hermescontrol.ui.common.HermesTextField
 
 /**
  * Secure password dialog for a pending `sudo.request` (issue #524).
@@ -48,7 +48,7 @@ fun SudoPromptDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(text = stringResource(R.string.chat_sudo_body))
                 Spacer(modifier = Modifier.height(4.dp))
-                OutlinedTextField(
+                HermesTextField(
                     value = password,
                     onValueChange = { password = it },
                     label = { Text(stringResource(R.string.chat_sudo_password)) },
@@ -104,7 +104,7 @@ fun SecretPromptDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(text = bodyText)
                 Spacer(modifier = Modifier.height(4.dp))
-                OutlinedTextField(
+                HermesTextField(
                     value = secret,
                     onValueChange = { secret = it },
                     label = { Text(labelText) },
@@ -157,7 +157,7 @@ fun ReloginDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                OutlinedTextField(
+                HermesTextField(
                     value = username,
                     onValueChange = {
                         username = it
@@ -168,7 +168,7 @@ fun ReloginDialog(
                     enabled = !isLoading,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                OutlinedTextField(
+                HermesTextField(
                     value = password,
                     onValueChange = {
                         password = it

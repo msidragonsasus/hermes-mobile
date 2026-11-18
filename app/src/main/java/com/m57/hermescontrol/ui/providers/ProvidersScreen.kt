@@ -26,7 +26,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -52,15 +51,16 @@ import com.m57.hermescontrol.data.model.OAuthStartResponse
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
-import com.m57.hermescontrol.ui.common.rememberHasLoaded
 import com.m57.hermescontrol.ui.common.FlatListRow
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SkeletonListState
 import com.m57.hermescontrol.ui.common.ToastEffect
 import com.m57.hermescontrol.ui.common.listContentPadding
 import com.m57.hermescontrol.ui.common.listItemSpacing
 import com.m57.hermescontrol.ui.common.localizedMessage
+import com.m57.hermescontrol.ui.common.rememberHasLoaded
 
 @Composable
 fun ProvidersScreen(
@@ -409,7 +409,7 @@ private fun PkceFlowContent(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        OutlinedTextField(
+        HermesTextField(
             value = code,
             onValueChange = onCodeChange,
             label = { Text(stringResource(R.string.providers_code_label)) },

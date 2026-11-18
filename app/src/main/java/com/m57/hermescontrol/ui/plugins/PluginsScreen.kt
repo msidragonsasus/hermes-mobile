@@ -31,7 +31,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -63,6 +62,7 @@ import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.ExposedDropdownField
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SearchBar
 import com.m57.hermescontrol.ui.common.SettingsFootnote
@@ -361,8 +361,7 @@ internal fun InstallSection(
     SettingsGroupLabel(stringResource(R.string.plugins_install_heading))
     SettingsGroup {
         row {
-            OutlinedTextField(
-                shape = MaterialTheme.shapes.large,
+            HermesTextField(
                 value = state.installUrl,
                 onValueChange = { viewModel.updateInstallUrl(it) },
                 modifier = Modifier.fillMaxWidth().padding(16.dp),

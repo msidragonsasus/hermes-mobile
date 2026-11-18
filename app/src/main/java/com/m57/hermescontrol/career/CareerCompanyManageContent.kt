@@ -27,7 +27,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -51,6 +50,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.ExposedDropdownField
+import com.m57.hermescontrol.ui.common.HermesTextField
 
 private val priorityChoices = linkedMapOf("unknown" to "未設定", "high" to "高", "medium" to "中", "low" to "低")
 private val stageChoices =
@@ -234,7 +234,7 @@ internal fun LazyListScope.companySenderItems(
                     }
                 }
                 val invalid = draft.sender.isNotBlank() && !validCompanySender(draft.sender)
-                OutlinedTextField(
+                HermesTextField(
                     value = draft.sender,
                     onValueChange = { draft.sender = it },
                     label = { Text("送信元メールアドレス") },

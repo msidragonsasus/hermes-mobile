@@ -208,6 +208,9 @@ existing code. A Material import or a rounded rectangle does not prove complianc
   existing viewer. Preserve image aspect ratio in the conversation.
 - 2026-10-19: no box-like, square input fields and no decorative outlines on
   inputs. Conversation entry reuses `ChatComposer`.
+- 2026-11-18: form fields use option C, a rounded filled surface with no outline
+  or indicator line; only focus and error draw a ring. Every form field is
+  `HermesTextField`; do not reintroduce `OutlinedTextField` or per-screen shapes.
 - 2026-10-24: **no big rectangular cards.** The user called the card-stacked,
   generously padded look "ダサい". Lists are flat rows with dividers; groups are
   separated by a small label and whitespace; nothing is wrapped in a filled or
@@ -256,9 +259,11 @@ When the user rejects a design, record it here in the same change.
 - **Search:** use `SearchBar` (`ui/common/SharedComponents.kt`): a 44–48dp pill on
   `surfaceContainer` with a leading search icon and a placeholder. Never an
   `OutlinedTextField` with a label for search.
-- **Form fields:** `OutlinedTextField`/`TextField` with
-  `shape = MaterialTheme.shapes.medium`, label above or inside, readable focus,
-  error and disabled states. Never the default 4dp square outline.
+- **Form fields:** `HermesTextField` (`ui/common/HermesTextField.kt`): a filled
+  `shapes.large` surface without outline or indicator line, label inside, a 2dp
+  `primary` ring while focused and an `error` ring on error, readable disabled
+  state. Never `OutlinedTextField`, the default 4dp square outline, or a
+  screen-local shape or color override.
 - Multi-line composer: `ChatComposer` only.
 
 ### Conversation layout (2026-11-16)
@@ -617,7 +622,7 @@ remain accurate and final rows must be reachable above the navigation bar.
 ### Don't
 - Big rectangular cards, cards per row, nested cards, outlined cards as dividers.
 - Tall rounded banners, duplicated warnings, raw ISO timestamps or JSON in daily UI.
-- Square outlined inputs; labeled `OutlinedTextField` for search.
+- Outlined or square inputs (`OutlinedTextField`); labeled text fields for search.
 - FABs or Extended FABs (Chat scroll-to-latest excepted).
 - Full-width primary buttons in lists; more than one loud button per screen.
 - `headlineMedium` for section titles; Latin letter-spacing on Japanese text.

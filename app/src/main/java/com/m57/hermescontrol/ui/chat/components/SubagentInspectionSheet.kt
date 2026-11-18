@@ -40,7 +40,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -64,6 +63,7 @@ import com.m57.hermescontrol.R
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.ui.chat.SubagentIndicator
 import com.m57.hermescontrol.ui.chat.TodoItem
+import com.m57.hermescontrol.ui.common.HermesTextField
 
 /**
  * Inspection sheet displaying active & completed subagent tasks and agent todos (issue #1030).
@@ -670,7 +670,7 @@ private fun InspectionItemCard(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            OutlinedTextField(
+                            HermesTextField(
                                 value = steerText,
                                 onValueChange = { steerText = it },
                                 placeholder = {

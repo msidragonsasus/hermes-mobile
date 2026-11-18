@@ -64,7 +64,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -105,6 +104,7 @@ import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SearchBar
 import com.m57.hermescontrol.ui.common.SkeletonListState
@@ -380,7 +380,7 @@ fun SessionsScreen(
                 Column {
                     Text(stringResource(R.string.sessions_prune_desc))
                     Spacer(modifier = Modifier.height(spacing.md))
-                    OutlinedTextField(
+                    HermesTextField(
                         value = pruneDays,
                         onValueChange = { pruneDays = it.filter { c -> c.isDigit() } },
                         label = { Text(stringResource(R.string.sessions_prune_days_label)) },
@@ -500,7 +500,7 @@ fun SessionsScreen(
             onDismissRequest = { viewModel.closeRenameDialog() },
             title = { Text(stringResource(R.string.sessions_rename_title)) },
             text = {
-                OutlinedTextField(
+                HermesTextField(
                     value = state.renameDraft,
                     onValueChange = { viewModel.updateRenameDraft(it) },
                     singleLine = true,

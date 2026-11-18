@@ -13,7 +13,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -38,6 +37,7 @@ import com.m57.hermescontrol.career.careerScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.LoadingState
 import com.m57.hermescontrol.ui.common.NavIcon
 import kotlinx.serialization.json.JsonObject
@@ -157,7 +157,7 @@ internal fun WorkbenchContent(
                 var goal by remember { mutableStateOf("") }
                 var title by remember { mutableStateOf("マイページの確認") }
                 var readyOnly by remember { mutableStateOf(true) }
-                OutlinedTextField(goal, {
+                HermesTextField(goal, {
                     if (it.length <=
                         2000
                     ) {
@@ -177,7 +177,7 @@ internal fun WorkbenchContent(
                     Text("依頼文から画面と条件付きBot処理の候補を作ります。候補を確認・編集・テストしてから反映します。", style = MaterialTheme.typography.bodySmall)
                     Text("手動で下書きを作る", style = MaterialTheme.typography.titleSmall)
                 }
-                OutlinedTextField(title, {
+                HermesTextField(title, {
                     if (it.length <=
                         200
                     ) {
@@ -246,7 +246,7 @@ internal fun WorkbenchContent(
                     }
                 }
                 Text(selected, style = MaterialTheme.typography.labelMedium)
-                OutlinedTextField(
+                HermesTextField(
                     value = editedFiles.getValue(selected),
                     onValueChange = {
                         if (it.toByteArray().size <=

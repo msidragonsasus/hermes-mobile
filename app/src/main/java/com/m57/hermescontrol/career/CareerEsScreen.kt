@@ -448,7 +448,7 @@ internal fun CareerAnswerScreen(
                     } else {
                         if (!state.busy && state.cache.pending == null) {
                             Column(Modifier.testTag("career_answer_input")) {
-                                androidx.compose.material3.OutlinedTextField(answerField, {
+                                com.m57.hermescontrol.ui.common.HermesTextField(answerField, {
                                     answerField = it
                                     model.changeBody(it.text)
                                 }, label = { Text("回答本文") }, modifier = Modifier.fillMaxWidth(), minLines = 6)

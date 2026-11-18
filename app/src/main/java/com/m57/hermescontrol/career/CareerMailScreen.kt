@@ -24,7 +24,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -54,6 +53,7 @@ import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.LoadingState
 import com.m57.hermescontrol.ui.common.NavIcon
 import kotlinx.coroutines.launch
@@ -133,7 +133,7 @@ internal fun CareerMailContent(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(spacing.sm)) {
-                            OutlinedTextField(
+                            HermesTextField(
                                 value = sender,
                                 onValueChange = { sender = it },
                                 modifier = Modifier.weight(1f).testTag("career_mail_sender_input"),

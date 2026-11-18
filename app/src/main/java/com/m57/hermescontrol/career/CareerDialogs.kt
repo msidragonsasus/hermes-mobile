@@ -15,7 +15,6 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -27,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import com.m57.hermescontrol.theme.LocalSpacing
+import com.m57.hermescontrol.ui.common.HermesTextField
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -341,7 +341,7 @@ internal fun CareerField(
             rawText = text
             projectedText = text
         }
-        OutlinedTextField(
+        HermesTextField(
             value = if (array) rawText else text,
             onValueChange = { changed ->
                 if (array) {

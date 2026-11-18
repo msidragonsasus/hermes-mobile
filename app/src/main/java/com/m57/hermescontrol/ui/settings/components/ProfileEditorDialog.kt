@@ -7,7 +7,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -20,6 +19,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.ui.common.HermesTextField
 
 @Composable
 internal fun ProfileEditorDialog(
@@ -46,14 +46,14 @@ internal fun ProfileEditorDialog(
         title = { Text(title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
+                HermesTextField(
                     value = name,
                     onValueChange = onNameChange,
                     label = { Text(stringResource(R.string.settings_field_profile_name)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                OutlinedTextField(
+                HermesTextField(
                     value = baseUrl,
                     onValueChange = onBaseUrlChange,
                     label = { Text(stringResource(R.string.connect_server_url_label)) },
@@ -71,7 +71,7 @@ internal fun ProfileEditorDialog(
                     )
                 }
                 if (isEditing) {
-                    OutlinedTextField(
+                    HermesTextField(
                         value = token,
                         onValueChange = onTokenChange,
                         label = { Text(stringResource(R.string.settings_field_token)) },

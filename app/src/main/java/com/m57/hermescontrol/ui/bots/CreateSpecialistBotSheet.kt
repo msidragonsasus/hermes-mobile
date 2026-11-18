@@ -21,7 +21,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -49,6 +48,7 @@ import com.m57.hermescontrol.data.remote.SpecialistApiOutcome
 import com.m57.hermescontrol.data.remote.SpecialistsRepository
 import com.m57.hermescontrol.theme.parseHexColor
 import com.m57.hermescontrol.ui.common.BotAvatar
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.InlineNotice
 import com.m57.hermescontrol.ui.common.NoticeTone
 import com.m57.hermescontrol.ui.common.PrimaryPillButton
@@ -340,7 +340,7 @@ fun CreateSpecialistBotSheet(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            OutlinedTextField(
+            HermesTextField(
                 value = botId,
                 onValueChange = { raw ->
                     botId = raw.filter { it.isLetterOrDigit() || it == '_' || it == '-' }.take(64)
@@ -350,13 +350,12 @@ fun CreateSpecialistBotSheet(
                 placeholder = { Text(stringResource(R.string.bots_create_name_placeholder)) },
                 singleLine = true,
                 enabled = !isSubmitting,
-                shape = MaterialTheme.shapes.medium,
                 modifier = Modifier.fillMaxWidth().testTag("specialist_name_input"),
             )
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            OutlinedTextField(
+            HermesTextField(
                 value = displayTitle,
                 onValueChange = {
                     displayTitle = it.take(100)
@@ -366,7 +365,6 @@ fun CreateSpecialistBotSheet(
                 placeholder = { Text(stringResource(R.string.bots_create_title_placeholder)) },
                 singleLine = true,
                 enabled = !isSubmitting,
-                shape = MaterialTheme.shapes.medium,
                 modifier = Modifier.fillMaxWidth().testTag("specialist_title_input"),
             )
 

@@ -8,7 +8,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -20,6 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import com.m57.hermescontrol.theme.LocalSpacing
+import com.m57.hermescontrol.ui.common.HermesTextField
 import java.util.UUID
 
 @Composable
@@ -44,7 +44,7 @@ internal fun AddCompanyDialog(
                 Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(LocalSpacing.current.md),
             ) {
-                OutlinedTextField(
+                HermesTextField(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("企業名") },

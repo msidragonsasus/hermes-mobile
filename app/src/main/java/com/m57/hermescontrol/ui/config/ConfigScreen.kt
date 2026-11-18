@@ -41,7 +41,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SecondaryScrollableTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -71,6 +70,7 @@ import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.ExposedDropdownField
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.HermesSecondaryIndicator
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SearchBar
 import com.m57.hermescontrol.ui.common.SkeletonListState
@@ -304,7 +304,7 @@ private fun YAMLEditor(
                 .fillMaxSize()
                 .padding(horizontal = 16.dp),
     ) {
-        OutlinedTextField(
+        HermesTextField(
             value = yamlText,
             onValueChange = onYamlTextChange,
             modifier =
@@ -773,13 +773,12 @@ private fun ConfigFieldCard(
 
                 else -> {
                     // String
-                    OutlinedTextField(
+                    HermesTextField(
                         value = (row.value as? JsonPrimitive)?.content ?: "",
                         onValueChange = { onChange(JsonPrimitive(it)) },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text(description) },
                         singleLine = true,
-                        shape = RoundedCornerShape(8.dp),
                     )
                 }
             }
@@ -838,7 +837,7 @@ private fun SearchableSelectField(
         expanded = expanded,
         onExpandedChange = { expanded = it },
     ) {
-        OutlinedTextField(
+        HermesTextField(
             value = query,
             onValueChange = { newText ->
                 if (untouched && query == selectedValue && newText.startsWith(selectedValue)) {
@@ -868,7 +867,6 @@ private fun SearchableSelectField(
             label = { Text(label) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             singleLine = true,
-            shape = RoundedCornerShape(8.dp),
         )
 
         ExposedDropdownMenu(
@@ -921,7 +919,7 @@ private fun NumberField(
         if (!hasFocus) text = (value as? JsonPrimitive)?.content ?: ""
     }
 
-    OutlinedTextField(
+    HermesTextField(
         value = text,
         onValueChange = { newText ->
             text = newText
@@ -946,7 +944,6 @@ private fun NumberField(
         label = { Text(label) },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         singleLine = true,
-        shape = RoundedCornerShape(8.dp),
     )
 }
 
@@ -969,7 +966,7 @@ private fun JsonField(
         if (!hasFocus) text = value?.let(::jsonText) ?: ""
     }
 
-    OutlinedTextField(
+    HermesTextField(
         value = text,
         onValueChange = { newText ->
             text = newText

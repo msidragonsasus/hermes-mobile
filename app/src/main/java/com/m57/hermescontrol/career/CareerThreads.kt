@@ -20,7 +20,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -49,6 +48,7 @@ import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.CompactListRow
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.LoadingState
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.PrimaryPillButton
@@ -654,11 +654,10 @@ internal fun CareerThreadsContent(
             title = { Text("会話の名前") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
-                    OutlinedTextField(
+                    HermesTextField(
                         title,
                         { title = it.take(120) },
                         label = { Text("テーマ・会話名") },
-                        shape = MaterialTheme.shapes.medium,
                     )
                     state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     if (state.pending !=

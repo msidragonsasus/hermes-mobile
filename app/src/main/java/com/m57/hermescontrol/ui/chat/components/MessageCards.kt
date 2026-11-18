@@ -54,7 +54,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Surface
@@ -104,6 +103,7 @@ import com.m57.hermescontrol.theme.CodeTerminalText
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.ui.chat.ClarifyUi
 import com.m57.hermescontrol.ui.chat.SubagentIndicator
+import com.m57.hermescontrol.ui.common.HermesTextField
 import kotlinx.coroutines.delay
 
 // ── ReasoningCard ─────────────────────────────────────────────────────────
@@ -584,7 +584,7 @@ fun ClarifyBubble(
                     }
 
                     Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(
+                    HermesTextField(
                         value = customTextByQid[q.qid].orEmpty(),
                         onValueChange = { newText ->
                             customTextByQid = customTextByQid + (q.qid to newText)
@@ -599,7 +599,6 @@ fun ClarifyBubble(
                             )
                         },
                         textStyle = MaterialTheme.typography.bodyLarge,
-                        shape = MaterialTheme.shapes.medium,
                         modifier =
                             Modifier
                                 .fillMaxWidth()

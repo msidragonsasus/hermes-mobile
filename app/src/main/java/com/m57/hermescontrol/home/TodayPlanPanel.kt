@@ -28,7 +28,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -55,6 +54,7 @@ import com.m57.hermescontrol.SettingsGoogleConnection
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.theme.LocalSpacing
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.InlineNotice
 import com.m57.hermescontrol.ui.common.NoticeTone
 import com.m57.hermescontrol.ui.common.OverviewHeading
@@ -691,13 +691,12 @@ private fun TodayPlanSettings(
     var enabled by rememberSaveable(scope, settings) { mutableStateOf(settings.enabled) }
     Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
         Text("確認する情報源", style = MaterialTheme.typography.titleMedium)
-        TextField(
+        HermesTextField(
             value = email,
             onValueChange = { email = it },
             label = { Text("確認するメールアドレス") },
             supportingText = { Text("Google接続に登録済みのアドレス") },
             singleLine = true,
-            shape = MaterialTheme.shapes.large,
             modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
             enabled = !busy,
@@ -708,13 +707,12 @@ private fun TodayPlanSettings(
         ) {
             Text("Google接続を確認する")
         }
-        TextField(
+        HermesTextField(
             value = manaba,
             onValueChange = { manaba = it },
             label = { Text("manabaのホームURL") },
             supportingText = { Text("ログイン情報を含まない https:// で始まるURL") },
             singleLine = true,
-            shape = MaterialTheme.shapes.large,
             modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
             enabled = !busy,

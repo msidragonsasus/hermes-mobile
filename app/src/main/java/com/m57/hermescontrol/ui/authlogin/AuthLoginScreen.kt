@@ -29,7 +29,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -51,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.ui.common.HermesTextField
 
 @Composable
 fun AuthLoginScreen(
@@ -156,7 +156,7 @@ fun AuthLoginScreen(
             }
 
             // Server URL field
-            OutlinedTextField(
+            HermesTextField(
                 value = state.baseUrl,
                 onValueChange = viewModel::onBaseUrlChange,
                 label = { Text(stringResource(R.string.auth_login_base_url_label)) },
@@ -207,7 +207,7 @@ fun AuthLoginScreen(
                 enter = fadeIn(),
                 exit = fadeOut(),
             ) {
-                OutlinedTextField(
+                HermesTextField(
                     value = state.token,
                     onValueChange = viewModel::onTokenChange,
                     label = { Text(stringResource(R.string.auth_login_token_label)) },
@@ -243,7 +243,7 @@ fun AuthLoginScreen(
                 enter = fadeIn(),
                 exit = fadeOut(),
             ) {
-                OutlinedTextField(
+                HermesTextField(
                     value = state.username,
                     onValueChange = viewModel::onUsernameChange,
                     label = { Text(stringResource(R.string.auth_login_username_label)) },
@@ -260,7 +260,7 @@ fun AuthLoginScreen(
                 enter = fadeIn(),
                 exit = fadeOut(),
             ) {
-                OutlinedTextField(
+                HermesTextField(
                     value = state.password,
                     onValueChange = viewModel::onPasswordChange,
                     label = { Text(stringResource(R.string.auth_login_password_label)) },

@@ -21,7 +21,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -40,6 +39,7 @@ import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.model.BotAvatarMeta
 import com.m57.hermescontrol.theme.parseHexColor
 import com.m57.hermescontrol.ui.common.BotAvatar
+import com.m57.hermescontrol.ui.common.HermesTextField
 
 private val AVAILABLE_SHAPES = listOf("circle", "square", "rounded", "hexagon")
 private val PALETTE_COLORS =
@@ -105,7 +105,7 @@ fun CreateBotDialog(
                     )
                 }
 
-                OutlinedTextField(
+                HermesTextField(
                     value = name,
                     onValueChange = { name = it.filter { c -> c.isLetterOrDigit() || c == '_' || c == '-' } },
                     label = { Text(stringResource(R.string.bots_create_name_label)) },
@@ -116,7 +116,7 @@ fun CreateBotDialog(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                OutlinedTextField(
+                HermesTextField(
                     value = title,
                     onValueChange = { title = it },
                     label = { Text(stringResource(R.string.bots_create_title_label)) },
@@ -127,7 +127,7 @@ fun CreateBotDialog(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                OutlinedTextField(
+                HermesTextField(
                     value = description,
                     onValueChange = { description = it },
                     label = { Text(stringResource(R.string.bots_create_desc_label)) },

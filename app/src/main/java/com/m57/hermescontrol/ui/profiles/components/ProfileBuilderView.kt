@@ -31,7 +31,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -50,6 +49,7 @@ import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.model.CreateProfileRequest
 import com.m57.hermescontrol.data.model.McpServerConfigInput
 import com.m57.hermescontrol.data.model.ModelProvider
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.profiles.ProfilesUiState
 import com.m57.hermescontrol.ui.profiles.ProfilesViewModel
 
@@ -290,7 +290,7 @@ private fun IdentityStep(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        OutlinedTextField(
+        HermesTextField(
             value = name,
             onValueChange = onNameChange,
             label = { Text(stringResource(R.string.profiles_builder_label_profile_name)) },
@@ -301,7 +301,7 @@ private fun IdentityStep(
             singleLine = true,
         )
 
-        OutlinedTextField(
+        HermesTextField(
             value = description,
             onValueChange = onDescriptionChange,
             label = { Text(stringResource(R.string.profiles_builder_label_description)) },
@@ -533,7 +533,7 @@ private fun AddMcpDialog(
             Column(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                OutlinedTextField(
+                HermesTextField(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text(stringResource(R.string.profiles_builder_mcp_name)) },
@@ -585,7 +585,7 @@ private fun AddMcpDialog(
                 }
 
                 if (transport == "sse") {
-                    OutlinedTextField(
+                    HermesTextField(
                         value = url,
                         onValueChange = { url = it },
                         label = { Text(stringResource(R.string.profiles_builder_mcp_sse_url)) },
@@ -594,7 +594,7 @@ private fun AddMcpDialog(
                         singleLine = true,
                     )
                 } else {
-                    OutlinedTextField(
+                    HermesTextField(
                         value = command,
                         onValueChange = { command = it },
                         label = { Text(stringResource(R.string.profiles_builder_mcp_command)) },
@@ -602,7 +602,7 @@ private fun AddMcpDialog(
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                     )
-                    OutlinedTextField(
+                    HermesTextField(
                         value = argsInput,
                         onValueChange = { argsInput = it },
                         label = { Text(stringResource(R.string.profiles_builder_mcp_args)) },

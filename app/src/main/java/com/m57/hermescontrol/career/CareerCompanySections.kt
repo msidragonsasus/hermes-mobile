@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -25,6 +24,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.lifecycle.viewmodel.initializer
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.theme.LocalSpacing
+import com.m57.hermescontrol.ui.common.HermesTextField
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -129,7 +129,7 @@ internal fun CareerCompanyNotes(
     LaunchedEffect(latest) { noteModel.acknowledge(latest) }
     Column {
         Text("企業メモ", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(body, {
+        HermesTextField(body, {
             noteModel.change(it)
         }, modifier = Modifier.fillMaxWidth(), minLines = 5, label = { Text("気づいたこと・確認したいこと") }, enabled = note.loaded)
         note.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }

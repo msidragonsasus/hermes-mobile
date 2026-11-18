@@ -27,7 +27,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -53,6 +52,7 @@ import com.m57.hermescontrol.ui.common.DetailDialog
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SearchBar
 import com.m57.hermescontrol.ui.common.SkeletonListState
@@ -150,7 +150,7 @@ fun WebhooksScreen(
             title = { Text(stringResource(R.string.webhooks_dialog_create_title)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.createFormName,
                         onValueChange = viewModel::updateCreateFormName,
                         label = { Text(stringResource(R.string.webhooks_field_name)) },
@@ -160,7 +160,7 @@ fun WebhooksScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
 
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.createFormDescription,
                         onValueChange = viewModel::updateCreateFormDescription,
                         label = { Text(stringResource(R.string.webhooks_field_description)) },
@@ -169,7 +169,7 @@ fun WebhooksScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
 
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.createFormEvents,
                         onValueChange = viewModel::updateCreateFormEvents,
                         label = { Text(stringResource(R.string.webhooks_field_events)) },
@@ -178,7 +178,7 @@ fun WebhooksScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
 
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.createFormDeliver,
                         onValueChange = viewModel::updateCreateFormDeliver,
                         label = { Text(stringResource(R.string.webhooks_field_deliver)) },
@@ -187,7 +187,7 @@ fun WebhooksScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
 
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.createFormSecret,
                         onValueChange = viewModel::updateCreateFormSecret,
                         label = { Text(stringResource(R.string.webhooks_field_secret)) },

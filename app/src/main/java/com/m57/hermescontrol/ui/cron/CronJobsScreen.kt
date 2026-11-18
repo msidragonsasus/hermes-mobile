@@ -36,7 +36,6 @@ import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -64,10 +63,10 @@ import com.m57.hermescontrol.data.model.DeliveryTarget
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
-import com.m57.hermescontrol.ui.common.rememberHasLoaded
 import com.m57.hermescontrol.ui.common.ExposedDropdownField
 import com.m57.hermescontrol.ui.common.FlatListRow
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.LoadingState
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SkeletonListState
@@ -76,6 +75,7 @@ import com.m57.hermescontrol.ui.common.StatusBadgeType
 import com.m57.hermescontrol.ui.common.ToastEffect
 import com.m57.hermescontrol.ui.common.listContentPadding
 import com.m57.hermescontrol.ui.common.listItemSpacing
+import com.m57.hermescontrol.ui.common.rememberHasLoaded
 import com.m57.hermescontrol.util.CronExpressionFormatter
 
 @Composable
@@ -499,7 +499,7 @@ fun CronJobEditorDialog(
                             }
                         } else {
                             // Name
-                            OutlinedTextField(
+                            HermesTextField(
                                 value = state.name,
                                 onValueChange = { onFieldChange("name", it) },
                                 label = { Text(stringResource(R.string.cron_edit_field_name)) },
@@ -508,7 +508,7 @@ fun CronJobEditorDialog(
                             )
 
                             // Schedule (required)
-                            OutlinedTextField(
+                            HermesTextField(
                                 value = state.schedule,
                                 onValueChange = { onFieldChange("schedule", it) },
                                 label = { Text(stringResource(R.string.cron_edit_field_schedule)) },
@@ -518,7 +518,7 @@ fun CronJobEditorDialog(
                             )
 
                             // Prompt
-                            OutlinedTextField(
+                            HermesTextField(
                                 value = state.prompt,
                                 onValueChange = { onFieldChange("prompt", it) },
                                 label = { Text(stringResource(R.string.cron_edit_field_prompt)) },
@@ -543,7 +543,7 @@ fun CronJobEditorDialog(
                             )
 
                             // Skills
-                            OutlinedTextField(
+                            HermesTextField(
                                 value = state.skills,
                                 onValueChange = { onFieldChange("skills", it) },
                                 label = { Text(stringResource(R.string.cron_edit_field_skills)) },
@@ -556,7 +556,7 @@ fun CronJobEditorDialog(
                             )
 
                             // Model
-                            OutlinedTextField(
+                            HermesTextField(
                                 value = state.model,
                                 onValueChange = { onFieldChange("model", it) },
                                 label = { Text(stringResource(R.string.cron_edit_field_model)) },
@@ -565,7 +565,7 @@ fun CronJobEditorDialog(
                             )
 
                             // Provider
-                            OutlinedTextField(
+                            HermesTextField(
                                 value = state.provider,
                                 onValueChange = { onFieldChange("provider", it) },
                                 label = { Text(stringResource(R.string.cron_edit_field_provider)) },
@@ -574,7 +574,7 @@ fun CronJobEditorDialog(
                             )
 
                             // Base URL
-                            OutlinedTextField(
+                            HermesTextField(
                                 value = state.base_url,
                                 onValueChange = { onFieldChange("base_url", it) },
                                 label = { Text(stringResource(R.string.cron_edit_field_base_url)) },
@@ -583,7 +583,7 @@ fun CronJobEditorDialog(
                             )
 
                             // Script path
-                            OutlinedTextField(
+                            HermesTextField(
                                 value = state.script,
                                 onValueChange = { onFieldChange("script", it) },
                                 label = { Text(stringResource(R.string.cron_edit_field_script)) },
@@ -592,7 +592,7 @@ fun CronJobEditorDialog(
                             )
 
                             // Work directory
-                            OutlinedTextField(
+                            HermesTextField(
                                 value = state.workdir,
                                 onValueChange = { onFieldChange("workdir", it) },
                                 label = { Text(stringResource(R.string.cron_edit_field_workdir)) },
@@ -719,7 +719,7 @@ private fun MonitorModeSection(
         )
         when (monitorMode) {
             "script" -> {
-                OutlinedTextField(
+                HermesTextField(
                     value = monitorScript,
                     onValueChange = { onFieldChange("monitor_script", it) },
                     label = { Text(stringResource(R.string.cron_edit_monitor_script_field)) },
@@ -730,7 +730,7 @@ private fun MonitorModeSection(
             }
 
             "url" -> {
-                OutlinedTextField(
+                HermesTextField(
                     value = monitorUrl,
                     onValueChange = { onFieldChange("monitor_url", it) },
                     label = { Text(stringResource(R.string.cron_edit_monitor_url_field)) },
@@ -788,7 +788,7 @@ private fun BlueprintStartFromDropdown(
         expanded = expanded,
         onExpandedChange = { expanded = it },
     ) {
-        OutlinedTextField(
+        HermesTextField(
             value = selectedTitle,
             onValueChange = {},
             readOnly = true,
@@ -854,7 +854,7 @@ private fun BlueprintSlotField(
         }
 
         else -> {
-            OutlinedTextField(
+            HermesTextField(
                 value = value,
                 onValueChange = onValueChange,
                 label = { Text(field.label) },
@@ -906,7 +906,7 @@ private fun DeliverField(
         expanded = expanded,
         onExpandedChange = { expanded = it },
     ) {
-        OutlinedTextField(
+        HermesTextField(
             value = value,
             onValueChange = onValueChange,
             label = { Text(label) },

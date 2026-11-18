@@ -8,7 +8,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -23,6 +22,7 @@ import com.m57.hermescontrol.data.model.McpCatalogEntry
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.CompactListRow
 import com.m57.hermescontrol.ui.common.ErrorState
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.connections.connectionHost
 import com.m57.hermescontrol.ui.connections.externalServices
 import com.m57.hermescontrol.ui.connections.matches
@@ -93,14 +93,13 @@ private fun McpCatalogEntryRow(
             }
             if (selected && !installed) {
                 fields.forEach { field ->
-                    TextField(
+                    HermesTextField(
                         value = values[field.key].orEmpty(),
                         onValueChange = { onUpdateEnv(field.key, it) },
                         label = { Text("${field.label ?: field.key}${if (field.required) "（必須）" else ""}") },
                         supportingText = field.description?.let { { Text(it) } },
                         enabled = state.installingCatalogEntry == null && !uncertain,
                         singleLine = true,
-                        shape = MaterialTheme.shapes.medium,
                         visualTransformation =
                             if (field.secret) PasswordVisualTransformation() else VisualTransformation.None,
                         keyboardOptions =

@@ -15,7 +15,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -33,6 +32,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.theme.LocalSpacing
+import com.m57.hermescontrol.ui.common.HermesTextField
 
 @Composable
 internal fun CareerMyPageExecutionPanel() {
@@ -109,7 +109,7 @@ internal fun CareerMyPageExecutionContent(
             Text("有料APIの利用を有効にする", modifier = Modifier.padding(top = spacing.sm))
         }
         if (draft.paid_enabled) {
-            OutlinedTextField(
+            HermesTextField(
                 value = runBudget,
                 onValueChange = { runBudget = it },
                 label = { Text("1実行の料金上限（USD）") },
@@ -117,7 +117,7 @@ internal fun CareerMyPageExecutionContent(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            OutlinedTextField(
+            HermesTextField(
                 value = dayBudget,
                 onValueChange = { dayBudget = it },
                 label = { Text("1日の料金上限（USD）") },

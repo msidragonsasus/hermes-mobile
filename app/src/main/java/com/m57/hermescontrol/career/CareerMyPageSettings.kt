@@ -11,7 +11,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,6 +31,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import com.m57.hermescontrol.theme.LocalSpacing
+import com.m57.hermescontrol.ui.common.HermesTextField
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -172,7 +172,7 @@ internal fun CompanyMyPageSettings(
                 }
                 val urlChanged = connection.connection_version > 0 && url.trim() != connection.portal_url
                 val needsCredentials = connection.connection_version == 0 || urlChanged
-                OutlinedTextField(
+                HermesTextField(
                     value = url,
                     onValueChange = {
                         onFormEdit()
@@ -184,7 +184,7 @@ internal fun CompanyMyPageSettings(
                     singleLine = true,
                 )
                 loginChoices(!busy)
-                OutlinedTextField(
+                HermesTextField(
                     value = login,
                     onValueChange = {
                         onFormEdit()
@@ -199,7 +199,7 @@ internal fun CompanyMyPageSettings(
                     enabled = !busy && inputEnabled,
                     singleLine = true,
                 )
-                OutlinedTextField(
+                HermesTextField(
                     value = password,
                     onValueChange = {
                         onFormEdit()

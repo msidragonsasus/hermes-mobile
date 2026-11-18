@@ -19,7 +19,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -44,6 +43,7 @@ import com.m57.hermescontrol.data.model.SpecialistSetupDraftRequest
 import com.m57.hermescontrol.data.model.SpecialistSetupSnapshot
 import com.m57.hermescontrol.data.remote.SpecialistApiOutcome
 import com.m57.hermescontrol.data.remote.SpecialistsRepository
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.InlineNotice
 import com.m57.hermescontrol.ui.common.NoticeTone
 import com.m57.hermescontrol.ui.common.PrimaryPillButton
@@ -417,26 +417,24 @@ fun SpecialistSetupSheet(
 
                 if (!snapshot.setup_completed) {
                     Spacer(modifier = Modifier.height(12.dp))
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.roleInput,
                         onValueChange = { state = state.copy(roleInput = it.take(4000)) },
                         label = { Text(stringResource(R.string.specialist_setup_role_label)) },
                         minLines = 2,
                         maxLines = 4,
                         enabled = !state.isWorking,
-                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.fillMaxWidth().testTag("setup_role_input"),
                     )
 
                     Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.sourcesInput,
                         onValueChange = { state = state.copy(sourcesInput = it.take(4000)) },
                         label = { Text(stringResource(R.string.specialist_setup_sources_label)) },
                         minLines = 1,
                         maxLines = 3,
                         enabled = !state.isWorking,
-                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.fillMaxWidth().testTag("setup_sources_input"),
                     )
 
@@ -470,26 +468,24 @@ fun SpecialistSetupSheet(
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.autonomyInput,
                         onValueChange = { state = state.copy(autonomyInput = it.take(4000)) },
                         label = { Text(stringResource(R.string.specialist_setup_autonomy_label)) },
                         minLines = 2,
                         maxLines = 3,
                         enabled = !state.isWorking,
-                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.fillMaxWidth().testTag("setup_autonomy_input"),
                     )
 
                     Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
+                    HermesTextField(
                         value = state.routinesInput,
                         onValueChange = { state = state.copy(routinesInput = it.take(4000)) },
                         label = { Text(stringResource(R.string.specialist_setup_routines_label)) },
                         minLines = 1,
                         maxLines = 3,
                         enabled = !state.isWorking,
-                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.fillMaxWidth().testTag("setup_routines_input"),
                     )
                     Text(

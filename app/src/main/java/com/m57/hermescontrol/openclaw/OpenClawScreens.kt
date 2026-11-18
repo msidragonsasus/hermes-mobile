@@ -19,7 +19,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -45,6 +44,7 @@ import com.m57.hermescontrol.agents.AgentSelector
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SectionHeader
 
@@ -181,7 +181,7 @@ fun OpenClawSettingsScreen() {
             }
             if (editConnection) {
                 item {
-                    OutlinedTextField(
+                    HermesTextField(
                         url,
                         { url = it },
                         label = { Text("Gateway URL") },
@@ -203,7 +203,7 @@ fun OpenClawSettingsScreen() {
                     )
                 }
                 item {
-                    OutlinedTextField(
+                    HermesTextField(
                         token,
                         { token = it },
                         label = { Text(if (vm.hasToken()) "認証情報（保存済み・変更時だけ入力）" else "OpenClawのGatewayトークン／パスワード") },
@@ -262,7 +262,7 @@ fun OpenClawSettingsScreen() {
                 )
             }
             item {
-                OutlinedTextField(
+                HermesTextField(
                     titleKey,
                     { titleKey = it },
                     label = { Text(if (state.titleKeySaved) "OpenRouterキー（端末に保存済み）" else "OpenRouterキー（必要なら個別指定）") },
@@ -387,7 +387,7 @@ private fun ClawModelPicker(
     var query by remember { mutableStateOf("") }
     AlertDialog(onDismissRequest = onDismiss, title = { Text(title) }, text = {
         Column {
-            OutlinedTextField(query, { query = it }, placeholder = { Text("モデルを検索") }, singleLine = true)
+            HermesTextField(query, { query = it }, placeholder = { Text("モデルを検索") }, singleLine = true)
             LazyColumn {
                 if (inherit) item { TextButton(onClick = { onSelect(null) }) { Text("botの既定値を使う") } }
                 if (models.isEmpty()) item { Text("利用できるモデルを取得できませんでした。接続と権限を確認してください。") }

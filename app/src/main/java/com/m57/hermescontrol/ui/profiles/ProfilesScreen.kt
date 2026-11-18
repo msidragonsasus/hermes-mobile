@@ -38,7 +38,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -66,6 +65,7 @@ import com.m57.hermescontrol.R
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesScaffold
+import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SkeletonListState
 import com.m57.hermescontrol.ui.common.ToastEffect
@@ -624,7 +624,7 @@ fun ProfilesScreen(
                         CircularProgressIndicator()
                     }
                 } else {
-                    OutlinedTextField(
+                    HermesTextField(
                         value = soulText,
                         onValueChange = { soulText = it },
                         modifier = Modifier.fillMaxWidth(),
@@ -693,7 +693,7 @@ fun ProfilesScreen(
             },
             text = {
                 val errorMsg = if (newCloneName.isNotEmpty()) validateProfileName(newCloneName) else null
-                OutlinedTextField(
+                HermesTextField(
                     value = newCloneName,
                     onValueChange = { newCloneName = it },
                     label = { Text(stringResource(R.string.profiles_label_new_name_input)) },
@@ -744,7 +744,7 @@ fun ProfilesScreen(
                 )
             },
             text = {
-                OutlinedTextField(
+                HermesTextField(
                     value = tempDescription,
                     onValueChange = { tempDescription = it },
                     label = { Text(stringResource(R.string.profiles_label_description_input)) },
@@ -791,7 +791,7 @@ fun ProfilesScreen(
             },
             text = {
                 val errorMsg = if (newRenameName.isNotEmpty()) validateProfileName(newRenameName) else null
-                OutlinedTextField(
+                HermesTextField(
                     value = newRenameName,
                     onValueChange = { newRenameName = it },
                     label = { Text(stringResource(R.string.profiles_label_new_name_input)) },

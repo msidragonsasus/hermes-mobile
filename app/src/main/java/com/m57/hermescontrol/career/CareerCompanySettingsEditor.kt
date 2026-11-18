@@ -11,7 +11,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -28,6 +27,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.theme.LocalSpacing
+import com.m57.hermescontrol.ui.common.HermesTextField
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -181,7 +181,7 @@ internal fun CompanyEntityEditor(
         ) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             fields.forEach { field ->
-                OutlinedTextField(
+                HermesTextField(
                     value = (input[field] as? JsonPrimitive)?.content.orEmpty(),
                     onValueChange = {
                         draft = input.with(field to JsonPrimitive(it)).toString()
