@@ -3,7 +3,6 @@ package com.m57.hermescontrol.ui.chat.components
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -21,7 +20,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.imeAnimationTarget
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -62,6 +61,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -316,8 +316,11 @@ fun ChatInputBar(
             // Idle (no keyboard, nothing typed) the composer is one slim pill: attach, text, mic.
             // While typing it opens into a rounded panel: the text spans the width and the
             // attach, model, thinking-depth, mic and send controls share the row beneath it.
+            // Follow where the keyboard is GOING, not where it is: switching when the close
+            // animation starts avoids a second jump after the keyboard has already gone.
+            val imeTargetVisible = WindowInsets.imeAnimationTarget.getBottom(LocalDensity.current) > 0
             val expanded =
-                (isFocused && WindowInsets.isImeVisible) || inputFieldValue.text.isNotEmpty() ||
+                (isFocused && imeTargetVisible) || inputFieldValue.text.isNotEmpty() ||
                     pendingAttachments.isNotEmpty()
             val attachControl: @Composable () -> Unit = {
                 if (showAttachmentButton) {
@@ -462,7 +465,7 @@ fun ChatInputBar(
                 }
             }
             Surface(
-                modifier = Modifier.fillMaxWidth().animateContentSize().testTag("chat_composer_surface"),
+                modifier = Modifier.fillMaxWidth().testTag("chat_composer_surface"),
                 shape = if (expanded) MaterialTheme.shapes.extraLarge else style.composerShape,
                 color = MaterialTheme.colorScheme.surfaceContainer,
             ) {
