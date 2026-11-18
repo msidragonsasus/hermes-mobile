@@ -143,8 +143,7 @@ private fun appEntryProvider(
             .BotDetailScreen(profileName = it.profileName)
     }
     entry<com.m57.hermescontrol.agents.ChatSettingsKey> {
-        com.m57.hermescontrol.agents
-            .ChatSettingsScreen()
+        UnifiedSettingsScreen(onBack = { NavigationController.goBack() })
     }
     entry<com.m57.hermescontrol.navigation.MiniAppExamplesScreen> { MiniAppsScreen(showExamples = true) }
     entry<com.m57.hermescontrol.pcpower.PcPowerScreenKey> {
@@ -265,12 +264,47 @@ private fun appEntryProvider(
             viewModel = viewModel { SettingsViewModel() },
         )
     }
-    // The former appearance/language/chat/behaviour sub-pages now live inline on the settings
-    // page; their keys stay routable so saved back stacks and deep links still resolve.
-    entry<SettingsAppearance> { UnifiedSettingsScreen(onBack = { NavigationController.goBack() }) }
-    entry<SettingsLanguage> { UnifiedSettingsScreen(onBack = { NavigationController.goBack() }) }
-    entry<SettingsChat> { UnifiedSettingsScreen(onBack = { NavigationController.goBack() }) }
-    entry<SettingsBehavior> { UnifiedSettingsScreen(onBack = { NavigationController.goBack() }) }
+    entry<SettingsAppearance> {
+        com.m57.hermescontrol.ui.settings
+            .SettingsAppearancePage()
+    }
+    // Legacy keys retain their technical editors without changing saved preferences.
+    entry<SettingsLanguage> {
+        com.m57.hermescontrol.ui.settings
+            .SettingsAppAdvancedPage()
+    }
+    entry<SettingsChat> {
+        com.m57.hermescontrol.ui.settings
+            .SettingsAppAdvancedPage()
+    }
+    entry<SettingsBehavior> {
+        com.m57.hermescontrol.ui.settings
+            .SettingsAppAdvancedPage()
+    }
+    entry<SettingsNotifications> {
+        com.m57.hermescontrol.ui.settings
+            .SettingsNotificationsPage()
+    }
+    entry<SettingsPermissions> {
+        com.m57.hermescontrol.ui.settings
+            .SettingsPermissionsPage()
+    }
+    entry<SettingsMemory> {
+        com.m57.hermescontrol.ui.settings
+            .SettingsMemoryPage()
+    }
+    entry<SettingsLimits> {
+        com.m57.hermescontrol.ui.settings.limits
+            .AccountLimitsScreen()
+    }
+    entry<PluginCatalogKey> {
+        com.m57.hermescontrol.ui.plugins
+            .PluginCatalogScreen()
+    }
+    entry<PluginAdvancedKey> {
+        com.m57.hermescontrol.ui.plugins
+            .PluginAdvancedScreen()
+    }
     entry<ConfigAdvancedScreen> { RawConfigScreen(onBack = { NavigationController.goBack() }) }
     entry<SettingsGoogleConnection> {
         com.m57.hermescontrol.ui.connections
@@ -713,10 +747,10 @@ fun MainNavigation(sessionId: String? = null) {
                                     overflow = TextOverflow.Ellipsis,
                                 )
                             },
-                            selected = currentScreen == AdvancedScreen,
+                            selected = currentScreen == SettingsScreen,
                             onClick = {
                                 scope.launch { drawerState.close() }
-                                NavigationController.navigateTo(AdvancedScreen)
+                                NavigationController.navigateTo(SettingsScreen)
                             },
                             colors = drawerItemColors,
                             modifier =
