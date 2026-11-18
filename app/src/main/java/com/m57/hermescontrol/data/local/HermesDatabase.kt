@@ -9,6 +9,8 @@ import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.execSQL
 import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
 
+internal const val HERMES_DATABASE_VERSION = 9
+
 @Database(
     entities = [
         ChatMessageEntity::class,

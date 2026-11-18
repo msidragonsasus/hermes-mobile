@@ -25,6 +25,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import java.io.File
@@ -112,6 +113,48 @@ class DatabasePreservationTest {
                     assertEquals(if (version >= 6) "timeline_marker" else null, row.displayKind)
                 } finally {
                     database.close()
+                }
+            }
+        }
+
+    @Test
+    fun installedVersionNineSchemaAndTranscriptStateRemainReadableAcrossReopen() =
+        runBlocking {
+            // The fixture is the schema shipped in the previously installed APK, not regenerated here.
+            val file = fixture(9)
+            SQLCipherDriver(key, null, null).open(file.path).use { connection ->
+                connection.execSQL(
+                    "INSERT INTO chat_transcript_state " +
+                        "(target_key,saved_session_id,write_epoch,revision,payload) " +
+                        "VALUES ('target','session',11,17,'SYNTHETIC_PRIVATE_transcript')",
+                )
+            }
+            repeat(2) {
+                val database = HermesDatabase.build(context, file.path, SQLCipherDriver(key, null, null))
+                try {
+                    assertEquals(
+                        "SYNTHETIC_PRIVATE_本文",
+                        database
+                            .chatMessageDao()
+                            .getMessagesForSession("session")
+                            .single()
+                            .content,
+                    )
+                } finally {
+                    database.close()
+                }
+            }
+            SQLCipherDriver(key, null, null).open(file.path).use { connection ->
+                connection.prepare("PRAGMA user_version").use {
+                    assertTrue(it.step())
+                    assertEquals(9L, it.getLong(0))
+                }
+                connection.prepare("SELECT write_epoch,revision,payload FROM chat_transcript_state").use {
+                    assertTrue(it.step())
+                    assertEquals(11L, it.getLong(0))
+                    assertEquals(17L, it.getLong(1))
+                    assertEquals("SYNTHETIC_PRIVATE_transcript", it.getText(2))
+                    assertFalse(it.step())
                 }
             }
         }

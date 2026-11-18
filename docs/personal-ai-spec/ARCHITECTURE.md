@@ -333,6 +333,10 @@ exact source/version beyond source-list limits. Both require the existing Dashbo
 `collection/source-resolved` records explicit App-side completion of a source; it never submits externally.
 
 SQLCipher Room v8 adds `home_items`, `home_reads`, `home_providers` through migration 7→8.
+Room v9 also retains the installed client's `chat_transcript_state` table with its
+target/session key, write epoch, revision and payload. Migration 8→9 only adds the
+table; it neither backfills provenance nor rewrites existing messages or transcript
+state. The supported-version guard uses the same version constant as `@Database`.
 Rows are server/profile scoped. Read receipts and visibility preferences survive feed replacement and
 are never added to GitHub sync. Home caches contain metadata only, not complete mail bodies or credentials.
 Chat completion metadata is stored from scoped WS events; unreceived completions are not reconstructed.
