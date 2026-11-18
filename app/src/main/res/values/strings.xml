@@ -1497,6 +1497,7 @@
   <string name="specialist_chat_routing_pending">Routing not published yet</string>
   <string name="specialist_chat_applied">Applied to Bot Chat (revision %1$d)</string>
   <string name="specialist_chat_waiting">Checking bot settings…</string>
+  <string name="specialist_chat_setup_required">Continue the initial setup in Bot Chat.</string>
   <string name="specialist_chat_open_canonical">Open Bot Chat</string>
   <string name="specialist_chat_edit">Edit settings in chat</string>
   <string name="specialist_chat_return_to_chat">Return to chat</string>

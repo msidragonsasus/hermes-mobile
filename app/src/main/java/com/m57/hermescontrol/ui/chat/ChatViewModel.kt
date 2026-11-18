@@ -630,6 +630,7 @@ class ChatViewModel(
         val streamVersion: Long = -1L,
         val snapshotStartedAt: Long = 0L,
         val resync: Boolean = false,
+        val createsBotChat: Boolean = false,
     )
 
     private val sessionRequestById = ConcurrentHashMap<String, SessionRequest>()
@@ -739,7 +740,7 @@ class ChatViewModel(
         val profile = BotConversations.activeProfile()
         val state = _uiState.value
         val sessionId = state.currentSessionId
-        if (isTestEnvironment() || profile == "default" || !state.isConnected ||
+        if (profile == "default" || wsClient.connectionStatus.value != ConnectionStatus.CONNECTED ||
             canonicalLookupJob?.isActive == true
         ) {
             return
@@ -748,25 +749,24 @@ class ChatViewModel(
         val epoch = AuthManager.connectionEpoch.value
         val setup = specialistChat.state.value.takeIf { it.target?.epoch == epoch && it.target.profile == profile }
         if (sessionId == null) {
-            if (setup?.legacy == true) openMainConversation()
+            if (setup?.legacy == true || setup?.capabilities?.supportsSetupChat == true) openMainConversation()
             return
         }
         val candidate =
             state.canonicalBotChatPending && state.canonicalBotChatId == sessionId &&
                 state.canonicalBotChatEpoch == epoch
+        if (!candidate && sessionId == state.canonicalBotChatId && state.canonicalBotChatEpoch == epoch) return
         val runtimeId = runtimeSessionId
         val scope = sessionScope
         canonicalLookupJob =
             viewModelScope.launch {
                 var lookup = runCatching { mainConversationResolver() }.getOrDefault(MainConversation.Unknown)
                 if (generation != sessionGeneration || AuthManager.connectionEpoch.value != epoch) return@launch
-                if (candidate && lookup == MainConversation.Absent && runtimeId != null && scope != null &&
-                    setup?.capabilities?.supportsSetupChat == true
-                ) {
-                    // Some gateways return a lazy row from session.create. Persist the title on that
-                    // same runtime session, then verify the storage key before any REST setup turn.
+                if (candidate && lookup == MainConversation.Absent && runtimeId != null && scope != null) {
+                    // The legacy gateway defers the row until a prompt, but setup turns use REST.
+                    // Explicitly title this runtime before waiting for any setup capability or snapshot.
                     runCatching {
-                        HermesWsClient
+                        wsClient
                             .setBotChatTitle(
                                 scope,
                                 runtimeId,
@@ -795,23 +795,35 @@ class ChatViewModel(
                         }
                     }
 
-                    candidate && setup?.legacy == true -> {
-                        _uiState.update { it.copy(canonicalBotChatPending = false) }
+                    candidate &&
+                        specialistChat.state.value.let {
+                            it.target?.epoch == epoch && it.target.profile == profile && it.legacy
+                        }
+                    -> {
+                        clearCanonicalBotChat()
                     }
                 }
             }
     }
 
-    internal fun blocksSpecialistRegularPrompt(): Boolean {
+    internal fun blocksSpecialistRegularPrompt(showFeedback: Boolean = false): Boolean {
+        val profile = AuthManager.activeProfileId.value
+        if (profile.isNullOrBlank() || profile == "default") return false
         val state = _uiState.value
-        if (state.currentSessionId != state.canonicalBotChatId || AuthManager.activeProfileId.value.isNullOrBlank() ||
-            AuthManager.activeProfileId.value == "default" || isTestEnvironment()
-        ) {
-            return false
+        val epoch = AuthManager.connectionEpoch.value
+        val setup = specialistChat.state.value.takeIf { it.target?.epoch == epoch && it.target.profile == profile }
+        val inBotChat = state.canonicalBotChatEpoch == epoch && state.currentSessionId == state.canonicalBotChatId
+        val initialSetup = setup?.snapshot?.setup_completed == false
+        val blocked =
+            setup == null || initialSetup || (inBotChat && setup.blocksNormalInput) ||
+                (!setup.legacy && !setup.missing && setup.snapshot == null) ||
+                (setup.pendingApply && setup.snapshot?.applied_revision == null)
+        if (blocked && showFeedback) {
+            val message =
+                if (initialSetup) R.string.specialist_chat_setup_required else R.string.specialist_chat_waiting
+            _uiState.update { it.copy(errorMessage = getApplication<Application>().getString(message)) }
         }
-        val specialty = specialistChat.state.value
-        return specialty.target?.epoch != AuthManager.connectionEpoch.value ||
-            specialty.target.profile != AuthManager.activeProfileId.value || specialty.blocksNormalInput
+        return blocked
     }
 
     private var canonicalLookupJob: Job? = null
@@ -1092,7 +1104,7 @@ class ChatViewModel(
     init {
         refreshDrafts()
         viewModelScope.launch {
-            combine(_uiState, wsClient.connectionStatus) { state, _ -> state }.collect {
+            combine(_uiState, wsClient.connectionStatus, specialistChat.state) { state, _, _ -> state }.collect {
                 drainOutgoingQueue()
             }
         }
@@ -1512,24 +1524,32 @@ class ChatViewModel(
 
     /** Exact-title lookup resolved to the live compression tip. Unit tests keep the legacy start. */
     internal var mainConversationResolver: suspend () -> MainConversation = {
-        if (isTestEnvironment()) {
+        if (isTestEnvironment() &&
+            specialistsRepositoryOverride == null
+        ) {
             MainConversation.Unknown
         } else {
-            withTimeoutOrNull(MAIN_CONVERSATION_LOOKUP_MS) {
-                val scope = HermesWsClient.connectionScope.value ?: return@withTimeoutOrNull MainConversation.Unknown
-                val result = HermesWsClient.readBotChat(scope, BOT_CHAT_TITLE, MAIN_CONVERSATION_LOOKUP_MS).await()
-                val sessions = (result.toJsonElement().toAny() as? Map<*, *>)?.get("sessions") as? List<*>
-                // An older server ignores `title` and lists everything: trust only the exact row.
-                val row = sessions?.filterIsInstance<Map<*, *>>()?.firstOrNull { it["title"] == BOT_CHAT_TITLE }
-                val id = ((row?.get("resolved_id") ?: row?.get("id")) as? String)?.takeIf(String::isNotBlank)
-                when {
-                    id != null -> MainConversation.Found(id)
-                    sessions != null && sessions.isEmpty() -> MainConversation.Absent
-                    else -> MainConversation.Unknown
-                }
-            } ?: MainConversation.Unknown
+            resolveMainConversation()
         }
     }
+
+    private suspend fun resolveMainConversation(): MainConversation =
+        withTimeoutOrNull(MAIN_CONVERSATION_LOOKUP_MS) {
+            val scope = wsClient.connectionScope.value ?: return@withTimeoutOrNull MainConversation.Unknown
+            val result = wsClient.readBotChat(scope, BOT_CHAT_TITLE, MAIN_CONVERSATION_LOOKUP_MS).await()
+            val sessions = (result.toJsonElement().toAny() as? Map<*, *>)?.get("sessions") as? List<*>
+            // The authority returns the tip's title separately from the root title.
+            val row =
+                sessions?.filterIsInstance<Map<*, *>>()?.firstOrNull {
+                    it["title"] == BOT_CHAT_TITLE || it["root_title"] == BOT_CHAT_TITLE
+                }
+            val id = ((row?.get("resolved_id") ?: row?.get("id")) as? String)?.takeIf(String::isNotBlank)
+            when {
+                id != null -> MainConversation.Found(id)
+                sessions != null && sessions.isEmpty() -> MainConversation.Absent
+                else -> MainConversation.Unknown
+            }
+        } ?: MainConversation.Unknown
 
     /** Returns from a past conversation to the main one (the drawer's first entry). */
     fun showMainConversation() {
@@ -1560,7 +1580,8 @@ class ChatViewModel(
     /**
      * A cold start with no explicit target continues the one main conversation instead of
      * minting a new session each launch (AUTONOMOUS_WORKER.md §8). A missing Bot Chat is
-     * created under that title; an unknown lookup falls back to a plain new session.
+     * created under its title. The default profile and older specialist servers can still
+     * open an untitled conversation on cold start if the lookup fails.
      * [replaceUnsaved] swaps out an untouched session that never reached the server.
      */
     private fun openMainConversation(
@@ -1615,11 +1636,11 @@ class ChatViewModel(
                     MainConversation.Unknown -> {
                         val profile = BotConversations.activeProfile()
                         val allowUntitled =
-                            profile == "default" || isTestEnvironment() ||
+                            profile == "default" ||
                                 specialistChat.state.value.let {
                                     it.legacy && it.target?.epoch == epoch && it.target.profile == profile
                                 }
-                        if (replaceUnsaved || (!userInitiated && allowUntitled)) {
+                        if (allowUntitled && (replaceUnsaved || !userInitiated)) {
                             createNewSession(setLoading = false)
                         }
                     }
@@ -2403,9 +2424,7 @@ class ChatViewModel(
                 bindNewSessionQueue(queuedOrigin, storageId)
                 // The gateway persists the row lazily on the first prompt —
                 // do not resume this key until presence is confirmed.
-                val isCanonical =
-                    canonicalCreateGeneration == sessionGeneration &&
-                        BotConversations.activeProfile() != "default"
+                val isCanonical = request?.createsBotChat == true && BotConversations.activeProfile() != "default"
                 canonicalCreateGeneration = null
                 sessionHasServerPresence = false
                 sessionGoneRecoveryInFlight = false
@@ -2418,7 +2437,7 @@ class ChatViewModel(
                         canonicalBotChatPending = isCanonical,
                         isLoading = false,
                         messages = if (pendingInitialPrompt != null) it.messages else emptyList(),
-                        chatTitle = "Hermes",
+                        chatTitle = if (isCanonical) BOT_CHAT_TITLE else "Hermes",
                         usedContextTokens = null,
                         fullContextTokens = null,
                         contextBreakdown = null,
@@ -2437,10 +2456,13 @@ class ChatViewModel(
                 ActiveSessionHolder.setScoped(runtimeId, storageId, sessionScope)
                 _streamingState.update { StreamingState() }
                 openTranscriptCache(storageId, sessionGeneration, load = false)
-                addSystemMessage("Session created", persist = true)
+                if (isCanonical) {
+                    verifySpecialistCanonical()
+                } else {
+                    addSystemMessage("Session created", persist = true)
+                }
                 loadSessions()
                 fetchContextUsage()
-
                 if (!isCanonical) drainPendingPrompts(storageId, runtimeId)
             }
 
@@ -2749,6 +2771,7 @@ class ChatViewModel(
         }
 
         if (method == WsMethods.SESSION_CREATE) {
+            canonicalCreateGeneration = null
             val pending = pendingInitialPrompt
             releasePendingInitialPrompt()
             if (pending != null) {
@@ -2791,7 +2814,7 @@ class ChatViewModel(
         text: String,
         steer: Boolean = false,
     ) {
-        if (blocksSpecialistRegularPrompt()) return
+        if (blocksSpecialistRegularPrompt(showFeedback = true)) return
         if (text.isBlank() && _uiState.value.pendingAttachments.isEmpty()) return
         val trimmed = text.trim()
         // PR06a: restored drafts contain literal prompt text, including /queue payloads.
@@ -2873,7 +2896,11 @@ class ChatViewModel(
     fun sendNativeAction(text: String): Boolean {
         // Connection status is merged into uiState asynchronously; read the live value here.
         val state = _uiState.value.copy(connectionStatus = wsClient.connectionStatus.value)
-        if (text.isBlank() || !canSendNativeAction(state) || blocksSpecialistRegularPrompt()) return false
+        if (text.isBlank() || !canSendNativeAction(state) ||
+            blocksSpecialistRegularPrompt(showFeedback = true)
+        ) {
+            return false
+        }
         val scope = sessionScope ?: submissionTransport.configuredScope() ?: return false
         if (!submissionTransport.isReady(scope) || runtimeSessionId == null ||
             (!queueExecutionIdle && !canRetryRefusedAdmission())
@@ -3790,7 +3817,8 @@ class ChatViewModel(
         runtimeId: String,
     ) {
         takePendingPrompts().forEach { pending ->
-            if (pending.generation == sessionGeneration && pending.draft.scope == sessionScope &&
+            if (!blocksSpecialistRegularPrompt() &&
+                pending.generation == sessionGeneration && pending.draft.scope == sessionScope &&
                 (pending.draft.savedSessionId == null || pending.draft.savedSessionId == storageId) &&
                 submissionTransport.isReady(pending.draft.scope)
             ) {
@@ -4527,7 +4555,7 @@ class ChatViewModel(
         queued: Boolean = false,
         redirect: Boolean = false,
     ) {
-        if (text.isBlank()) return
+        if (text.isBlank() || blocksSpecialistRegularPrompt(showFeedback = true)) return
         val wasStreaming = _uiState.value.isAgentTyping
         val turnOpening = openTurnLifecycle(awaitsAdmission = !redirect)
         _uiState.update { it.copy(isAgentTyping = true) }
@@ -4738,7 +4766,8 @@ class ChatViewModel(
         sessionHasServerPresence = false
         val generation = resetSessionState(sessionId = null, title = title ?: "Hermes", isLoading = setLoading)
         pendingCreateQueueOrigin = generation to queueOrigin
-        if (title == BOT_CHAT_TITLE) {
+        val createsBotChat = title == BOT_CHAT_TITLE
+        if (createsBotChat) {
             canonicalCreateGeneration = generation
             viewModelScope.launch {
                 delay(10_000L)
@@ -4751,7 +4780,9 @@ class ChatViewModel(
             wsClient.send(
                 WsMethods.SESSION_CREATE,
                 params = mapOf("source" to "desktop") + listOfNotNull(title?.let { "title" to it }),
-                onSent = { id -> trackSessionRequest(id, WsMethods.SESSION_CREATE, generation) },
+                onSent = { id ->
+                    trackSessionRequest(id, WsMethods.SESSION_CREATE, generation, createsBotChat = createsBotChat)
+                },
             )
         }
         // B7 safety timeout: clear loading state if RPC response never arrives
@@ -5592,6 +5623,7 @@ class ChatViewModel(
         queueTurnObserved = false
         pendingCreateQueueOrigin = null
         val generation = ++sessionGeneration
+        canonicalLookupJob?.cancel()
         if (BuildConfig.DEBUG) Log.d(TAG, "resetSession gen=$generation loading=$isLoading hasId=${sessionId != null}")
         todoHistoryMemo.clear()
         pendingTerminals.clear()
@@ -7070,6 +7102,7 @@ class ChatViewModel(
         resumeSequence: Long = 0L,
         sessionId: String? = null,
         streamVersion: Long = -1L,
+        createsBotChat: Boolean = false,
     ) {
         sessionRequestById[id] =
             SessionRequest(
@@ -7079,6 +7112,7 @@ class ChatViewModel(
                 submissionTransport.configuredScope(),
                 streamVersion,
                 snapshotStartedAt = wsClient.snapshotObservationOrdinal(),
+                createsBotChat = createsBotChat,
             )
         trackRequest(id, method)
     }

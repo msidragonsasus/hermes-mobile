@@ -6,14 +6,29 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import androidx.core.content.FileProvider
+import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.local.HermesDatabase
 import com.m57.hermescontrol.data.model.Attachment
 import com.m57.hermescontrol.data.model.AttachmentSource
+import com.m57.hermescontrol.data.model.CreateSpecialistRequest
+import com.m57.hermescontrol.data.model.CreateSpecialistResponse
+import com.m57.hermescontrol.data.model.SpecialistCapabilitiesResponse
+import com.m57.hermescontrol.data.model.SpecialistSetupApplyRequest
+import com.m57.hermescontrol.data.model.SpecialistSetupApplyResponse
+import com.m57.hermescontrol.data.model.SpecialistSetupConfirmRequest
+import com.m57.hermescontrol.data.model.SpecialistSetupDraft
+import com.m57.hermescontrol.data.model.SpecialistSetupMessage
+import com.m57.hermescontrol.data.model.SpecialistSetupSnapshot
+import com.m57.hermescontrol.data.model.SpecialistSetupTurn
+import com.m57.hermescontrol.data.model.SpecialistSetupTurnRequest
 import com.m57.hermescontrol.data.remote.ApiClient
 import com.m57.hermescontrol.data.remote.GatewayFile
 import com.m57.hermescontrol.data.remote.GatewayFileClient
 import com.m57.hermescontrol.data.remote.GatewayFileResult
+import com.m57.hermescontrol.data.remote.HermesApiService
+import com.m57.hermescontrol.data.remote.SpecialistApiOutcome
+import com.m57.hermescontrol.data.remote.SpecialistsRepository
 import com.m57.hermescontrol.data.session.ActiveSessionHolder
 import com.m57.hermescontrol.data.session.ProfileSwitchCoordinator
 import com.m57.hermescontrol.data.transport.HermesAttentionTransport
@@ -77,6 +92,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import retrofit2.Response
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ChatViewModelTest {
@@ -1067,6 +1083,7 @@ class ChatViewModelTest {
         startCleanup: Boolean = false,
         transport: com.m57.hermescontrol.data.transport.HermesSubmissionTransport = fakeSubmission,
         realTokenBuffering: Boolean = false,
+        specialistsRepository: SpecialistsRepository? = null,
     ): ChatViewModel =
         // Both dispatchers injected — a real ioDispatcher would race the
         // test scheduler (repo writes hop it) and shuffle RPC ordering.
@@ -1083,6 +1100,7 @@ class ChatViewModelTest {
             clock = { fixtureClock },
             streamingTestEnvironment = if (realTokenBuffering) ({ false }) else null,
             streamingTokenClock = { fixtureClock },
+            specialistsRepositoryOverride = specialistsRepository,
         )
 
     /**
@@ -7015,6 +7033,164 @@ class ChatViewModelTest {
                 )
             }
             assertEquals(ChatViewModel.BOT_CHAT_TITLE, viewModel.uiState.value.chatTitle)
+        }
+
+    @Test
+    fun newSpecialistPersistsLazyBotChatBeforeSetupAndBlocksOrdinarySend() =
+        runTest {
+            val profile = "bot-test"
+            val title = ChatViewModel.BOT_CHAT_TITLE
+            val target = SpecialistChatTarget("test-connection-profile", 2L, profile)
+            val greeting = SpecialistSetupMessage("greeting", "assistant", "どんなテーマを調べましょうか？")
+            var snapshot = SpecialistSetupSnapshot(profile, greeting = greeting)
+            val draft = SpecialistSetupDraft("draft", description = "技術調査")
+            val api = mockk<HermesApiService>()
+            val repository = SpecialistsRepository { api }
+            val create = CreateSpecialistRequest(title = "調査bot", request_id = "create-fixture")
+            val capabilities = CompletableDeferred<Unit>()
+            val titled = CompletableDeferred<Any?>()
+            var createId = ""
+            coEvery { api.createSpecialist(create, any()) } returns
+                Response.success(CreateSpecialistResponse(profile, setup = snapshot))
+            coEvery { api.getSpecialistCapabilities(any()) } coAnswers {
+                capabilities.await()
+                Response.success(SpecialistCapabilitiesResponse(setup_conversation = true, setup_apply = true))
+            }
+            coEvery { api.getSpecialistSetup(profile, any()) } answers { Response.success(snapshot) }
+            every { AuthManager.activeProfileId } returns MutableStateFlow(profile)
+            every { AuthManager.connectionEpoch } returns MutableStateFlow(target.epoch)
+            every { AuthManager.readSpecialistRequest(any()) } returns null
+            every { AuthManager.writeSpecialistRequest(any(), any()) } returns Unit
+            every { app.getString(R.string.specialist_chat_setup_required) } returns "Bot Chatで初期設定を続けてください。"
+            val scope = fakeSubmission.scope.copy(serverProfileId = profile)
+            fakeSubmission.scope = scope
+            every { HermesWsClient.connectionScope } returns MutableStateFlow(scope)
+            every { HermesWsClient.readBotChat(scope, title, any()) } answers {
+                val sessions =
+                    if (titled.isCompleted) {
+                        listOf(
+                            mapOf("title" to title, "resolved_id" to "saved"),
+                        )
+                    } else {
+                        emptyList()
+                    }
+                CompletableDeferred<Any?>(mapOf("sessions" to sessions))
+            }
+            every { HermesWsClient.setBotChatTitle(scope, "runtime", title, any()) } returns titled
+            every {
+                HermesWsClient.send(WsMethods.SESSION_CREATE, mapOf("source" to "desktop", "title" to title), any())
+            } answers {
+                createId = "create-bot-chat"
+                arg<(String) -> Unit>(2).invoke(createId)
+                createId
+            }
+
+            val created = repository.createSpecialist(create, target.requestScope) as SpecialistApiOutcome.Success
+            val viewModel = createViewModel(specialistsRepository = repository)
+            runCurrent()
+            viewModel.specialistChat.bind(target, null, created.data.setup)
+            mockConnectionStatus.value = ConnectionStatus.CONNECTED
+            emitEvent(WsEvent.GatewayReady(null))
+            runCurrent()
+            assertEquals("create-bot-chat", createId)
+            advanceTimeBy(10_001)
+            emitEvent(WsEvent.RpcResult(createId, mapOf("session_id" to "runtime", "stored_session_id" to "saved")))
+            runCurrent()
+
+            verify(exactly = 1) { HermesWsClient.setBotChatTitle(scope, "runtime", title, any()) }
+            assertTrue(viewModel.uiState.value.canonicalBotChatPending)
+            viewModel.sendMessage("通常経路では送らない")
+            runCurrent()
+            assertEquals("Bot Chatで初期設定を続けてください。", viewModel.uiState.value.errorMessage)
+            assertFalse(viewModel.specialistChat.submit("IDを確認するまで待つ"))
+            assertEquals(
+                listOf(
+                    greeting.content,
+                ),
+                viewModel.specialistChat.state.value.projectMessages(emptyList()).map {
+                    it.content
+                },
+            )
+
+            titled.complete(mapOf("title" to title, "pending" to false))
+            runCurrent()
+            val chat = viewModel.uiState.value
+            assertEquals("saved", chat.currentSessionId)
+            assertEquals("saved", chat.canonicalBotChatId)
+            assertFalse(chat.canonicalBotChatPending)
+            assertFalse(chat.messages.any { it.content == "Session created" })
+            viewModel.bindSpecialistChat(target, chat.canonicalBotChatId)
+            capabilities.complete(Unit)
+            runCurrent()
+
+            coEvery { api.sendSpecialistSetupTurn(profile, any(), any()) } answers {
+                val request = secondArg<SpecialistSetupTurnRequest>()
+                assertEquals("saved", request.session_id)
+                assertEquals("setup", request.mode)
+                assertEquals(0, request.expected_revision)
+                assertEquals(0, request.expected_conversation_revision)
+                val turn =
+                    SpecialistSetupTurn(
+                        request.request_id,
+                        request.session_id,
+                        conversation_revision = 1,
+                        revision = 1,
+                        user = SpecialistSetupMessage("user", "user", request.text),
+                        assistant = SpecialistSetupMessage("answer", "assistant", "設定案を作りました。"),
+                        card = draft,
+                    )
+                snapshot =
+                    snapshot.copy(
+                        revision = 1,
+                        conversation_revision = 1,
+                        draft = draft,
+                        conversation_turns = listOf(turn),
+                    )
+                Response.success(turn)
+            }
+            assertTrue(viewModel.specialistChat.submit("技術調査を担当して"))
+            runCurrent()
+            assertEquals(draft, viewModel.specialistChat.state.value.activeDraft)
+            assertTrue(
+                viewModel.specialistChat.state.value.projectMessages(emptyList()).any {
+                    it.id ==
+                        SPECIALIST_SETUP_REVIEW
+                },
+            )
+
+            coEvery { api.confirmSpecialistSetup(profile, any(), any()) } answers {
+                assertEquals(1, secondArg<SpecialistSetupConfirmRequest>().expected_revision)
+                assertEquals(draft.id, secondArg<SpecialistSetupConfirmRequest>().draft_id)
+                snapshot =
+                    snapshot.copy(
+                        setup_completed = true,
+                        revision = 2,
+                        settings_revision = 2,
+                        activation = "pending_apply",
+                    )
+                Response.success(snapshot)
+            }
+            viewModel.specialistChat.confirm(draft.id, 1)
+            runCurrent()
+            assertTrue(viewModel.specialistChat.state.value.pendingApply)
+            assertTrue(viewModel.blocksSpecialistRegularPrompt())
+
+            coEvery { api.applySpecialistSetup(profile, any(), any()) } answers {
+                val request = secondArg<SpecialistSetupApplyRequest>()
+                assertEquals("saved", request.session_id)
+                assertEquals(2, request.expected_revision)
+                snapshot = snapshot.copy(activation = "applied", applied_revision = 2, routing_ready = true)
+                Response.success(SpecialistSetupApplyResponse("applied", request.session_id, 2, 2))
+            }
+            viewModel.specialistChat.apply()
+            runCurrent()
+            assertFalse(viewModel.blocksSpecialistRegularPrompt())
+            assertTrue(
+                viewModel.specialistChat.state.value.snapshot
+                    ?.routing_ready == true,
+            )
+            verify(exactly = 1) { HermesWsClient.send(WsMethods.SESSION_CREATE, any(), any()) }
+            verify(exactly = 0) { HermesWsClient.sendMessage(any(), any(), any(), any()) }
         }
 
     @Test

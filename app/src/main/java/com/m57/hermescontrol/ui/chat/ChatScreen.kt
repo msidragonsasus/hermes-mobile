@@ -474,20 +474,20 @@ fun ChatScreen(
     val setupState by setupController.state.collectAsStateWithLifecycle()
     val setupTarget =
         if (epoch % 2 == 0L && activeProfileId == activeProfileName && activeProfileName != "default") {
-            SpecialistChatTarget(AuthManager.uiPreferenceScope(), epoch, activeProfileName).takeIf {
-                state.currentSessionId == null || state.currentSessionId == verifiedBotChat ||
-                    (setupState.target == it && setupState.legacy)
-            }
+            SpecialistChatTarget(AuthManager.uiPreferenceScope(), epoch, activeProfileName)
         } else {
             null
         }
-    val specialist = setupState.takeIf { setupTarget != null && it.target == setupTarget }
+    val inSpecialistBotChat =
+        setupTarget != null && (state.currentSessionId == null || state.currentSessionId == verifiedBotChat)
+    val profileSetup = setupState.takeIf { setupTarget != null && it.target == setupTarget }
+    val specialist = profileSetup.takeIf { inSpecialistBotChat }
     val specialistKnown = activeAgent?.setup_completed != null || activeAgent?.botMeta()?.setup_completed != null
-    val setupUnsupported = specialist?.legacy == true
+    val setupUnsupported = profileSetup?.legacy == true
     val specialDrafts = remember { mutableStateMapOf<String, TextFieldValue>() }
     val setupKey = setupTarget?.scope.orEmpty()
     val setupComposer =
-        setupTarget != null && !setupUnsupported &&
+        inSpecialistBotChat && !setupUnsupported &&
             (specialist?.blocksNormalInput != false || (specialistKnown && specialist.missing))
     val readyForSetup = state.isConnected && !state.isLoading && specialist?.sessionId != null
     val canChangeSetup = readyForSetup && !state.isAgentTyping && !state.responseStatusUnknown
@@ -513,7 +513,7 @@ fun ChatScreen(
         epoch,
         state.currentSessionId,
         state.isConnected,
-        specialist?.capabilities,
+        profileSetup?.capabilities,
         setupUnsupported,
     ) {
         viewModel.verifySpecialistCanonical()
@@ -550,8 +550,8 @@ fun ChatScreen(
         onDispose { viewModel.refreshSpecialistRoster = {} }
     }
     val pendingSetupBot = NavigationController.pendingSpecialistSetupBot
-    LaunchedEffect(activeProfileName, pendingSetupBot, specialist?.capabilities, setupUnsupported) {
-        if (activeProfileName != "default" && (setupUnsupported || specialist?.capabilities != null) &&
+    LaunchedEffect(activeProfileName, pendingSetupBot, profileSetup?.capabilities, setupUnsupported) {
+        if (activeProfileName != "default" && (setupUnsupported || profileSetup?.capabilities != null) &&
             NavigationController.consumePendingSpecialistSetup(activeProfileName) && setupUnsupported
         ) {
             setupSheetProfile = activeProfileName
@@ -701,7 +701,7 @@ fun ChatScreen(
                                 specialDrafts.remove(setupKey)
                                 scrollController.jumpToBottom(animated = true)
                             }
-                        } else if (!viewModel.blocksSpecialistRegularPrompt()) {
+                        } else if (!viewModel.blocksSpecialistRegularPrompt(showFeedback = true)) {
                             viewModel.sendMessage(inputFieldValue.text)
                             inputFieldValue = TextFieldValue("")
                             scrollController.jumpToBottom(animated = true)
@@ -763,7 +763,7 @@ fun ChatScreen(
                             !state.responseStatusUnknown && state.pendingAttachments.isEmpty()
                         ) {
                             {
-                                if (!viewModel.blocksSpecialistRegularPrompt()) {
+                                if (!viewModel.blocksSpecialistRegularPrompt(showFeedback = true)) {
                                     viewModel.sendMessage(inputFieldValue.text, steer = true)
                                     inputFieldValue = TextFieldValue("")
                                     scrollController.jumpToBottom(animated = true)
