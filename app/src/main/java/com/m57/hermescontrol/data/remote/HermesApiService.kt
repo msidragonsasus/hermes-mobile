@@ -114,9 +114,13 @@ import com.m57.hermescontrol.data.model.SkillHubSourcesResponse
 import com.m57.hermescontrol.data.model.SkillHubUninstallRequest
 import com.m57.hermescontrol.data.model.SkillScanResponse
 import com.m57.hermescontrol.data.model.SpecialistCapabilitiesResponse
+import com.m57.hermescontrol.data.model.SpecialistSetupApplyRequest
+import com.m57.hermescontrol.data.model.SpecialistSetupApplyResponse
 import com.m57.hermescontrol.data.model.SpecialistSetupConfirmRequest
 import com.m57.hermescontrol.data.model.SpecialistSetupDraftRequest
 import com.m57.hermescontrol.data.model.SpecialistSetupSnapshot
+import com.m57.hermescontrol.data.model.SpecialistSetupTurn
+import com.m57.hermescontrol.data.model.SpecialistSetupTurnRequest
 import com.m57.hermescontrol.data.model.SpecialistTemplatesResponse
 import com.m57.hermescontrol.data.model.StatusResponse
 import com.m57.hermescontrol.data.model.SystemStatsResponse
@@ -161,6 +165,7 @@ import retrofit2.http.Part
 import retrofit2.http.Path
 import retrofit2.http.Query
 import retrofit2.http.Streaming
+import retrofit2.http.Tag
 
 interface HermesApiService {
     @GET("api/connections/slack/status")
@@ -812,7 +817,9 @@ interface HermesApiService {
 
     // ── Specialists Setup & Parallel Brainstorms (M5 Step 3–4) ────────
     @GET("api/specialists/capabilities")
-    suspend fun getSpecialistCapabilities(): Response<SpecialistCapabilitiesResponse>
+    suspend fun getSpecialistCapabilities(
+        @Tag scope: SpecialistRequestScope? = null,
+    ): Response<SpecialistCapabilitiesResponse>
 
     @GET("api/specialists/templates")
     suspend fun getSpecialistTemplates(): Response<SpecialistTemplatesResponse>
@@ -820,11 +827,13 @@ interface HermesApiService {
     @POST("api/specialists")
     suspend fun createSpecialist(
         @Body body: CreateSpecialistRequest,
+        @Tag scope: SpecialistRequestScope? = null,
     ): Response<CreateSpecialistResponse>
 
     @GET("api/specialists/{name}/setup")
     suspend fun getSpecialistSetup(
         @Path("name") name: String,
+        @Tag scope: SpecialistRequestScope? = null,
     ): Response<SpecialistSetupSnapshot>
 
     @POST("api/specialists/{name}/setup/draft")
@@ -833,10 +842,32 @@ interface HermesApiService {
         @Body body: SpecialistSetupDraftRequest,
     ): Response<SpecialistSetupSnapshot>
 
+    @POST("api/specialists/{name}/setup/turns")
+    suspend fun sendSpecialistSetupTurn(
+        @Path("name") name: String,
+        @Body body: SpecialistSetupTurnRequest,
+        @Tag scope: SpecialistRequestScope? = null,
+    ): Response<SpecialistSetupTurn>
+
+    @POST("api/specialists/{name}/setup/edit-confirm")
+    suspend fun confirmSpecialistEdit(
+        @Path("name") name: String,
+        @Body body: SpecialistSetupConfirmRequest,
+        @Tag scope: SpecialistRequestScope? = null,
+    ): Response<SpecialistSetupSnapshot>
+
+    @POST("api/specialists/{name}/setup/apply")
+    suspend fun applySpecialistSetup(
+        @Path("name") name: String,
+        @Body body: SpecialistSetupApplyRequest,
+        @Tag scope: SpecialistRequestScope? = null,
+    ): Response<SpecialistSetupApplyResponse>
+
     @POST("api/specialists/{name}/setup/confirm")
     suspend fun confirmSpecialistSetup(
         @Path("name") name: String,
         @Body body: SpecialistSetupConfirmRequest,
+        @Tag scope: SpecialistRequestScope? = null,
     ): Response<SpecialistSetupSnapshot>
 
     @GET("api/specialists/brainstorms")

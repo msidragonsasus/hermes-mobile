@@ -308,6 +308,19 @@ object AuthManager {
         check(editor.commit()) { "画面の設定を保存できません。" }
     }
 
+    internal fun readSpecialistRequest(scope: String): String? =
+        requirePrefs().getString("specialist-request:$scope", null)
+
+    internal fun writeSpecialistRequest(
+        scope: String,
+        payload: String?,
+    ) {
+        val editor = requirePrefs().edit()
+        val key = "specialist-request:$scope"
+        if (payload == null) editor.remove(key) else editor.putString(key, payload)
+        check(editor.commit())
+    }
+
     /**
      * True when the active connection profile authenticated against a gated
      * dashboard (non-loopback bind → session-cookie auth) instead of loopback

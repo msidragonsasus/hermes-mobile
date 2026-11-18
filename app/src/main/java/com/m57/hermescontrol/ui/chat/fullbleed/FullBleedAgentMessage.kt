@@ -65,6 +65,7 @@ internal fun FullBleedAgentMessage(
     showTimestamp: Boolean = true,
     showFooter: Boolean = true,
     actionMessage: ChatMessage = message,
+    allowInteractiveContent: Boolean = true,
 ) {
     val textColor = MaterialTheme.colorScheme.onSurface
     var localImage by remember { mutableStateOf<ImageViewerModel?>(null) }
@@ -108,6 +109,7 @@ internal fun FullBleedAgentMessage(
                     isCurrentMatch = isCurrentMatch,
                     onImageClick = openImage,
                     onOpenAttachment = onOpenAttachment,
+                    allowInteractiveContent = allowInteractiveContent,
                 )
             }
 

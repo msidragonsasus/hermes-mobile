@@ -4,9 +4,24 @@ import com.m57.hermescontrol.BuildConfig
 import com.m57.hermescontrol.data.local.AuthManager
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Request
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
+import java.io.IOException
+
+internal fun Request.isCurrentSpecialistRequest(): Boolean {
+    val scope = tag(SpecialistRequestScope::class.java) ?: return true
+    val currentEpoch = AuthManager.connectionEpoch.value
+    if (scope.epoch != currentEpoch || currentEpoch % 2 != 0L) return false
+    val base = runCatching { AuthManager.endpointForBuild().baseUrl }.getOrNull() ?: return false
+    return url.scheme == base.scheme && url.host == base.host && url.port == base.port &&
+        url.encodedPath.startsWith(base.encodedPath) && AuthManager.connectionEpoch.value == scope.epoch
+}
+
+private fun Request.requireCurrentSpecialistRequest() {
+    if (!isCurrentSpecialistRequest()) throw IOException("Specialist connection changed")
+}
 
 /**
  * Provides a Retrofit-backed [HermesApiService].
@@ -102,11 +117,13 @@ object ApiClient {
         val authInterceptor =
             Interceptor { chain ->
                 val request = chain.request()
+                request.requireCurrentSpecialistRequest()
                 if (AuthManager.isGatedMode()) {
                     // Cookie in the shared jar is the only valid REST credential.
                     return@Interceptor chain.proceed(request)
                 }
                 val token = AuthManager.getToken()
+                request.requireCurrentSpecialistRequest()
                 if (!token.isNullOrBlank()) {
                     chain.proceed(
                         request
@@ -126,7 +143,10 @@ object ApiClient {
                 .addInterceptor(authInterceptor)
                 .addInterceptor(ProfileScopeInterceptor)
                 .addInterceptor(logging)
-                .authenticator(TokenRefreshAuthenticator)
+                .addNetworkInterceptor { chain ->
+                    chain.request().requireCurrentSpecialistRequest()
+                    chain.proceed(chain.request())
+                }.authenticator(TokenRefreshAuthenticator)
                 .build()
 
         val rf =

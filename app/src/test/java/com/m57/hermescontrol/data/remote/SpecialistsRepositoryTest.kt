@@ -141,6 +141,29 @@ class SpecialistsRepositoryTest {
         }
 
     @Test
+    fun createWithJapaneseTitleOmitsNameAndKeepsStableGreeting() =
+        runTest {
+            val payload =
+                """{"name":"bot-0123","setup":{"name":"bot-0123","greeting":{"id":"specialist-greeting:bot-0123","role":"assistant","content":"何を担当しますか？"}}}"""
+            val request = CreateSpecialistRequest(title = "調査係", request_id = "create-setup-001")
+            repeat(2) {
+                server.enqueue(MockResponse().setResponseCode(200).setBody(payload))
+                val created = repo.createSpecialist(request) as SpecialistApiOutcome.Success
+                assertEquals("bot-0123", created.data.name)
+                assertEquals(
+                    "何を担当しますか？",
+                    created.data.setup
+                        ?.greeting
+                        ?.content,
+                )
+                assertEquals(
+                    """{"title":"調査係","request_id":"create-setup-001"}""",
+                    server.takeRequest().body.readUtf8(),
+                )
+            }
+        }
+
+    @Test
     fun setupDraftConfirmAndErrorsPreserveStructuredOutcomes() =
         runTest {
             server.enqueue(

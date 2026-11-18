@@ -72,6 +72,8 @@ import com.m57.hermescontrol.data.model.UpdateProfileSoulRequest
 import com.m57.hermescontrol.data.remote.ApiClient
 import com.m57.hermescontrol.data.remote.NetworkResult
 import com.m57.hermescontrol.data.remote.SpecialistApiOutcome
+import com.m57.hermescontrol.data.remote.SpecialistCapabilitiesState
+import com.m57.hermescontrol.data.remote.SpecialistRequestScope
 import com.m57.hermescontrol.data.remote.SpecialistsRepository
 import com.m57.hermescontrol.data.remote.safeApiCall
 import com.m57.hermescontrol.ui.bots.BotsViewModel
@@ -373,6 +375,8 @@ internal fun BotDetailScreen(
 ) {
     val state by detailViewModel.uiState.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val specialistRepository = remember { SpecialistsRepository() }
     var activeEditor by remember { mutableStateOf<DetailEditorSheet?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
@@ -870,9 +874,48 @@ internal fun BotDetailScreen(
                                     Spacer(Modifier.width(6.dp))
                                     Text(stringResource(R.string.specialist_detail_open_chat))
                                 }
-                                if (setupIncomplete) {
+                                if (setupIncomplete || state.setupSnapshot?.activation == "pending_apply") {
                                     OutlinedButton(
-                                        onClick = { activeEditor = DetailEditorSheet.SETUP },
+                                        onClick = {
+                                            val epoch = AuthManager.connectionEpoch.value
+                                            scope.launch {
+                                                val capabilities =
+                                                    specialistRepository.fetchCapabilities(
+                                                        SpecialistRequestScope(epoch),
+                                                    )
+                                                if (epoch != AuthManager.connectionEpoch.value) return@launch
+                                                when (capabilities) {
+                                                    is SpecialistCapabilitiesState.Supported -> {
+                                                        if (capabilities.capabilities.supportsSetupChat) {
+                                                            if (!BotConversations.openSpecialist(bot.name)) {
+                                                                android.widget.Toast
+                                                                    .makeText(
+                                                                        context,
+                                                                        R.string.specialist_chat_unavailable,
+                                                                        android.widget.Toast.LENGTH_SHORT,
+                                                                    ).show()
+                                                            }
+                                                        } else {
+                                                            activeEditor = DetailEditorSheet.SETUP
+                                                        }
+                                                    }
+
+                                                    is SpecialistCapabilitiesState.LegacyUnsupported -> {
+                                                        activeEditor =
+                                                            DetailEditorSheet.SETUP
+                                                    }
+
+                                                    else -> {
+                                                        android.widget.Toast
+                                                            .makeText(
+                                                                context,
+                                                                R.string.specialist_chat_unavailable,
+                                                                android.widget.Toast.LENGTH_SHORT,
+                                                            ).show()
+                                                    }
+                                                }
+                                            }
+                                        },
                                         modifier = Modifier.testTag("detail_open_setup"),
                                     ) {
                                         Text(stringResource(R.string.specialist_setup_open_action))

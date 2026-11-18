@@ -956,6 +956,25 @@ object HermesWsClient {
         timeoutMs: Long = 5_000L,
     ): CompletableDeferred<Any?> = requestFixedScope(scope, WsMethods.SESSION_LIST, emptyMap(), timeoutMs)
 
+    internal fun readBotChat(
+        scope: ConnectionScope,
+        title: String,
+        timeoutMs: Long,
+    ): CompletableDeferred<Any?> = requestFixedScope(scope, WsMethods.SESSION_LIST, mapOf("title" to title), timeoutMs)
+
+    internal fun setBotChatTitle(
+        scope: ConnectionScope,
+        runtimeSessionId: String,
+        title: String,
+        timeoutMs: Long,
+    ): CompletableDeferred<Any?> =
+        requestFixedScope(
+            scope,
+            WsMethods.SESSION_TITLE,
+            mapOf("session_id" to runtimeSessionId, "title" to title),
+            timeoutMs,
+        )
+
     /** Read-only live turn roster (`session.active_list`) on the fixed scope; never resumes or queues. */
     fun readActiveSessions(
         scope: ConnectionScope,

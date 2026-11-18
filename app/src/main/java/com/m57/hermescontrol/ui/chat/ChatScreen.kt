@@ -44,10 +44,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -257,35 +259,6 @@ fun ChatScreen(
 
     val thinkingIndicatorVisible = showsThinkingIndicator(state, streamingState)
 
-    // Drive follow + unseen tracking from a stable tail-content key covering
-    // messages, streaming, thinking, subagent cards, and clarify prompts
-    // (issue #682). Replaces the old item-count heuristic that ignored the
-    // streaming tail.
-    LaunchedEffect(
-        state.messages,
-        streamingState.streamingMessage,
-        thinkingIndicatorVisible,
-        state.subagentIndicators,
-        state.todos,
-        state.clarifyRequest,
-    ) {
-        scrollController.onTailChanged(
-            tailKey =
-                tailContentKey(
-                    messages = state.messages,
-                    streamingMessage = streamingState.streamingMessage,
-                    isThinking = thinkingIndicatorVisible,
-                    subagentIndicators = state.subagentIndicators,
-                    clarifyRequest = state.clarifyRequest,
-                ),
-            messageCount = state.messages.size,
-        )
-    }
-    val showScrollToBottom by remember {
-        derivedStateOf {
-            scrollController.showFab(state.messages.isNotEmpty())
-        }
-    }
     var inputFieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(""))
     }
@@ -495,9 +468,92 @@ fun ChatScreen(
     val activeAgent = botsState.profiles.firstOrNull { it.name == activeProfileName }
     val activeTitle = activeAgent?.agentLabel() ?: BotConversations.label(activeProfileName) ?: "Hermes"
     var setupSheetProfile by rememberSaveable { mutableStateOf<String?>(null) }
+    val epoch by AuthManager.connectionEpoch.collectAsStateWithLifecycle()
+    val verifiedBotChat = state.canonicalBotChatId.takeIf { state.canonicalBotChatEpoch == epoch }
+    val setupController = viewModel.specialistChat
+    val setupState by setupController.state.collectAsStateWithLifecycle()
+    val setupTarget =
+        if (epoch % 2 == 0L && activeProfileId == activeProfileName && activeProfileName != "default") {
+            SpecialistChatTarget(AuthManager.uiPreferenceScope(), epoch, activeProfileName).takeIf {
+                state.currentSessionId == null || state.currentSessionId == verifiedBotChat ||
+                    (setupState.target == it && setupState.legacy)
+            }
+        } else {
+            null
+        }
+    val specialist = setupState.takeIf { setupTarget != null && it.target == setupTarget }
+    val specialistKnown = activeAgent?.setup_completed != null || activeAgent?.botMeta()?.setup_completed != null
+    val setupUnsupported = specialist?.legacy == true
+    val specialDrafts = remember { mutableStateMapOf<String, TextFieldValue>() }
+    val setupKey = setupTarget?.scope.orEmpty()
+    val setupComposer =
+        setupTarget != null && !setupUnsupported &&
+            (specialist?.blocksNormalInput != false || (specialistKnown && specialist.missing))
+    val readyForSetup = state.isConnected && !state.isLoading && specialist?.sessionId != null
+    val canChangeSetup = readyForSetup && !state.isAgentTyping && !state.responseStatusUnknown
+    val visibleMessages =
+        remember(state.messages, specialist, specialistKnown) {
+            specialist?.takeIf { !it.legacy && (!it.missing || specialistKnown) }?.projectMessages(state.messages)
+                ?: state.messages
+        }
+    LaunchedEffect(
+        setupTarget,
+        state.currentSessionId,
+        verifiedBotChat,
+        state.canonicalBotChatPending,
+        state.isConnected,
+    ) {
+        viewModel.bindSpecialistChat(
+            setupTarget,
+            verifiedBotChat.takeIf { it == state.currentSessionId && !state.canonicalBotChatPending },
+        )
+    }
+    LaunchedEffect(
+        activeProfileName,
+        epoch,
+        state.currentSessionId,
+        state.isConnected,
+        specialist?.capabilities,
+        setupUnsupported,
+    ) {
+        viewModel.verifySpecialistCanonical()
+    }
+    val hasSetupFooter =
+        specialist != null && !specialist.legacy &&
+            (!specialist.missing || specialistKnown) && specialist.showsFooter
+    val settingsTail = specialist?.let { Triple(it.activeDraft?.id, it.snapshot?.activation, hasSetupFooter) }
+    LaunchedEffect(
+        visibleMessages,
+        settingsTail,
+        streamingState.streamingMessage,
+        thinkingIndicatorVisible,
+        state.subagentIndicators,
+        state.todos,
+        state.clarifyRequest,
+    ) {
+        val tailKey =
+            tailContentKey(
+                messages = visibleMessages,
+                streamingMessage = streamingState.streamingMessage,
+                isThinking = thinkingIndicatorVisible,
+                subagentIndicators = state.subagentIndicators,
+                clarifyRequest = state.clarifyRequest,
+            )
+        scrollController.onTailChanged(settingsTail to tailKey, messageCount = visibleMessages.size)
+    }
+    val hasTimelineContent = visibleMessages.isNotEmpty() || hasSetupFooter
+    val showScrollToBottom by remember(scrollController, hasTimelineContent) {
+        derivedStateOf { scrollController.showFab(hasTimelineContent) }
+    }
+    DisposableEffect(viewModel, botsViewModel) {
+        viewModel.refreshSpecialistRoster = { botsViewModel.loadBots(isRefresh = true) }
+        onDispose { viewModel.refreshSpecialistRoster = {} }
+    }
     val pendingSetupBot = NavigationController.pendingSpecialistSetupBot
-    LaunchedEffect(activeProfileName, pendingSetupBot, state.currentSessionId) {
-        if (activeProfileName != "default" && NavigationController.consumePendingSpecialistSetup(activeProfileName)) {
+    LaunchedEffect(activeProfileName, pendingSetupBot, specialist?.capabilities, setupUnsupported) {
+        if (activeProfileName != "default" && (setupUnsupported || specialist?.capabilities != null) &&
+            NavigationController.consumePendingSpecialistSetup(activeProfileName) && setupUnsupported
+        ) {
             setupSheetProfile = activeProfileName
         }
     }
@@ -630,13 +686,26 @@ fun ChatScreen(
                 }
 
                 ChatInputBar(
-                    inputFieldValue = inputFieldValue,
-                    onInputChange = { inputFieldValue = it },
+                    inputFieldValue =
+                        if (setupComposer) {
+                            specialDrafts[setupKey] ?: TextFieldValue()
+                        } else {
+                            inputFieldValue
+                        },
+                    onInputChange = {
+                        if (setupComposer) specialDrafts[setupKey] = it else inputFieldValue = it
+                    },
                     onSend = {
-                        viewModel.sendMessage(inputFieldValue.text)
-                        inputFieldValue = TextFieldValue("")
-                        // Jump to bottom after send (serialized through the controller).
-                        scrollController.jumpToBottom(animated = true)
+                        if (setupComposer) {
+                            if (readyForSetup && setupController.submit(specialDrafts[setupKey]?.text.orEmpty())) {
+                                specialDrafts.remove(setupKey)
+                                scrollController.jumpToBottom(animated = true)
+                            }
+                        } else if (!viewModel.blocksSpecialistRegularPrompt()) {
+                            viewModel.sendMessage(inputFieldValue.text)
+                            inputFieldValue = TextFieldValue("")
+                            scrollController.jumpToBottom(animated = true)
+                        }
                     },
                     onMicTap = {
                         if (isListening) {
@@ -671,16 +740,34 @@ fun ChatScreen(
                             }
                         }
                     },
-                    queueOnSend = state.isAgentTyping || state.responseStatusUnknown || !state.isConnected,
-                    allowOfflineQueue = true,
+                    queueOnSend =
+                        !setupComposer && (state.isAgentTyping || state.responseStatusUnknown || !state.isConnected),
+                    allowOfflineQueue = !setupComposer,
+                    attachmentsEnabled = !setupComposer,
+                    microphoneEnabled = !setupComposer,
+                    showAttachmentButton = !setupComposer,
+                    showModelControls = !setupComposer,
+                    showCommandSuggestions = !setupComposer,
+                    showSendWhenEmpty = setupComposer,
+                    inputEnabled = if (setupComposer) specialist?.turnMode != null else state.isConnected,
+                    sendEnabled =
+                        !setupComposer || (readyForSetup && specialist?.canAct == true && specialist.turnMode != null),
+                    inputPlaceholder =
+                        if (setupComposer && specialist?.turnMode == "edit") {
+                            stringResource(R.string.specialist_chat_edit_prompt)
+                        } else {
+                            null
+                        },
                     onSteer =
-                        if (state.isConnected && state.isAgentTyping && !state.responseStatusUnknown &&
-                            state.pendingAttachments.isEmpty()
+                        if (!setupComposer && state.isConnected && state.isAgentTyping &&
+                            !state.responseStatusUnknown && state.pendingAttachments.isEmpty()
                         ) {
                             {
-                                viewModel.sendMessage(inputFieldValue.text, steer = true)
-                                inputFieldValue = TextFieldValue("")
-                                scrollController.jumpToBottom(animated = true)
+                                if (!viewModel.blocksSpecialistRegularPrompt()) {
+                                    viewModel.sendMessage(inputFieldValue.text, steer = true)
+                                    inputFieldValue = TextFieldValue("")
+                                    scrollController.jumpToBottom(animated = true)
+                                }
                             }
                         } else {
                             null
@@ -691,7 +778,7 @@ fun ChatScreen(
                     isConnected = state.isConnected,
                     commandCatalog = state.commandCatalog,
                     slashUsageCounts = state.slashUsageCounts,
-                    pendingAttachments = state.pendingAttachments,
+                    pendingAttachments = if (setupComposer) emptyList() else state.pendingAttachments,
                     onCameraTap = {
                         try {
                             val timeStamp =
@@ -797,7 +884,7 @@ fun ChatScreen(
                 onQueue = viewModel::queueDraft,
             )
 
-            if (activeProfileName != "default" && activeAgent?.isSetupIncomplete == true) {
+            if (setupUnsupported && activeProfileName != "default" && activeAgent?.isSetupIncomplete == true) {
                 InlineNotice(
                     text = stringResource(R.string.specialist_setup_incomplete_banner),
                     tone = NoticeTone.Warning,
@@ -876,7 +963,7 @@ fun ChatScreen(
                 // Full-bleed chat renderer (issue #866) — the single chat
                 // surface since the bubble renderer was removed.
                 val nativeUiScope = nativeUiKey(AuthManager.uiPreferenceScope(), state.currentSessionId.orEmpty())
-                val nativeCanSubmit = canSendNativeAction(state)
+                val nativeCanSubmit = !setupComposer && canSendNativeAction(state)
                 // Rebuilt only when the scope or send availability changes, not on every chat update.
                 val nativeUiHost =
                     remember(nativeUiScope, nativeCanSubmit) {
@@ -898,7 +985,7 @@ fun ChatScreen(
                     com.m57.hermescontrol.ui.chat.fullbleed.LocalChatAgentIdentity provides agentIdentity,
                 ) {
                     FullBleedChatList(
-                        messages = state.messages,
+                        messages = visibleMessages,
                         sessionKey = state.currentSessionId,
                         streamingMessage = streamingState.streamingMessage,
                         searchState = searchState,
@@ -930,13 +1017,46 @@ fun ChatScreen(
                             com.m57.hermescontrol.ui.chat.fullbleed
                                 .replyLifecycle(state, streamingState),
                         brainstormsById = state.brainstormsById,
+                        specialistContent = { message ->
+                            if (message.id == SPECIALIST_SETUP_REVIEW) {
+                                specialist?.let { SpecialistReviewCard(it, canChangeSetup, setupController::confirm) }
+                                true
+                            } else {
+                                false
+                            }
+                        },
+                        specialistFooter =
+                            if (hasSetupFooter && specialist != null) {
+                                {
+                                    if (specialist.activeDraft?.kind == "edit") {
+                                        SpecialistReviewCard(specialist, canChangeSetup, setupController::confirm)
+                                    }
+                                    SpecialistChatActions(
+                                        state = specialist,
+                                        connected = state.isConnected,
+                                        canUseSession = canChangeSetup,
+                                        onRetry = setupController::retry,
+                                        onResolveSession = viewModel::showMainConversation,
+                                        onApply = setupController::apply,
+                                        onEdit = setupController::setEditing,
+                                        onRecoverText = { text ->
+                                            val field = specialDrafts[setupKey] ?: TextFieldValue()
+                                            specialDrafts[setupKey] = ChatInputPolicy.restoreRejectedText(text, field)
+                                            setupController.recoverText()
+                                        },
+                                    )
+                                }
+                            } else {
+                                null
+                            },
                     )
                 }
 
                 // Loading overlay: only over an empty transcript. Cached history stays readable
                 // while a resume is confirmed (desktop parity: warm cache paints immediately).
                 ChatLoadingOverlay(
-                    isLoading = state.isLoading && state.resumeError == null && state.messages.isEmpty(),
+                    isLoading =
+                        state.isLoading && state.resumeError == null && visibleMessages.isEmpty() && !hasSetupFooter,
                 )
 
                 // Resume-exhausted overlay — explicit error + Retry instead
@@ -1070,7 +1190,7 @@ fun ChatScreen(
             )
         }
 
-        setupSheetProfile?.let { targetProfile ->
+        setupSheetProfile?.takeIf { setupUnsupported && it == activeProfileName }?.let { targetProfile ->
             val targetTitle =
                 botsState.profiles.firstOrNull { it.name == targetProfile }?.agentLabel()
                     ?: BotConversations.label(targetProfile)

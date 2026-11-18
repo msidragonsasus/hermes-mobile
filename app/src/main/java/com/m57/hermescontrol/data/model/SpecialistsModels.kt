@@ -12,7 +12,14 @@ data class SpecialistCapabilitiesResponse(
     val setup: Boolean = false,
     val brainstorm_results: Boolean = false,
     val group_retirement_ready: Boolean = false,
-)
+    val server_generated_id: Boolean = false,
+    val setup_conversation: Boolean = false,
+    val setup_apply: Boolean = false,
+    val edit_conversation: Boolean = false,
+) {
+    val supportsSetupChat: Boolean
+        get() = setup_conversation && setup_apply
+}
 
 @Serializable
 data class SpecialistTemplate(
@@ -28,7 +35,7 @@ data class SpecialistTemplatesResponse(
 
 @Serializable
 data class CreateSpecialistRequest(
-    val name: String,
+    val name: String? = null,
     val title: String,
     val avatar: BotAvatarMeta? = null,
     val template_id: String = "blank",
@@ -51,6 +58,70 @@ data class SpecialistSetupDraft(
     val autonomy: String = "",
     val routines: List<String> = emptyList(),
     val sources: List<String> = emptyList(),
+    val kind: String = "setup",
+    val before: SpecialistSettingsPreview? = null,
+    val after: SpecialistSettingsPreview? = null,
+)
+
+@Serializable
+data class SpecialistSettingsPreview(
+    val description: String = "",
+    val sources: List<String> = emptyList(),
+    val skills: List<String> = emptyList(),
+    val autonomy: String = "",
+    val routines: List<String> = emptyList(),
+    val soul: String = "",
+)
+
+@Serializable
+data class SpecialistSetupMessage(
+    val id: String,
+    val role: String,
+    val content: String,
+)
+
+@Serializable
+data class SpecialistSetupTurn(
+    val request_id: String,
+    val session_id: String,
+    val mode: String = "setup",
+    val conversation_revision: Int,
+    val revision: Int,
+    val user: SpecialistSetupMessage,
+    val assistant: SpecialistSetupMessage,
+    val card: SpecialistSetupDraft? = null,
+)
+
+@Serializable
+data class SpecialistPendingTurn(
+    val request_id: String,
+    val message: String,
+    val expires_at: Double,
+)
+
+@Serializable
+data class SpecialistSetupTurnRequest(
+    val request_id: String,
+    val session_id: String,
+    val expected_revision: Int,
+    val expected_conversation_revision: Int,
+    val text: String,
+    val mode: String,
+)
+
+@Serializable
+data class SpecialistSetupApplyRequest(
+    val request_id: String,
+    val session_id: String,
+    val expected_revision: Int,
+)
+
+@Serializable
+data class SpecialistSetupApplyResponse(
+    val activation: String,
+    val session_id: String,
+    val settings_revision: Int,
+    val applied_revision: Int,
 )
 
 @Serializable
@@ -62,6 +133,13 @@ data class SpecialistSetupSnapshot(
     val questions: List<String> = emptyList(),
     val available_skills: List<String> = emptyList(),
     val activation: String = "awaiting_confirmation",
+    val routing_ready: Boolean = false,
+    val settings_revision: Int? = null,
+    val applied_revision: Int? = null,
+    val conversation_revision: Int = 0,
+    val greeting: SpecialistSetupMessage? = null,
+    val conversation_turns: List<SpecialistSetupTurn> = emptyList(),
+    val pending_turn: SpecialistPendingTurn? = null,
 ) {
     val isNextSessionBoundaryActivation: Boolean
         get() = activation == "next_session_boundary"

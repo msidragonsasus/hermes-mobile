@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.m57.hermescontrol.BuildConfig
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.agents.BotConversations
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.local.HermesDatabase
 import com.m57.hermescontrol.data.local.OutgoingDraftRepository
@@ -78,6 +79,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.intOrNull
@@ -370,6 +372,9 @@ data class ChatUiState(
     /** Canonical rows awaiting exhaustive response coverage are persisted but not double-rendered. */
     val stagedCanonicalMessages: List<ChatMessage> = emptyList(),
     val currentSessionId: String? = null,
+    val canonicalBotChatId: String? = null,
+    val canonicalBotChatEpoch: Long? = null,
+    val canonicalBotChatPending: Boolean = false,
     val sessions: List<SessionUi> = emptyList(),
     val chatTitle: String = "Hermes",
     val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
@@ -691,6 +696,127 @@ class ChatViewModel(
     private val resolvedSpecialistsRepository: SpecialistsRepository by lazy {
         specialistsRepositoryOverride ?: SpecialistsRepository()
     }
+    private val specialistRequestJson = Json { ignoreUnknownKeys = true }
+    internal val specialistChat by lazy {
+        SpecialistChatController(
+            viewModelScope,
+            resolvedSpecialistsRepository,
+            isCurrent = { target ->
+                AuthManager.connectionEpoch.value == target.epoch &&
+                    AuthManager.uiPreferenceScope() == target.scope &&
+                    AuthManager.activeProfileId.value == target.profile
+            },
+            readRequest = { scope ->
+                withContext(ioDispatcher) {
+                    AuthManager
+                        .readSpecialistRequest(
+                            scope,
+                        )?.let { specialistRequestJson.decodeFromString<SpecialistChatRequest>(it) }
+                }
+            },
+            writeRequest = { scope, request ->
+                withContext(ioDispatcher) {
+                    AuthManager.writeSpecialistRequest(scope, request?.let { specialistRequestJson.encodeToString(it) })
+                }
+            },
+            resolveSession = {
+                clearCanonicalBotChat()
+                showMainConversation()
+            },
+            refreshRoster = { refreshSpecialistRoster() },
+        )
+    }
+    internal var refreshSpecialistRoster: () -> Unit = {}
+
+    internal fun bindSpecialistChat(
+        target: SpecialistChatTarget?,
+        canonicalSessionId: String?,
+    ) {
+        specialistChat.bind(target, canonicalSessionId, target?.let { BotConversations.takeCreatedSetup(it.profile) })
+    }
+
+    internal fun verifySpecialistCanonical() {
+        val profile = BotConversations.activeProfile()
+        val state = _uiState.value
+        val sessionId = state.currentSessionId
+        if (isTestEnvironment() || profile == "default" || !state.isConnected ||
+            canonicalLookupJob?.isActive == true
+        ) {
+            return
+        }
+        val generation = sessionGeneration
+        val epoch = AuthManager.connectionEpoch.value
+        val setup = specialistChat.state.value.takeIf { it.target?.epoch == epoch && it.target.profile == profile }
+        if (sessionId == null) {
+            if (setup?.legacy == true) openMainConversation()
+            return
+        }
+        val candidate =
+            state.canonicalBotChatPending && state.canonicalBotChatId == sessionId &&
+                state.canonicalBotChatEpoch == epoch
+        val runtimeId = runtimeSessionId
+        val scope = sessionScope
+        canonicalLookupJob =
+            viewModelScope.launch {
+                var lookup = runCatching { mainConversationResolver() }.getOrDefault(MainConversation.Unknown)
+                if (generation != sessionGeneration || AuthManager.connectionEpoch.value != epoch) return@launch
+                if (candidate && lookup == MainConversation.Absent && runtimeId != null && scope != null &&
+                    setup?.capabilities?.supportsSetupChat == true
+                ) {
+                    // Some gateways return a lazy row from session.create. Persist the title on that
+                    // same runtime session, then verify the storage key before any REST setup turn.
+                    runCatching {
+                        HermesWsClient
+                            .setBotChatTitle(
+                                scope,
+                                runtimeId,
+                                BOT_CHAT_TITLE,
+                                MAIN_CONVERSATION_LOOKUP_MS,
+                            ).await()
+                    }
+                    if (generation != sessionGeneration || AuthManager.connectionEpoch.value != epoch) return@launch
+                    lookup = runCatching { mainConversationResolver() }.getOrDefault(MainConversation.Unknown)
+                }
+                if (generation != sessionGeneration || AuthManager.connectionEpoch.value != epoch) return@launch
+                when {
+                    lookup is MainConversation.Found -> {
+                        val wasCanonical = sessionId == _uiState.value.canonicalBotChatId
+                        _uiState.update {
+                            it.copy(
+                                canonicalBotChatId = lookup.sessionId,
+                                canonicalBotChatEpoch = epoch,
+                                canonicalBotChatPending = false,
+                            )
+                        }
+                        if (sessionId == lookup.sessionId) {
+                            sessionHasServerPresence = true
+                        } else if (wasCanonical) {
+                            switchSession(lookup.sessionId)
+                        }
+                    }
+
+                    candidate && setup?.legacy == true -> {
+                        _uiState.update { it.copy(canonicalBotChatPending = false) }
+                    }
+                }
+            }
+    }
+
+    internal fun blocksSpecialistRegularPrompt(): Boolean {
+        val state = _uiState.value
+        if (state.currentSessionId != state.canonicalBotChatId || AuthManager.activeProfileId.value.isNullOrBlank() ||
+            AuthManager.activeProfileId.value == "default" || isTestEnvironment()
+        ) {
+            return false
+        }
+        val specialty = specialistChat.state.value
+        return specialty.target?.epoch != AuthManager.connectionEpoch.value ||
+            specialty.target.profile != AuthManager.activeProfileId.value || specialty.blocksNormalInput
+    }
+
+    private var canonicalLookupJob: Job? = null
+    private var openMainJob: Job? = null
+    private var canonicalCreateGeneration: Long? = null
     private var brainstormPollJob: Job? = null
     private var subagentSnapshotJob: Job? = null
     private var subagentSnapshotFailures = 0
@@ -1178,6 +1304,9 @@ class ChatViewModel(
         viewModelScope.launch {
             ProfileSwitchCoordinator.switched
                 .collect { _ ->
+                    canonicalLookupJob?.cancel()
+                    openMainJob?.cancel()
+                    clearCanonicalBotChat()
                     pendingGoneSessionNotice = false
                     sessionHasServerPresence = false
                     resetSessionState(sessionId = null, title = "Hermes", isLoading = true)
@@ -1190,6 +1319,9 @@ class ChatViewModel(
         viewModelScope.launch {
             ProfileSwitchCoordinator.connectionSwitched
                 .collect { _ ->
+                    canonicalLookupJob?.cancel()
+                    openMainJob?.cancel()
+                    clearCanonicalBotChat()
                     pendingGoneSessionNotice = false
                     sessionHasServerPresence = false
                     resetSessionState(sessionId = null, title = "Hermes", isLoading = true)
@@ -1280,23 +1412,32 @@ class ChatViewModel(
         if (state.isResumeRetrying) return false
         Log.w(TAG, "Chat loading exceeded watchdog; recovering")
         when {
-            wsClient.connectionStatus.value != ConnectionStatus.CONNECTED ->
+            wsClient.connectionStatus.value != ConnectionStatus.CONNECTED -> {
                 // The connection banner owns this state; never cover the chat with a spinner.
                 _uiState.update { it.copy(isLoading = false) }
-            state.currentSessionId == null ->
+            }
+
+            state.currentSessionId == null -> {
                 // Missed gateway.ready (e.g. after a profile switch): redo its work on this socket.
                 handleGatewayReady()
+            }
+
             watchdogRetriedGeneration != sessionGeneration -> {
                 // A launch-time resume can stall while a manual Retry succeeds: do that Retry once.
                 watchdogRetriedGeneration = sessionGeneration
                 retryResumeSession()
                 return false
             }
-            state.messages.isEmpty() ->
+
+            state.messages.isEmpty() -> {
                 _uiState.update {
                     it.copy(isLoading = false, resumeError = "Session load timed out")
                 }
-            else -> _uiState.update { it.copy(isLoading = false) }
+            }
+
+            else -> {
+                _uiState.update { it.copy(isLoading = false) }
+            }
         }
         return true
     }
@@ -1332,6 +1473,8 @@ class ChatViewModel(
         if (currentId != null) {
             if (sessionHasServerPresence) {
                 resumeSession(currentId, sessionGeneration)
+            } else if (_uiState.value.canonicalBotChatPending) {
+                openMainConversation(userInitiated = true)
             } else if (isUntouchedUnsavedSession()) {
                 // An empty fallback session never reached the server. Recreating it on every reconnect
                 // strands the user on "Session created"; look up the main conversation again instead.
@@ -1373,10 +1516,11 @@ class ChatViewModel(
             MainConversation.Unknown
         } else {
             withTimeoutOrNull(MAIN_CONVERSATION_LOOKUP_MS) {
-                val result = sendRpcAndAwait(WsMethods.SESSION_LIST, mapOf("title" to BOT_CHAT_TITLE))
+                val scope = HermesWsClient.connectionScope.value ?: return@withTimeoutOrNull MainConversation.Unknown
+                val result = HermesWsClient.readBotChat(scope, BOT_CHAT_TITLE, MAIN_CONVERSATION_LOOKUP_MS).await()
                 val sessions = (result.toJsonElement().toAny() as? Map<*, *>)?.get("sessions") as? List<*>
                 // An older server ignores `title` and lists everything: trust only the exact row.
-                val row = (sessions?.firstOrNull() as? Map<*, *>)?.takeIf { it["title"] == BOT_CHAT_TITLE }
+                val row = sessions?.filterIsInstance<Map<*, *>>()?.firstOrNull { it["title"] == BOT_CHAT_TITLE }
                 val id = ((row?.get("resolved_id") ?: row?.get("id")) as? String)?.takeIf(String::isNotBlank)
                 when {
                     id != null -> MainConversation.Found(id)
@@ -1388,7 +1532,22 @@ class ChatViewModel(
     }
 
     /** Returns from a past conversation to the main one (the drawer's first entry). */
-    fun showMainConversation() = openMainConversation(userInitiated = true)
+    fun showMainConversation() {
+        val state = _uiState.value
+        if (state.canonicalBotChatPending && state.currentSessionId == state.canonicalBotChatId &&
+            runtimeSessionId != null
+        ) {
+            verifySpecialistCanonical()
+        } else {
+            openMainConversation(userInitiated = true)
+        }
+    }
+
+    private fun clearCanonicalBotChat() {
+        _uiState.update {
+            it.copy(canonicalBotChatId = null, canonicalBotChatEpoch = null, canonicalBotChatPending = false)
+        }
+    }
 
     /** Nothing the user wrote or queued lives in the open session, so replacing it loses nothing. */
     private fun isUntouchedUnsavedSession(): Boolean {
@@ -1408,40 +1567,64 @@ class ChatViewModel(
         userInitiated: Boolean = false,
         replaceUnsaved: Boolean = false,
     ) {
+        if (openMainJob?.isActive == true || canonicalCreateGeneration == sessionGeneration) return
         val generation = sessionGeneration
-        viewModelScope.launch {
-            var lookup = runCatching { mainConversationResolver() }
-            // A read right after the socket opens can be refused at once; ask once more.
-            if (lookup.isFailure) {
-                delay(MAIN_CONVERSATION_RETRY_MS)
-                lookup = runCatching { mainConversationResolver() }
-            }
-            val target = lookup.getOrDefault(MainConversation.Unknown)
-            if (BuildConfig.DEBUG) {
-                val failure = lookup.exceptionOrNull()?.javaClass?.simpleName
-                Log.d(TAG, "mainConversation ${target::class.simpleName} $failure")
-            }
-            // The user (or a notification) may have opened something while we looked.
-            val openedElsewhere =
-                _uiState.value.currentSessionId != null ||
-                    NavigationController.pendingSessionIdForProfile(AuthManager.activeProfileId.value) != null
-            if (generation != sessionGeneration || (!userInitiated && openedElsewhere)) return@launch
-            when (target) {
-                is MainConversation.Found -> {
-                    if (target.sessionId != _uiState.value.currentSessionId) switchSession(target.sessionId)
+        val epoch = AuthManager.connectionEpoch.value
+        openMainJob =
+            viewModelScope.launch {
+                var lookup = runCatching { mainConversationResolver() }
+                // A read right after the socket opens can be refused at once; ask once more.
+                if (lookup.isFailure) {
+                    delay(MAIN_CONVERSATION_RETRY_MS)
+                    lookup = runCatching { mainConversationResolver() }
                 }
+                val target = lookup.getOrDefault(MainConversation.Unknown)
+                if (BuildConfig.DEBUG) {
+                    val failure = lookup.exceptionOrNull()?.javaClass?.simpleName
+                    Log.d(TAG, "mainConversation ${target::class.simpleName} $failure")
+                }
+                // The user (or a notification) may have opened something while we looked.
+                val openedElsewhere =
+                    _uiState.value.currentSessionId != null ||
+                        NavigationController.pendingSessionIdForProfile(AuthManager.activeProfileId.value) != null
+                if (generation != sessionGeneration || epoch != AuthManager.connectionEpoch.value ||
+                    (!userInitiated && openedElsewhere)
+                ) {
+                    return@launch
+                }
+                when (target) {
+                    is MainConversation.Found -> {
+                        _uiState.update {
+                            it.copy(
+                                canonicalBotChatId = target.sessionId,
+                                canonicalBotChatEpoch = epoch,
+                                canonicalBotChatPending = false,
+                            )
+                        }
+                        if (target.sessionId != _uiState.value.currentSessionId || runtimeSessionId == null) {
+                            switchSession(target.sessionId)
+                        }
+                    }
 
-                MainConversation.Absent -> {
-                    createNewSession(setLoading = false, title = BOT_CHAT_TITLE)
-                }
+                    MainConversation.Absent -> {
+                        createNewSession(setLoading = false, title = BOT_CHAT_TITLE)
+                    }
 
-                // From the drawer an unknown lookup keeps the open conversation; it never mints one.
-                // An unsaved session being replaced still needs a live binding on this socket.
-                MainConversation.Unknown -> {
-                    if (!userInitiated || replaceUnsaved) createNewSession(setLoading = false)
+                    // From the drawer an unknown lookup keeps the open conversation; it never mints one.
+                    // An unsaved fallback still needs a live binding on this socket after reconnect.
+                    MainConversation.Unknown -> {
+                        val profile = BotConversations.activeProfile()
+                        val allowUntitled =
+                            profile == "default" || isTestEnvironment() ||
+                                specialistChat.state.value.let {
+                                    it.legacy && it.target?.epoch == epoch && it.target.profile == profile
+                                }
+                        if (replaceUnsaved || (!userInitiated && allowUntitled)) {
+                            createNewSession(setLoading = false)
+                        }
+                    }
                 }
             }
-        }
     }
 
     private fun correlatedResponses(event: WsEvent.MessageComplete): List<ResponseRecord> =
@@ -2072,6 +2255,9 @@ class ChatViewModel(
             is WsEvent.ToolComplete -> {
                 if (event.name == "message_agent") {
                     onMessageAgentToolComplete(event.data)
+                } else if (event.name == "propose_bot_edit" && isCurrentSession(event.sessionId)) {
+                    val result = event.data?.get("result") as? String
+                    SpecialistEditReference.parse(result)?.let { specialistChat.onEditProposal(it) }
                 }
             }
 
@@ -2217,11 +2403,19 @@ class ChatViewModel(
                 bindNewSessionQueue(queuedOrigin, storageId)
                 // The gateway persists the row lazily on the first prompt —
                 // do not resume this key until presence is confirmed.
+                val isCanonical =
+                    canonicalCreateGeneration == sessionGeneration &&
+                        BotConversations.activeProfile() != "default"
+                canonicalCreateGeneration = null
                 sessionHasServerPresence = false
                 sessionGoneRecoveryInFlight = false
                 _uiState.update {
                     it.copy(
                         currentSessionId = storageId,
+                        canonicalBotChatId = if (isCanonical) storageId else it.canonicalBotChatId,
+                        canonicalBotChatEpoch =
+                            if (isCanonical) AuthManager.connectionEpoch.value else it.canonicalBotChatEpoch,
+                        canonicalBotChatPending = isCanonical,
                         isLoading = false,
                         messages = if (pendingInitialPrompt != null) it.messages else emptyList(),
                         chatTitle = "Hermes",
@@ -2247,7 +2441,7 @@ class ChatViewModel(
                 loadSessions()
                 fetchContextUsage()
 
-                drainPendingPrompts(storageId, runtimeId)
+                if (!isCanonical) drainPendingPrompts(storageId, runtimeId)
             }
 
             WsMethods.SESSION_BRANCH -> {
@@ -2597,6 +2791,7 @@ class ChatViewModel(
         text: String,
         steer: Boolean = false,
     ) {
+        if (blocksSpecialistRegularPrompt()) return
         if (text.isBlank() && _uiState.value.pendingAttachments.isEmpty()) return
         val trimmed = text.trim()
         // PR06a: restored drafts contain literal prompt text, including /queue payloads.
@@ -2678,7 +2873,7 @@ class ChatViewModel(
     fun sendNativeAction(text: String): Boolean {
         // Connection status is merged into uiState asynchronously; read the live value here.
         val state = _uiState.value.copy(connectionStatus = wsClient.connectionStatus.value)
-        if (text.isBlank() || !canSendNativeAction(state)) return false
+        if (text.isBlank() || !canSendNativeAction(state) || blocksSpecialistRegularPrompt()) return false
         val scope = sessionScope ?: submissionTransport.configuredScope() ?: return false
         if (!submissionTransport.isReady(scope) || runtimeSessionId == null ||
             (!queueExecutionIdle && !canRetryRefusedAdmission())
@@ -2844,6 +3039,7 @@ class ChatViewModel(
     }
 
     private fun drainOutgoingQueue() {
+        if (blocksSpecialistRegularPrompt()) return
         val state = _uiState.value
         val scope = submissionTransport.configuredScope() ?: return
         val storageId = state.currentSessionId ?: return
@@ -4542,6 +4738,13 @@ class ChatViewModel(
         sessionHasServerPresence = false
         val generation = resetSessionState(sessionId = null, title = title ?: "Hermes", isLoading = setLoading)
         pendingCreateQueueOrigin = generation to queueOrigin
+        if (title == BOT_CHAT_TITLE) {
+            canonicalCreateGeneration = generation
+            viewModelScope.launch {
+                delay(10_000L)
+                if (canonicalCreateGeneration == generation) canonicalCreateGeneration = null
+            }
+        }
         viewModelScope.launch(ioDispatcher) {
             // Composer choices belong to their session. A new conversation follows the bot's
             // server defaults, including defaults edited from another bot/group settings page.
@@ -5272,6 +5475,19 @@ class ChatViewModel(
                         profile = resyncScope?.serverProfileId ?: AuthManager.activeProfileId.value ?: "default",
                     )
                     finishResumeWhenHydrated(generation)
+                    if (specialistChat.state.value.sessionId == sessionId) {
+                        chatMessages
+                            .asReversed()
+                            .firstNotNullOfOrNull { message ->
+                                if (message.role == "tool") {
+                                    SpecialistEditReference.parse(message.contentText)
+                                } else {
+                                    null
+                                }
+                            }?.let { reference ->
+                                withContext(Dispatchers.Main.immediate) { specialistChat.onEditProposal(reference) }
+                            }
+                    }
                 }
 
                 is NetworkResult.Failure -> {

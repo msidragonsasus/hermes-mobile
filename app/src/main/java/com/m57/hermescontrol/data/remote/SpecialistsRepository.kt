@@ -4,9 +4,13 @@ import com.m57.hermescontrol.data.model.BrainstormSnapshot
 import com.m57.hermescontrol.data.model.CreateSpecialistRequest
 import com.m57.hermescontrol.data.model.CreateSpecialistResponse
 import com.m57.hermescontrol.data.model.SpecialistCapabilitiesResponse
+import com.m57.hermescontrol.data.model.SpecialistSetupApplyRequest
+import com.m57.hermescontrol.data.model.SpecialistSetupApplyResponse
 import com.m57.hermescontrol.data.model.SpecialistSetupConfirmRequest
 import com.m57.hermescontrol.data.model.SpecialistSetupDraftRequest
 import com.m57.hermescontrol.data.model.SpecialistSetupSnapshot
+import com.m57.hermescontrol.data.model.SpecialistSetupTurn
+import com.m57.hermescontrol.data.model.SpecialistSetupTurnRequest
 import com.m57.hermescontrol.data.model.SpecialistTemplate
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
@@ -15,6 +19,11 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import retrofit2.Response
+
+/** Tags calls that belong to one sign-in, connection, and active profile. */
+data class SpecialistRequestScope(
+    val epoch: Long,
+)
 
 sealed interface SpecialistApiOutcome<out T> {
     data class Success<T>(
@@ -33,6 +42,7 @@ sealed interface SpecialistApiOutcome<out T> {
     data class Validation(
         val code: String?,
         val message: String,
+        val status: Int? = null,
     ) : SpecialistApiOutcome<Nothing>
 
     data class UncertainTransport(
@@ -88,8 +98,8 @@ internal object SpecialistErrorParser {
 class SpecialistsRepository(
     private val apiProvider: () -> HermesApiService = { ApiClient.hermesApi },
 ) {
-    suspend fun fetchCapabilities(): SpecialistCapabilitiesState =
-        when (val outcome = execute { it.getSpecialistCapabilities() }) {
+    suspend fun fetchCapabilities(scope: SpecialistRequestScope? = null): SpecialistCapabilitiesState =
+        when (val outcome = execute { it.getSpecialistCapabilities(scope) }) {
             is SpecialistApiOutcome.Success -> SpecialistCapabilitiesState.Supported(outcome.data)
             is SpecialistApiOutcome.Unsupported -> SpecialistCapabilitiesState.LegacyUnsupported(outcome.code)
             is SpecialistApiOutcome.Conflict -> SpecialistCapabilitiesState.Unavailable(outcome.message)
@@ -106,11 +116,15 @@ class SpecialistsRepository(
             is SpecialistApiOutcome.UncertainTransport -> outcome
         }
 
-    suspend fun createSpecialist(request: CreateSpecialistRequest): SpecialistApiOutcome<CreateSpecialistResponse> =
-        execute { it.createSpecialist(request) }
+    suspend fun createSpecialist(
+        request: CreateSpecialistRequest,
+        scope: SpecialistRequestScope? = null,
+    ): SpecialistApiOutcome<CreateSpecialistResponse> = execute { it.createSpecialist(request, scope) }
 
-    suspend fun getSetup(name: String): SpecialistApiOutcome<SpecialistSetupSnapshot> =
-        execute { it.getSpecialistSetup(name) }
+    suspend fun getSetup(
+        name: String,
+        scope: SpecialistRequestScope? = null,
+    ): SpecialistApiOutcome<SpecialistSetupSnapshot> = execute { it.getSpecialistSetup(name, scope) }
 
     suspend fun saveDraft(
         name: String,
@@ -120,7 +134,26 @@ class SpecialistsRepository(
     suspend fun confirmDraft(
         name: String,
         request: SpecialistSetupConfirmRequest,
-    ): SpecialistApiOutcome<SpecialistSetupSnapshot> = execute { it.confirmSpecialistSetup(name, request) }
+        scope: SpecialistRequestScope? = null,
+    ): SpecialistApiOutcome<SpecialistSetupSnapshot> = execute { it.confirmSpecialistSetup(name, request, scope) }
+
+    suspend fun sendSetupTurn(
+        name: String,
+        request: SpecialistSetupTurnRequest,
+        scope: SpecialistRequestScope? = null,
+    ): SpecialistApiOutcome<SpecialistSetupTurn> = execute { it.sendSpecialistSetupTurn(name, request, scope) }
+
+    suspend fun confirmEdit(
+        name: String,
+        request: SpecialistSetupConfirmRequest,
+        scope: SpecialistRequestScope? = null,
+    ): SpecialistApiOutcome<SpecialistSetupSnapshot> = execute { it.confirmSpecialistEdit(name, request, scope) }
+
+    suspend fun applySetup(
+        name: String,
+        request: SpecialistSetupApplyRequest,
+        scope: SpecialistRequestScope? = null,
+    ): SpecialistApiOutcome<SpecialistSetupApplyResponse> = execute { it.applySpecialistSetup(name, request, scope) }
 
     suspend fun listBrainstorms(
         sessionId: String,
@@ -158,13 +191,13 @@ class SpecialistsRepository(
                 when (response.code()) {
                     404 -> SpecialistApiOutcome.Unsupported(code)
                     409 -> SpecialistApiOutcome.Conflict(code, fallbackMsg)
-                    400, 422 -> SpecialistApiOutcome.Validation(code, fallbackMsg)
+                    400, 401, 403, 413, 422 -> SpecialistApiOutcome.Validation(code, fallbackMsg, response.code())
                     else -> SpecialistApiOutcome.UncertainTransport(fallbackMsg)
                 }
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            SpecialistApiOutcome.UncertainTransport(e.message ?: "Connection failed")
+            SpecialistApiOutcome.UncertainTransport("Connection failed")
         }
 }

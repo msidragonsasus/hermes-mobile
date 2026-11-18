@@ -11,7 +11,7 @@ object TokenRefreshAuthenticator : Authenticator {
         route: Route?,
         response: Response,
     ): Request? {
-        if (response.priorResponse != null) {
+        if (!response.request.isCurrentSpecialistRequest() || response.priorResponse != null) {
             return null // Only retry once
         }
         // Gated mode (session-cookie auth): a REST 401 here means the session
@@ -34,6 +34,7 @@ object TokenRefreshAuthenticator : Authenticator {
                 .build()
         }
 
+        if (!response.request.isCurrentSpecialistRequest()) return null
         val refreshedToken = DashboardSessionTokenRefresher.refresh() ?: return null
         return response.request
             .newBuilder()

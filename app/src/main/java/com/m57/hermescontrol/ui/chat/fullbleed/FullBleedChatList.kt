@@ -45,6 +45,7 @@ import com.m57.hermescontrol.ui.chat.components.ChatScrollController
 import com.m57.hermescontrol.ui.chat.components.ClarifyBubble
 import com.m57.hermescontrol.ui.chat.components.ReasoningCard
 import com.m57.hermescontrol.ui.chat.components.ThinkingIndicator
+import com.m57.hermescontrol.ui.chat.isSpecialistSetupText
 import com.m57.hermescontrol.ui.chat.nativeUiKey
 import com.m57.hermescontrol.ui.common.EmptyState
 import kotlinx.coroutines.flow.first
@@ -92,13 +93,15 @@ fun FullBleedChatList(
     showThinkingIndicator: Boolean = false,
     replyLifecycle: ReplyLifecycle = ReplyLifecycle(),
     brainstormsById: Map<String, BrainstormSnapshot> = emptyMap(),
+    specialistContent: (@Composable (ChatMessage) -> Boolean)? = null,
+    specialistFooter: (@Composable () -> Unit)? = null,
 ) {
     var expandedTurns by remember(sessionKey) { mutableStateOf(emptySet<String>()) }
     val planningCache = remember(viewModel) { RenderPlanningCache() }
     DisposableEffect(planningCache) {
         onDispose { planningCache.clear() }
     }
-    if (messages.isEmpty() && !isLoading) {
+    if (messages.isEmpty() && !isLoading && specialistFooter == null) {
         planningCache.clear()
         Box(
             modifier = Modifier.fillMaxSize(),
@@ -385,6 +388,9 @@ fun FullBleedChatList(
                                                             onImageClick = onImageClick,
                                                             showTimestamp = false,
                                                             showFooter = false,
+                                                            allowInteractiveContent =
+                                                                !proseMessage
+                                                                    .isSpecialistSetupText(),
                                                         )
                                                     }
                                                     milestone?.let { count ->
@@ -436,7 +442,9 @@ fun FullBleedChatList(
                                         item(key = "sys-${sysMessage.id}") {
                                             Column(modifier = Modifier.padding(bottom = 6.dp)) {
                                                 val clarify = sysMessage.clarifyInfo
-                                                if (clarify != null) {
+                                                if (specialistContent?.invoke(sysMessage) == true) {
+                                                    // The specialist REST projection owns this row.
+                                                } else if (clarify != null) {
                                                     ClarifyBubble(
                                                         clarifyRequest = clarify,
                                                         onRespondSingle = { viewModel.respondToClarify(clarify, it) },
@@ -502,6 +510,10 @@ fun FullBleedChatList(
                     }
                 }
 
+                if (specialistFooter != null) {
+                    item(key = "specialist-settings") { specialistFooter() }
+                }
+
                 // Clarify bubble — rendered at the very bottom
                 if (clarifyRequest != null && clarifyRequest.ref == null &&
                     messages.none { it.clarifyInfo == clarifyRequest }
@@ -541,5 +553,6 @@ private fun renderChatBubble(
         openingAttachmentPath = openingAttachmentPath,
         canSaveAttachment = savingAttachmentPath == null,
         onImageClick = onImageClick,
+        showTimestamp = !message.isSpecialistSetupText(),
     )
 }

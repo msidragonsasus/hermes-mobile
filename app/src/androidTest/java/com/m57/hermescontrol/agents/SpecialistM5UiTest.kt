@@ -13,8 +13,11 @@ import androidx.test.filters.MediumTest
 import com.m57.hermescontrol.agents.SpecialistSetupSheet
 import com.m57.hermescontrol.data.model.BrainstormSnapshot
 import com.m57.hermescontrol.data.model.BrainstormSpeakerSnapshot
+import com.m57.hermescontrol.data.model.CreateSpecialistRequest
 import com.m57.hermescontrol.data.model.CreateSpecialistResponse
+import com.m57.hermescontrol.data.model.SpecialistCapabilitiesResponse
 import com.m57.hermescontrol.data.model.SpecialistSetupDraft
+import com.m57.hermescontrol.data.model.SpecialistSetupMessage
 import com.m57.hermescontrol.data.model.SpecialistSetupSnapshot
 import com.m57.hermescontrol.data.model.SpecialistTemplate
 import com.m57.hermescontrol.data.model.SpecialistTemplatesResponse
@@ -44,6 +47,8 @@ class SpecialistM5UiTest {
     @Test
     fun createSpecialistSheet_rendersFiveTemplates_andSubmits() {
         val mockApi = mockk<HermesApiService>(relaxed = true)
+        coEvery { mockApi.getSpecialistCapabilities(any()) } returns
+            Response.success(SpecialistCapabilitiesResponse(setup = true))
         coEvery { mockApi.getSpecialistTemplates() } returns
             Response.success(
                 SpecialistTemplatesResponse(
@@ -65,7 +70,7 @@ class SpecialistM5UiTest {
                 activation = "awaiting_confirmation",
                 questions = listOf("What is this bot responsible for?"),
             )
-        coEvery { mockApi.createSpecialist(any()) } returns
+        coEvery { mockApi.createSpecialist(any(), any()) } returns
             Response.success(
                 CreateSpecialistResponse(
                     name = "scout_1",
@@ -96,6 +101,47 @@ class SpecialistM5UiTest {
 
         composeRule.waitUntil(timeoutMillis = 5_000L) { createdName == "scout_1" }
         assertEquals("scout_1", createdName)
+    }
+
+    @Test
+    fun titleOnlyCreationHidesIdAndReturnsGreeting() {
+        val api = mockk<HermesApiService>()
+        coEvery { api.getSpecialistCapabilities(any()) } returns
+            Response.success(
+                SpecialistCapabilitiesResponse(
+                    server_generated_id = true,
+                    setup_conversation = true,
+                    setup_apply = true,
+                ),
+            )
+        coEvery { api.getSpecialistTemplates() } returns Response.success(SpecialistTemplatesResponse())
+        val greeting = SpecialistSetupMessage("greeting", "assistant", "何を担当しますか？")
+        val generated =
+            CreateSpecialistResponse(
+                "bot-generated",
+                setup = SpecialistSetupSnapshot("bot-generated", greeting = greeting),
+            )
+        coEvery { api.createSpecialist(any(), any()) } answers {
+            val request = firstArg<CreateSpecialistRequest>()
+            assertEquals(null, request.name)
+            assertEquals("調査係", request.title)
+            assertEquals("blank", request.template_id)
+            assertEquals(null, request.avatar)
+            Response.success(generated)
+        }
+        var created: CreateSpecialistResponse? = null
+        val repo = SpecialistsRepository { api }
+        composeRule.setContent {
+            HermesControlTheme {
+                CreateSpecialistBotSheet(onDismiss = {}, onCreated = { created = it }, repository = repo)
+            }
+        }
+        composeRule.onNodeWithTag("specialist_name_input").assertDoesNotExist()
+        composeRule.onNodeWithTag("specialist_template_blank").assertDoesNotExist()
+        composeRule.onNodeWithTag("specialist_title_input").performTextInput("調査係")
+        composeRule.onNodeWithTag("create_specialist_submit").performScrollTo().performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000L) { created != null }
+        assertEquals(greeting, created?.setup?.greeting)
     }
 
     @Test

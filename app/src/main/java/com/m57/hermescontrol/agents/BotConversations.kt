@@ -3,6 +3,7 @@ package com.m57.hermescontrol.agents
 import com.m57.hermescontrol.ChatScreen
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.data.local.AuthManager
+import com.m57.hermescontrol.data.model.SpecialistSetupSnapshot
 import com.m57.hermescontrol.data.remote.NetworkResult
 import com.m57.hermescontrol.data.session.ProfileSwitchCoordinator
 
@@ -14,6 +15,25 @@ import com.m57.hermescontrol.data.session.ProfileSwitchCoordinator
  * can never be rendered under Hermes Main (or vice versa).
  */
 object BotConversations {
+    private var createdSetup: Pair<String, SpecialistSetupSnapshot>? = null
+
+    internal fun serverScope(): String =
+        listOf(AuthManager.baseUrlFlow.value, AuthManager.selectedProfileFlow.value.orEmpty()).joinToString("\n")
+
+    internal fun rememberCreatedSetup(
+        server: String,
+        snapshot: SpecialistSetupSnapshot?,
+    ) {
+        createdSetup = snapshot?.takeIf { it.greeting != null }?.let { server to it }
+    }
+
+    internal fun takeCreatedSetup(profile: String): SpecialistSetupSnapshot? {
+        val seed = createdSetup ?: return null
+        if (seed.first != serverScope() || seed.second.name != profile) return null
+        createdSetup = null
+        return seed.second
+    }
+
     /** Display name of a bot: the default profile is "Hermes". */
     fun label(profileName: String?): String? =
         when {
@@ -67,6 +87,7 @@ object BotConversations {
             if (result !is NetworkResult.Success) return false
         }
         NavigationController.clearPendingChatNavigationForMismatch(profileName)
+        if (canonicalSessionId.isNullOrBlank()) NavigationController.requestMainConversation()
         if (openSetupAfterLaunch && profileName != "default") {
             NavigationController.requestSpecialistSetup(profileName)
         }
