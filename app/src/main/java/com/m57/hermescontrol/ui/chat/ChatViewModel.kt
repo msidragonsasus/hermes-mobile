@@ -1332,6 +1332,10 @@ class ChatViewModel(
         if (currentId != null) {
             if (sessionHasServerPresence) {
                 resumeSession(currentId, sessionGeneration)
+            } else if (isUntouchedUnsavedSession()) {
+                // An empty fallback session never reached the server. Recreating it on every reconnect
+                // strands the user on "Session created"; look up the main conversation again instead.
+                openMainConversation(userInitiated = true, replaceUnsaved = true)
             } else {
                 // Issue #969: No server-side row yet — the gateway dropped the
                 // ephemeral unpersisted session when the old socket closed.
@@ -1386,12 +1390,24 @@ class ChatViewModel(
     /** Returns from a past conversation to the main one (the drawer's first entry). */
     fun showMainConversation() = openMainConversation(userInitiated = true)
 
+    /** Nothing the user wrote or queued lives in the open session, so replacing it loses nothing. */
+    private fun isUntouchedUnsavedSession(): Boolean {
+        val state = _uiState.value
+        return pendingInitialPrompt == null &&
+            state.activeDraftIds.isEmpty() &&
+            state.messages.none { it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
+    }
+
     /**
      * A cold start with no explicit target continues the one main conversation instead of
      * minting a new session each launch (AUTONOMOUS_WORKER.md §8). A missing Bot Chat is
      * created under that title; an unknown lookup falls back to a plain new session.
+     * [replaceUnsaved] swaps out an untouched session that never reached the server.
      */
-    private fun openMainConversation(userInitiated: Boolean = false) {
+    private fun openMainConversation(
+        userInitiated: Boolean = false,
+        replaceUnsaved: Boolean = false,
+    ) {
         val generation = sessionGeneration
         viewModelScope.launch {
             var lookup = runCatching { mainConversationResolver() }
@@ -1420,8 +1436,9 @@ class ChatViewModel(
                 }
 
                 // From the drawer an unknown lookup keeps the open conversation; it never mints one.
+                // An unsaved session being replaced still needs a live binding on this socket.
                 MainConversation.Unknown -> {
-                    if (!userInitiated) createNewSession(setLoading = false)
+                    if (!userInitiated || replaceUnsaved) createNewSession(setLoading = false)
                 }
             }
         }

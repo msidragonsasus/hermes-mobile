@@ -7057,6 +7057,36 @@ class ChatViewModelTest {
         }
 
     @Test
+    fun mainConversation_reconnectFromEmptyFallback_returnsToBotChat() =
+        runTest {
+            val viewModel = createViewModel()
+            advanceUntilIdle()
+            every { HermesWsClient.send(WsMethods.SESSION_CREATE, any(), any()) } answers {
+                arg<((String) -> Unit)?>(2)?.invoke("fallback-create")
+                "fallback-create"
+            }
+            viewModel.mainConversationResolver = { error("lookup failed") }
+            mockConnectionStatus.value = ConnectionStatus.CONNECTED
+            emitEvent(WsEvent.GatewayReady(null))
+            advanceUntilIdle()
+            emitEvent(
+                WsEvent.RpcResult(
+                    "fallback-create",
+                    mapOf("session_id" to "fallback-runtime", "stored_session_id" to "fallback-storage"),
+                ),
+            )
+            advanceUntilIdle()
+            assertEquals("fallback-storage", viewModel.uiState.value.currentSessionId)
+
+            viewModel.mainConversationResolver = { ChatViewModel.MainConversation.Found("bot-chat-tip") }
+            emitEvent(WsEvent.GatewayReady(null))
+            advanceUntilIdle()
+
+            assertEquals("bot-chat-tip", viewModel.uiState.value.currentSessionId)
+            verify(exactly = 1) { HermesWsClient.send(WsMethods.SESSION_CREATE, any(), any()) }
+        }
+
+    @Test
     fun showMainConversation_fromPastConversation_switchesToBotChat() =
         runTest {
             val viewModel = createViewModel()

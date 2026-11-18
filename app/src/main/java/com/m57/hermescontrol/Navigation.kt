@@ -697,10 +697,31 @@ fun MainNavigation(sessionId: String? = null) {
                                     } else {
                                         null
                                     },
-                                selected = currentScreen == BotSettingsKey(bot.name),
+                                selected =
+                                    currentScreen == BotSettingsKey(bot.name) ||
+                                        (currentScreen == ChatScreen && activeProfile == bot.name),
+                                // Same intent as the Bots card: open the bot's conversation; its header opens settings.
                                 onClick = {
-                                    scope.launch { drawerState.close() }
-                                    NavigationController.navigateTo(BotSettingsKey(bot.name))
+                                    scope.launch {
+                                        drawerState.close()
+                                        val opened =
+                                            com.m57.hermescontrol.agents.BotConversations.openSpecialist(
+                                                profileName = bot.name,
+                                                canonicalSessionId =
+                                                    bot.canonical_session?.resolved_id ?: bot.canonical_session?.id,
+                                                openSetupAfterLaunch = bot.isSetupIncomplete,
+                                            )
+                                        if (opened) {
+                                            botsViewModel?.loadBots(isRefresh = true)
+                                        } else {
+                                            Toast
+                                                .makeText(
+                                                    context,
+                                                    switchFailedFallback,
+                                                    Toast.LENGTH_SHORT,
+                                                ).show()
+                                        }
+                                    }
                                 },
                                 colors = drawerItemColors,
                                 modifier =
