@@ -2,6 +2,8 @@ package com.m57.hermescontrol.ui.plugins
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.m57.hermescontrol.data.model.AgentPluginInstallBody
+import com.m57.hermescontrol.data.model.PluginCatalogEntry
 import com.m57.hermescontrol.data.model.PluginInfo
 import com.m57.hermescontrol.data.model.PluginProvidersPutRequest
 import com.m57.hermescontrol.data.model.ProviderOption
@@ -41,6 +43,11 @@ data class PluginsUiState(
     val removeConfirmPlugin: String? = null,
     // Rescan
     val rescanBusy: Boolean = false,
+    // Curated catalog ("プラグインを探す"); null until the first successful load.
+    val catalog: List<PluginCatalogEntry>? = null,
+    val catalogLoading: Boolean = false,
+    val catalogFailed: Boolean = false,
+    val catalogInstalling: String? = null,
 ) {
     /** Built-in memory provider sentinel — empty string means "use config defaults" */
     val isMemoryBuiltin: Boolean
@@ -94,6 +101,55 @@ class PluginsViewModel :
                 }
             },
         )
+    }
+
+    /** Loads the curated catalog; a failure keeps the last list so installed rows keep their summaries. */
+    fun loadCatalog() {
+        if (_uiState.value.catalogLoading) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(catalogLoading = true, catalogFailed = false) }
+            val result = withContext(Dispatchers.IO) { safeApiCall { ApiClient.hermesApi.getPluginCatalog() } }
+            _uiState.update {
+                when (result) {
+                    is NetworkResult.Success -> it.copy(catalogLoading = false, catalog = result.data.entries)
+                    is NetworkResult.Failure -> it.copy(catalogLoading = false, catalogFailed = true)
+                }
+            }
+        }
+    }
+
+    /**
+     * Installs a catalog entry by name. The server resolves the reviewed repository pin and enforces
+     * its removal list; the person has already confirmed what the plugin may do.
+     */
+    fun installFromCatalog(entry: PluginCatalogEntry) {
+        if (_uiState.value.catalogInstalling != null) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(catalogInstalling = entry.name) }
+            val result =
+                withContext(Dispatchers.IO) {
+                    safeApiCall {
+                        ApiClient.hermesApi.installPlugin(
+                            AgentPluginInstallBody(identifier = "", enable = true, catalogName = entry.name),
+                        )
+                    }
+                }
+            val label = entry.title.ifBlank { entry.name }
+            _uiState.update {
+                it.copy(
+                    catalogInstalling = null,
+                    toastMessage =
+                        when (result) {
+                            is NetworkResult.Success -> "「$label」をインストールしました"
+                            is NetworkResult.Failure -> "「$label」をインストールできませんでした"
+                        },
+                )
+            }
+            if (result is NetworkResult.Success) {
+                loadPlugins()
+                loadCatalog()
+            }
+        }
     }
 
     fun updateInstallUrl(url: String) {

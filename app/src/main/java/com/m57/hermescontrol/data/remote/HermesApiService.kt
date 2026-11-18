@@ -501,6 +501,11 @@ interface HermesApiService {
         @Body body: SaveSkillContentRequest,
     ): Response<Unit>
 
+    @GET("api/mobile-settings/account-limits")
+    suspend fun getAccountLimits(
+        @Query("profile") profile: String? = null,
+    ): Response<com.m57.hermescontrol.data.model.AccountLimitsResponse>
+
     @GET("api/status")
     suspend fun getStatus(): Response<StatusResponse>
 
@@ -1026,6 +1031,9 @@ interface HermesApiService {
 
     @GET("api/dashboard/plugins/hub")
     suspend fun getPlugins(): Response<PluginsHubResponse>
+
+    @GET("api/dashboard/plugins/catalog")
+    suspend fun getPluginCatalog(): Response<com.m57.hermescontrol.data.model.PluginCatalogResponse>
 
     @POST("api/dashboard/agent-plugins/install")
     suspend fun installPlugin(

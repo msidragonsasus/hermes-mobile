@@ -189,5 +189,41 @@ class LegacyScreenContribution(
                     com.m57.hermescontrol.McpConnectionSettingsKey::class,
                     screens.size + 16,
                 ),
+                DestinationMetadata(
+                    "legacy.settings-permissions",
+                    "hermes/settings-permissions",
+                    com.m57.hermescontrol.SettingsPermissions::class,
+                    screens.size + 17,
+                ),
+                DestinationMetadata(
+                    "legacy.settings-notifications",
+                    "hermes/settings-notifications",
+                    com.m57.hermescontrol.SettingsNotifications::class,
+                    screens.size + 18,
+                ),
+                DestinationMetadata(
+                    "legacy.settings-memory",
+                    "hermes/settings-memory",
+                    com.m57.hermescontrol.SettingsMemory::class,
+                    screens.size + 19,
+                ),
+                DestinationMetadata(
+                    "legacy.settings-limits",
+                    "hermes/settings-limits",
+                    com.m57.hermescontrol.SettingsLimits::class,
+                    screens.size + 20,
+                ),
+                DestinationMetadata(
+                    "legacy.plugin-catalog",
+                    "hermes/plugin-catalog",
+                    com.m57.hermescontrol.PluginCatalogKey::class,
+                    screens.size + 21,
+                ),
+                DestinationMetadata(
+                    "legacy.plugin-advanced",
+                    "hermes/plugin-advanced",
+                    com.m57.hermescontrol.PluginAdvancedKey::class,
+                    screens.size + 22,
+                ),
             )
 }

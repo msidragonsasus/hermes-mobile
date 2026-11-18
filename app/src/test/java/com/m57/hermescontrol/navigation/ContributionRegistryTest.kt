@@ -96,11 +96,17 @@ class ContributionRegistryTest {
                 com.m57.hermescontrol.SettingsExternalServices::class,
                 com.m57.hermescontrol.ExternalServiceDetailKey::class,
                 com.m57.hermescontrol.McpConnectionSettingsKey::class,
+                com.m57.hermescontrol.SettingsPermissions::class,
+                com.m57.hermescontrol.SettingsNotifications::class,
+                com.m57.hermescontrol.SettingsMemory::class,
+                com.m57.hermescontrol.SettingsLimits::class,
+                com.m57.hermescontrol.PluginCatalogKey::class,
+                com.m57.hermescontrol.PluginAdvancedKey::class,
             ),
             specialized.map { it.keyType },
         )
-        assertEquals(43, legacy.size)
-        assertEquals(73, ScreenRegistry.contributions.destinations.size)
+        assertEquals(49, legacy.size)
+        assertEquals(79, ScreenRegistry.contributions.destinations.size)
         assertEquals(
             com.m57.hermescontrol.WorkScreen::class,
             ScreenRegistry.contributions.forRoute("worker/work")?.keyType,

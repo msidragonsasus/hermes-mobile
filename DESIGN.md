@@ -181,6 +181,27 @@ existing code. A Material import or a rounded rectangle does not prove complianc
 
 ### User decisions (do not undo)
 
+- 2026-11-17: daily settings use one shared directory with eleven entries: models,
+  skills, plugins, memory, usage limits, connectors, login information, permissions,
+  server connection, notifications, and appearance. The drawer and conversation
+  settings gear open this directory. Keep technical configuration under Details.
+  The initial flat directory was rejected on 2026-11-17. Follow Muse/ChatGPT:
+  inset rounded groups, thin internal dividers, outline icons, one-line labels
+  and quiet chevrons. Reuse `SettingsGroup` and `SettingsRow`, with 16dp page
+  margins and 60dp minimum navigation rows; allow rows to grow with larger text.
+  Keep the three small labels outside their groups; Details/About form a final
+  group. Do not add a fabricated profile, subscription or upgrade banner.
+  This also applies to the eleven destination screens: shared rounded form
+  groups, continuous grouped catalog rows, 16dp page margins, 60dp minimum
+  rows, bodyLarge titles and bodyMedium secondary text. Use `SettingsPanel`
+  for compound forms and `SettingsListItem` for lazy grouped rows. Avoid
+  nested cards; model/profile selection uses check/radio state rather than
+  decorative outlines. Keep existing actions, confirmations and save paths.
+  2026-11-17 follow-up ("徹底的に詰めて"): the destinations share one row and
+  page grammar, specified in [Settings destinations](#settings-destinations).
+  Usage limits show remaining percentage and time to reset per returned window;
+  never substitute token totals, context occupancy or estimated spend. Unknown,
+  failed, stale and elapsed-window data must not imply available quota.
 - 2026-11-16: image attachments must be photo-first. Do not restore the small
   thumbnail plus filename chip for pending photos, or a padded, tinted text
   bubble around sent photos. Keep filenames in accessibility labels and the
@@ -199,8 +220,8 @@ existing code. A Material import or a rounded rectangle does not prove complianc
 - 2026-10-24: the screen for **one connected service** (Gmail, Slack, other
   connections) follows the ChatGPT connector screen the user called "理想":
   grouped rounded sections with hairlines inside. See
-  [Connected service screens](#connected-service-screens). This is the only
-  place where a section sits in a group.
+  [Connected service screens](#connected-service-screens). The 2026-11-17
+  settings-directory decision also permits this grouping for settings navigation.
 
 - 2026-10-28: the server terminal has **no secret-input mode or button**. Saved
   strings and passwords are inserted from 「保存した入力」; masking follows an inserted
@@ -316,6 +337,10 @@ smaller, no border, no shadow) is allowed only for:
 - dialogs, bottom sheets and menus (platform-owned shapes);
 - the composer.
 
+Settings navigation and connected-service details are an explicit exception:
+use the shared rounded `SettingsGroup` surface described in the user decisions
+above. This does not permit card containers for feeds or catalog lists.
+
 Never: a card per list item, a card around a whole section, a card inside a card,
 an outlined card used as a divider, a full-width card for a single sentence, or a
 tinted "hero" card. Stat tiles become a row of label/value pairs.
@@ -335,7 +360,7 @@ screen of one external service (`GoogleConnectionScreen` for Gmail,
   → 権限 (one row, value on the right) → この接続を使っている機能 → 接続先 →
   アクション. Omit a section the server does not report; never guess it.
 - Group: `surfaceContainer`, `shapes.extraLarge`, no border, one
-  `outlineVariant` hairline between rows, none after the last. Rows 56dp min,
+  `outlineVariant` hairline between rows, none after the last. Rows 60dp min,
   16dp inside padding, title `bodyLarge`, meta `bodyMedium onSurfaceVariant`.
 - Labels sit outside the group: `titleSmall onSurfaceVariant`, 24dp above, 8dp below.
 - No filled buttons. Add/connect is a row with a leading + icon; row actions live
@@ -347,6 +372,45 @@ screen of one external service (`GoogleConnectionScreen` for Gmail,
   provider login). What it starts comes from `serviceConnectPlan`; when the server
   offers nothing, the sheet says why and only closes. Manual setup is the ︙ menu's
   "詳細設定".
+
+### Settings destinations
+
+User decision 2026-11-17. Applies to the eleven screens opened from the settings
+directory and to the connected-service screens. Components live in
+`ui/common/GroupedSettings.kt`; extend them instead of drawing a row locally.
+
+- Page: 16dp side margins. At most one control row (search, then one chip row)
+  above the content. Every group has a `SettingsGroupLabel` above it, including
+  the first. The final unlabeled group, 24dp below the rest, holds advanced links
+  or a destructive action (for example "ログアウト" in `error` color).
+- Group: `SettingsGroup`, hairlines inset 16dp (`SettingsDividerInset`) in every
+  group. A lazy list splits one group into segments with `first`/`last` instead
+  of stacking separate cards. A compound form is a group of rows: fields padded
+  16dp, switch rows, and `SettingsFormSubmit` as the last row.
+- Row (`SettingsRow`): bodyLarge title, bodyMedium meta line, 60dp minimum.
+  Leading: radio for selection, 24dp outline icon, or avatar. Trailing, in this
+  order: value, `status` badge, chevron, `checked` switch, `actions` ︙ menu.
+  Navigating rows always show a chevron. Per-item actions (edit, delete,
+  uninstall, update, show/hide) go in the ︙ menu, never as a row of icons or
+  outlined buttons. A single positive action on a catalog item (インストール) may
+  be a trailing text button. Add is the last row with a leading +.
+- Status: badges only for states worth noticing (connected, needs attention);
+  the default "not set" state shows nothing. A need that blocks use (such as
+  authentication) goes in the meta line with warning color, not as a badge
+  that squeezes the title.
+- Text: explanations and results are one `SettingsFootnote` below a group, not an
+  intro paragraph above live content. Settings descriptions grow with text size;
+  only catalog descriptions may be cut to two lines. No raw server tokens
+  ("enabled", "no reasoning") in rows.
+- Unavailable advanced features are omitted rather than shown as disabled rows.
+- Plugins (user decision 2026-11-17, "何ができるんか全くわからん"): each installed row
+  says what it adds in plain words (shelf, tool count, automatic steps, setup
+  needed) when it came from the curated catalog. "プラグインを探す" browses that
+  catalog (`/api/dashboard/plugins/catalog`) by shelf, official and verified
+  first; community entries only behind "すべて". Desktop-app and other-OS
+  entries are hidden because they cannot run on the server. Installing always
+  goes through a review sheet (what it can do, needed keys, maker, repository)
+  and a confirmation. Provider and install-from-URL settings live under 詳細設定.
 
 ## Notices and status
 

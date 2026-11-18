@@ -104,3 +104,17 @@ import kotlinx.serialization.Serializable
 @Serializable data object SettingsBehavior : NavKey
 
 @Serializable data object SettingsAbout : NavKey
+
+@Serializable data object SettingsPermissions : NavKey
+
+@Serializable data object SettingsNotifications : NavKey
+
+@Serializable data object SettingsMemory : NavKey
+
+@Serializable data object SettingsLimits : NavKey
+
+/** Curated plugin catalog ("プラグインを探す"), opened from Plugins. */
+@Serializable data object PluginCatalogKey : NavKey
+
+/** Plugin providers and install-from-URL, kept off the everyday Plugins list. */
+@Serializable data object PluginAdvancedKey : NavKey

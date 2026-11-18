@@ -3,6 +3,7 @@ package com.m57.hermescontrol.ui.plugins
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,9 +14,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.InstallDesktop
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -40,6 +43,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -47,7 +52,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.m57.hermescontrol.MemoryProviderDetailKey
 import com.m57.hermescontrol.NavigationController
+import com.m57.hermescontrol.PluginAdvancedKey
+import com.m57.hermescontrol.PluginCatalogKey
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.data.model.PluginCatalogEntry
 import com.m57.hermescontrol.data.model.PluginInfo
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.ui.common.DetailDialog
@@ -57,6 +65,14 @@ import com.m57.hermescontrol.ui.common.ExposedDropdownField
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SearchBar
+import com.m57.hermescontrol.ui.common.SettingsFootnote
+import com.m57.hermescontrol.ui.common.SettingsFormSubmit
+import com.m57.hermescontrol.ui.common.SettingsGroup
+import com.m57.hermescontrol.ui.common.SettingsGroupLabel
+import com.m57.hermescontrol.ui.common.SettingsListItem
+import com.m57.hermescontrol.ui.common.SettingsMenuItem
+import com.m57.hermescontrol.ui.common.SettingsPanel
+import com.m57.hermescontrol.ui.common.SettingsRow
 import com.m57.hermescontrol.ui.common.SkeletonListState
 import com.m57.hermescontrol.ui.common.ToastEffect
 import com.m57.hermescontrol.ui.common.listContentPadding
@@ -86,6 +102,8 @@ fun PluginsScreen(
 
     LaunchedEffect(Unit) {
         viewModel.loadPlugins()
+        // Optional: it only adds the plain "what it adds" line to rows installed from the catalog.
+        viewModel.loadCatalog()
     }
 
     ToastEffect(toastMessage = state.toastMessage, onClearToast = viewModel::clearToast)
@@ -123,25 +141,20 @@ fun PluginsScreen(
 
     HermesScaffold(
         title = { Text(stringResource(R.string.screen_plugins)) },
-        navigationIcon = onOpenDrawer?.let { NavIcon.Menu(it) },
+        navigationIcon = onOpenDrawer?.let { NavIcon.Menu(it) } ?: NavIcon.Back { NavigationController.goBack() },
+        drawerGesturesEnabled = onOpenDrawer != null,
         isRefreshing = state.isLoading,
         onRefresh = { viewModel.loadPlugins() },
-        actions = {
-            TextButton(onClick = { NavigationController.navigateTo(com.m57.hermescontrol.SettingsExternalServices) }) {
-                Text("外部連携")
-            }
-        },
-    ) { paddingValues ->
+    ) {
         when {
             state.isLoading && state.plugins.isEmpty() && !hasLoaded -> {
-                SkeletonListState(modifier = Modifier.padding(paddingValues))
+                SkeletonListState()
             }
 
             state.errorMessage != null -> {
                 ErrorState(
                     message = state.errorMessage ?: "",
                     onRetry = { viewModel.loadPlugins() },
-                    modifier = Modifier.padding(paddingValues),
                 )
             }
 
@@ -149,80 +162,107 @@ fun PluginsScreen(
                 EmptyState(
                     title = stringResource(R.string.plugins_empty_title),
                     subtitle = stringResource(R.string.plugins_empty_desc),
-                    onAction = { viewModel.loadPlugins() },
-                    actionLabel = stringResource(R.string.content_desc_refresh),
-                    modifier = Modifier.padding(paddingValues),
+                    onAction = { NavigationController.navigateTo(PluginCatalogKey) },
+                    actionLabel = stringResource(R.string.plugins_catalog_title),
                 )
             }
 
             else -> {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = listContentPadding,
-                    verticalArrangement = listItemSpacing,
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
                 ) {
-                    item(key = "external-services") {
-                        Card(
-                            onClick = {
-                                NavigationController.navigateTo(
-                                    com.m57.hermescontrol.SettingsExternalServices,
-                                )
-                            },
-                        ) {
-                            Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                                Text("外部サービス連携", style = MaterialTheme.typography.titleMedium)
-                                Text("Gmail・カレンダー・Figma・Slackなどの接続とアカウント設定を開く")
+                    item(key = "add") {
+                        Column {
+                            SettingsGroupLabel(stringResource(R.string.plugins_group_add))
+                            SettingsGroup {
+                                row {
+                                    SettingsRow(
+                                        title = stringResource(R.string.plugins_catalog_title),
+                                        subtitle = stringResource(R.string.plugins_catalog_entry_subtitle),
+                                        leading = { Icon(Icons.Default.Search, null, Modifier.size(24.dp)) },
+                                        chevron = true,
+                                        onClick = { NavigationController.navigateTo(PluginCatalogKey) },
+                                        modifier = Modifier.testTag("plugins_open_catalog"),
+                                    )
+                                }
                             }
                         }
                     }
-                    // The installed plugins come first; provider selection and installing a new
-                    // plugin are occasional tasks and sit below the list.
-
-                    // Search bar
-                    item(key = "search") {
-                        SearchBar(
-                            query = query,
-                            onQueryChange = { query = it },
-                            placeholder = stringResource(R.string.plugins_search_placeholder),
-                        )
+                    item(key = "installed-label") {
+                        SettingsGroupLabel(stringResource(R.string.plugins_installed_count, filteredPlugins.size))
+                    }
+                    // A search row only earns its place once the list is longer than a screen.
+                    if (state.plugins.size > SEARCH_THRESHOLD) {
+                        item(key = "search") {
+                            SearchBar(
+                                query = query,
+                                onQueryChange = { query = it },
+                                placeholder = stringResource(R.string.plugins_search_placeholder),
+                                modifier = Modifier.padding(bottom = 8.dp),
+                            )
+                        }
                     }
 
                     // Plugin list
-                    items(filteredPlugins, key = { it.name }) { plugin ->
+                    itemsIndexed(filteredPlugins, key = { _, plugin -> plugin.name }) { index, plugin ->
                         PluginCard(
+                            first = index == 0,
+                            last = index == filteredPlugins.lastIndex,
                             plugin = plugin,
                             state = state,
                             viewModel = viewModel,
                             onClick = { showDetail = plugin },
+                            catalogEntry = state.catalog?.let { catalogEntryFor(plugin, it) },
                         )
+                    }
+                    item(key = "installed-footnote") {
+                        SettingsFootnote(stringResource(R.string.plugins_footnote_what))
                     }
 
                     // Orphan dashboard plugins section
                     if (state.orphanPlugins.isNotEmpty()) {
                         item(key = "orphan-header") {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = stringResource(R.string.plugins_orphan_heading),
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(vertical = 8.dp),
+                            SettingsGroupLabel(stringResource(R.string.plugins_orphan_heading))
+                        }
+                        itemsIndexed(state.orphanPlugins, key = {
+                            _,
+                            plugin,
+                            ->
+                            "orphan-${plugin.name}"
+                        }) { index, plugin ->
+                            OrphanPluginCard(
+                                plugin = plugin,
+                                first = index == 0,
+                                last =
+                                    index == state.orphanPlugins.lastIndex,
+                                onClick = { showDetail = plugin },
                             )
                         }
-                        items(state.orphanPlugins, key = { "orphan-${it.name}" }) { plugin ->
-                            OrphanPluginCard(plugin = plugin, onClick = { showDetail = plugin })
-                        }
                     }
 
-                    // Provider selection section
-                    if (state.memoryOptions.isNotEmpty() || state.contextOptions.isNotEmpty()) {
-                        item(key = "providers") {
-                            ProviderSelectionSection(state, viewModel)
+                    // Connectors are their own settings destination; this is a final shortcut, not a second home.
+                    item(key = "external-services") {
+                        SettingsGroup(Modifier.padding(top = 24.dp)) {
+                            row {
+                                SettingsRow(
+                                    title = stringResource(R.string.plugins_advanced),
+                                    subtitle = stringResource(R.string.plugins_advanced_subtitle),
+                                    chevron = true,
+                                    onClick = { NavigationController.navigateTo(PluginAdvancedKey) },
+                                )
+                            }
+                            row {
+                                SettingsRow(
+                                    title = stringResource(R.string.management_external_services),
+                                    subtitle = "Gmail・カレンダー・Figma・Slackなどの接続とアカウント設定を開く",
+                                    chevron = true,
+                                    onClick = {
+                                        NavigationController.navigateTo(com.m57.hermescontrol.SettingsExternalServices)
+                                    },
+                                )
+                            }
                         }
-                    }
-
-                    // Install section
-                    item(key = "install") {
-                        InstallSection(state, viewModel)
                     }
                 }
             }
@@ -240,57 +280,45 @@ fun PluginsScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ProviderSelectionSection(
+internal fun ProviderSelectionSection(
     state: PluginsUiState,
     viewModel: PluginsViewModel,
 ) {
     val providerDefaultsLabel = stringResource(R.string.plugins_provider_defaults)
 
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = stringResource(R.string.plugins_providers_heading),
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = stringResource(R.string.plugins_providers_hint),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Memory provider dropdown
-            Text(
-                text = stringResource(R.string.plugins_memory_provider_label),
-                style = MaterialTheme.typography.labelMedium,
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            ExposedDropdownField(
-                label = stringResource(R.string.plugins_memory_provider_label),
-                options =
-                    listOf(
-                        providerDefaultsLabel,
-                    ) + state.memoryOptions.map { it.name },
-                selectedValue =
-                    if (state.isMemoryBuiltin) {
-                        providerDefaultsLabel
-                    } else {
-                        state.memoryProvider
+    SettingsGroupLabel(stringResource(R.string.plugins_providers_heading))
+    SettingsGroup {
+        row {
+            Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                ExposedDropdownField(
+                    label = stringResource(R.string.plugins_memory_provider_label),
+                    options =
+                        listOf(
+                            providerDefaultsLabel,
+                        ) + state.memoryOptions.map { it.name },
+                    selectedValue =
+                        if (state.isMemoryBuiltin) {
+                            providerDefaultsLabel
+                        } else {
+                            state.memoryProvider
+                        },
+                    onOptionSelected = { selected ->
+                        if (selected == providerDefaultsLabel) {
+                            viewModel.updateMemoryProvider(PluginsUiState.MEMORY_PROVIDER_BUILTIN)
+                        } else {
+                            viewModel.updateMemoryProvider(selected)
+                        }
                     },
-                onOptionSelected = { selected ->
-                    if (selected == providerDefaultsLabel) {
-                        viewModel.updateMemoryProvider(PluginsUiState.MEMORY_PROVIDER_BUILTIN)
-                    } else {
-                        viewModel.updateMemoryProvider(selected)
-                    }
-                },
-            )
-
-            // Manage the selected provider's config/setup (issue #783).
-            if (!state.isMemoryBuiltin && state.memoryProvider.isNotBlank()) {
-                Spacer(modifier = Modifier.height(4.dp))
-                TextButton(
+                )
+            }
+        }
+        // Manage the selected provider's config/setup (issue #783).
+        if (!state.isMemoryBuiltin && state.memoryProvider.isNotBlank()) {
+            row {
+                SettingsRow(
+                    title = stringResource(R.string.plugins_memory_manage),
+                    subtitle = state.memoryProvider,
+                    chevron = true,
                     onClick = {
                         NavigationController.navigateTo(
                             MemoryProviderDetailKey(
@@ -299,309 +327,179 @@ private fun ProviderSelectionSection(
                             ),
                         )
                     },
-                    shapes = ButtonDefaults.shapes(),
-                ) {
-                    Text(stringResource(R.string.plugins_memory_manage))
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Context engine dropdown
-            Text(
-                text = stringResource(R.string.plugins_context_engine_label),
-                style = MaterialTheme.typography.labelMedium,
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            ExposedDropdownField(
-                label = stringResource(R.string.plugins_context_engine_label),
-                options = listOf("compressor") + state.contextOptions.map { it.name },
-                selectedValue = state.contextEngine,
-                onOptionSelected = { viewModel.updateContextEngine(it) },
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Button(
-                onClick = { viewModel.savePluginProviders() },
-                enabled = !state.providerBusy,
-                shapes = ButtonDefaults.shapes(),
-            ) {
-                if (state.providerBusy) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                }
-                Text(stringResource(R.string.common_save))
+                )
             }
         }
+        row {
+            Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                ExposedDropdownField(
+                    label = stringResource(R.string.plugins_context_engine_label),
+                    options = listOf("compressor") + state.contextOptions.map { it.name },
+                    selectedValue = state.contextEngine,
+                    onOptionSelected = { viewModel.updateContextEngine(it) },
+                )
+            }
+        }
+        row {
+            SettingsFormSubmit(
+                label = stringResource(R.string.common_save),
+                busy = state.providerBusy,
+                enabled = !state.providerBusy,
+                onClick = { viewModel.savePluginProviders() },
+            )
+        }
     }
+    SettingsFootnote(stringResource(R.string.plugins_providers_hint))
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun InstallSection(
+internal fun InstallSection(
     state: PluginsUiState,
     viewModel: PluginsViewModel,
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = stringResource(R.string.plugins_install_heading),
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = stringResource(R.string.plugins_install_hint),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-
+    SettingsGroupLabel(stringResource(R.string.plugins_install_heading))
+    SettingsGroup {
+        row {
             OutlinedTextField(
+                shape = MaterialTheme.shapes.large,
                 value = state.installUrl,
                 onValueChange = { viewModel.updateInstallUrl(it) },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
                 placeholder = { Text(stringResource(R.string.plugins_repo_placeholder)) },
                 singleLine = true,
                 enabled = !state.installBusy,
             )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(
-                        checked = state.installForce,
-                        onCheckedChange = { viewModel.updateInstallForce(it) },
-                        enabled = !state.installBusy,
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = stringResource(R.string.plugins_force_reinstall),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(
-                        checked = state.installEnable,
-                        onCheckedChange = { viewModel.updateInstallEnable(it) },
-                        enabled = !state.installBusy,
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = stringResource(R.string.plugins_enable_after_install),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Button(
-                onClick = { viewModel.installPluginFromUrl() },
+        }
+        row {
+            SettingsRow(
+                title = stringResource(R.string.plugins_enable_after_install),
+                checked = state.installEnable,
+                onCheckedChange = { viewModel.updateInstallEnable(it) },
+                enabled = !state.installBusy,
+            )
+        }
+        row {
+            SettingsRow(
+                title = stringResource(R.string.plugins_force_reinstall),
+                checked = state.installForce,
+                onCheckedChange = { viewModel.updateInstallForce(it) },
+                enabled = !state.installBusy,
+            )
+        }
+        row {
+            SettingsFormSubmit(
+                label = stringResource(R.string.plugins_action_install),
+                busy = state.installBusy,
                 enabled = !state.installBusy && state.installUrl.isNotBlank(),
-                shapes = ButtonDefaults.shapes(),
-            ) {
-                if (state.installBusy) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                } else {
-                    Icon(
-                        Icons.Default.InstallDesktop,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                }
-                Text(stringResource(R.string.plugins_action_install))
-            }
+                onClick = { viewModel.installPluginFromUrl() },
+            )
         }
     }
+    SettingsFootnote(stringResource(R.string.plugins_install_hint))
 }
 
+private const val SEARCH_THRESHOLD = 6
+
 @Composable
-private fun PluginCard(
+internal fun PluginCard(
     plugin: PluginInfo,
     state: PluginsUiState,
     viewModel: PluginsViewModel,
     onClick: () -> Unit,
+    first: Boolean = true,
+    last: Boolean = true,
+    catalogEntry: PluginCatalogEntry? = null,
 ) {
     val busy = state.rowBusy == plugin.name
     val statusColors = LocalHermesStatusColors.current
-
-    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            // Header row: name + toggle
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = plugin.name, style = MaterialTheme.typography.titleMedium)
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        // Version badge
-                        plugin.version?.let {
-                            Text(
-                                text = "v$it",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        // Source badge
-                        plugin.source?.let {
-                            Text(
-                                text = it,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-                if (plugin.installed) {
-                    Switch(
-                        checked = plugin.enabled,
-                        onCheckedChange = { viewModel.togglePlugin(plugin) },
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            // Description
-            Text(
-                text = plugin.description ?: stringResource(R.string.plugins_no_desc),
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
-
-            // Status badges
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                val statusColor =
-                    when {
-                        plugin.enabled -> statusColors.success
-                        plugin.installed -> statusColors.warning
-                        else -> statusColors.error
-                    }
-                Text(
-                    text = plugin.runtimeStatus ?: "inactive",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = statusColor,
-                )
-                if (plugin.authRequired) {
-                    Text(
-                        text = stringResource(R.string.plugins_auth_required),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = statusColors.error,
-                    )
-                }
-            }
-
-            // Dashboard slots
-            plugin.dashboardManifest?.slots?.let { slots ->
-                if (slots.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = stringResource(R.string.plugins_dashboard_slots, slots.joinToString(", ")),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-
-            // Auth command hint
-            if (plugin.authRequired && plugin.authCommand != null) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = stringResource(R.string.plugins_auth_command_hint, plugin.authCommand),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Action buttons row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-            ) {
-                if (plugin.installed) {
-                    // Visibility toggle (only for plugins with dashboard manifest)
-                    if (plugin.hasDashboardManifest) {
-                        IconButton(
-                            onClick = { viewModel.togglePluginVisibility(plugin) },
-                            enabled = !busy,
-                            modifier = Modifier.size(32.dp),
-                        ) {
-                            Icon(
-                                if (plugin.userHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription =
-                                    if (plugin.userHidden) {
-                                        stringResource(R.string.plugins_show_in_sidebar)
-                                    } else {
-                                        stringResource(R.string.plugins_hide_from_sidebar)
-                                    },
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(4.dp))
-                    }
-
-                    // Update button
-                    if (plugin.canUpdateGit) {
-                        OutlinedButton(
-                            onClick = { viewModel.updatePlugin(plugin.name) },
-                            enabled = !busy,
-                            shapes = ButtonDefaults.shapes(),
-                        ) {
-                            Text(stringResource(R.string.plugins_action_update))
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                    }
-
-                    // Remove button with confirmation
-                    if (plugin.canRemove) {
-                        OutlinedButton(
-                            onClick = { viewModel.requestRemovePlugin(plugin.name) },
-                            enabled = !busy,
-                            colors =
-                                ButtonDefaults.outlinedButtonColors(
-                                    contentColor = MaterialTheme.colorScheme.error,
-                                ),
-                            shapes = ButtonDefaults.shapes(),
-                        ) {
-                            Icon(
-                                Icons.Default.Delete,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(stringResource(R.string.plugins_action_uninstall))
-                        }
+    val actions =
+        if (plugin.installed) {
+            listOfNotNull(
+                if (plugin.hasDashboardManifest) {
+                    SettingsMenuItem(
+                        stringResource(
+                            if (plugin.userHidden) R.string.plugins_action_show else R.string.plugins_action_hide,
+                        ),
+                    ) { viewModel.togglePluginVisibility(plugin) }
+                } else {
+                    null
+                },
+                if (plugin.canUpdateGit) {
+                    SettingsMenuItem(
+                        stringResource(R.string.plugins_action_update),
+                    ) { viewModel.updatePlugin(plugin.name) }
+                } else {
+                    null
+                },
+                if (plugin.canRemove) {
+                    SettingsMenuItem(stringResource(R.string.plugins_action_uninstall)) {
+                        viewModel.requestRemovePlugin(plugin.name)
                     }
                 } else {
-                    Button(
-                        onClick = { viewModel.activatePlugin(plugin) },
-                        enabled = !busy,
-                        shapes = ButtonDefaults.shapes(),
-                    ) {
-                        Text(stringResource(R.string.plugins_action_install))
-                    }
-                }
-            }
+                    null
+                },
+            )
+        } else {
+            emptyList()
         }
+    // An authentication need replaces the description: it is the one thing the person must act on.
+    // It stays in the meta line (text + warning color) so large text never squeezes the title.
+    val authRequiredLabel = stringResource(R.string.plugins_auth_required)
+    val authHint =
+        if (plugin.authRequired) {
+            listOfNotNull(
+                authRequiredLabel,
+                plugin.authCommand?.let { stringResource(R.string.plugins_auth_command_hint, it) },
+            ).joinToString(" · ")
+        } else {
+            null
+        }
+    // Catalog plugins say what they add in plain words first; the server's own text follows.
+    val summary =
+        catalogEntry?.let { entry ->
+            // The shelf name is dropped when the capabilities already say it ("ツール · ツール1個").
+            listOf(
+                stringResource(catalogCategoryLabel(entry.shelf())).takeIf { entry.shelf() != "tools" }.orEmpty(),
+                capabilityShortSummary(entry),
+            ).filter { it.isNotBlank() }
+                .joinToString(" · ")
+        }
+    val description = plugin.description?.takeIf { it.isNotBlank() }?.let(::firstSentence)
+    SettingsListItem(first = first, last = last) {
+        SettingsRow(
+            title = catalogEntry?.displayName() ?: plugin.name,
+            subtitle =
+                authHint
+                    ?: listOfNotNull(summary, description).joinToString("\n").ifBlank {
+                        stringResource(R.string.plugins_no_desc)
+                    },
+            subtitleColor = if (authHint != null) statusColors.warning else Color.Unspecified,
+            subtitleMaxLines = if (authHint != null) Int.MAX_VALUE else 2,
+            checked = if (plugin.installed && !busy) plugin.enabled else null,
+            onCheckedChange = { viewModel.togglePlugin(plugin) },
+            actions = actions,
+            actionsEnabled = !busy,
+            onClick = onClick,
+            trailing =
+                when {
+                    busy -> {
+                        { CircularProgressIndicator(Modifier.padding(end = 12.dp).size(18.dp), strokeWidth = 2.dp) }
+                    }
+
+                    !plugin.installed -> {
+                        {
+                            TextButton(onClick = { viewModel.activatePlugin(plugin) }) {
+                                Text(stringResource(R.string.plugins_action_install))
+                            }
+                        }
+                    }
+
+                    else -> {
+                        null
+                    }
+                },
+        )
     }
 }
 
@@ -609,25 +507,10 @@ private fun PluginCard(
 private fun OrphanPluginCard(
     plugin: PluginInfo,
     onClick: () -> Unit,
+    first: Boolean = true,
+    last: Boolean = true,
 ) {
-    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = plugin.name,
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                plugin.description?.let {
-                    Text(
-                        text = it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
+    SettingsListItem(first = first, last = last) {
+        SettingsRow(title = plugin.name, subtitle = plugin.description, onClick = onClick)
     }
 }

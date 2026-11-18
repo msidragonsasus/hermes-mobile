@@ -83,6 +83,42 @@ data class AgentPluginInstallBody(
     val identifier: String,
     val force: Boolean = false,
     val enable: Boolean = true,
+    /** Installs a curated catalog entry at its reviewed pin; the server resolves repo and SHA. */
+    @SerialName("catalog_name") val catalogName: String? = null,
+)
+
+/** `GET api/dashboard/plugins/catalog`: Nous-curated entries merged with this server's installs. */
+@Serializable
+data class PluginCatalogResponse(
+    val entries: List<PluginCatalogEntry> = emptyList(),
+)
+
+@Serializable
+data class PluginCatalogEntry(
+    val name: String,
+    val repo: String = "",
+    val description: String = "",
+    val maintainer: String = "",
+    val tier: String = "community",
+    val category: String = "desktop",
+    val version: String = "",
+    val title: String = "",
+    @SerialName("docs_url") val docsUrl: String = "",
+    @SerialName("requires_hermes") val requiresHermes: String = "",
+    val platforms: List<String> = emptyList(),
+    val capabilities: PluginCatalogCapabilities = PluginCatalogCapabilities(),
+    @SerialName("known_issues") val knownIssues: List<String> = emptyList(),
+    val installed: Boolean = false,
+    @SerialName("update_available") val updateAvailable: Boolean = false,
+    @SerialName("runtime_status") val runtimeStatus: String? = null,
+)
+
+@Serializable
+data class PluginCatalogCapabilities(
+    @SerialName("provides_tools") val providesTools: List<String> = emptyList(),
+    @SerialName("provides_hooks") val providesHooks: List<String> = emptyList(),
+    @SerialName("provides_middleware") val providesMiddleware: List<String> = emptyList(),
+    @SerialName("requires_env") val requiresEnv: List<String> = emptyList(),
 )
 
 @Serializable
