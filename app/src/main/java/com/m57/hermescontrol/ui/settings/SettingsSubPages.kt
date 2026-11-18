@@ -33,10 +33,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.NavIcon
+import com.m57.hermescontrol.ui.common.SettingsGroup
+import com.m57.hermescontrol.ui.common.SettingsRow
 import com.m57.hermescontrol.ui.settings.components.AboutSection
 import com.m57.hermescontrol.ui.settings.components.ConnectionSection
-import com.m57.hermescontrol.ui.settings.components.TestConnectionButton
-import com.m57.hermescontrol.ui.settings.components.TestResultCard
+import com.m57.hermescontrol.ui.settings.components.ConnectionCheckGroup
 
 /**
  * Drill-down sub-pages for Settings (connection and About; the rest is inline on SettingsScreen). Each is its own NavKey destination
@@ -60,7 +61,7 @@ internal fun SettingsConnectionPage(
     var loggingOut by remember { mutableStateOf(false) }
 
     HermesScaffold(
-        title = { Text(stringResource(R.string.settings_sec_connection)) },
+        title = { Text(stringResource(R.string.settings_connection)) },
         navigationIcon = NavIcon.Back(onBack),
         // Non-primary drill-down: opt out of drawer gestures so the scrim can't
         // get stuck open (issue #619). DrawerGestureController handles the close.
@@ -71,8 +72,7 @@ internal fun SettingsConnectionPage(
                 Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                    .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
         ) {
             ConnectionSection(
                 state = state,
@@ -81,23 +81,21 @@ internal fun SettingsConnectionPage(
                 onPasswordVisibilityToggle = { passwordVisible = !passwordVisible },
             )
 
-            TestResultCard(testResult = state.testResult)
-            TestConnectionButton(
+            ConnectionCheckGroup(
                 isTesting = state.isTesting,
+                testResult = state.testResult,
                 onTest = viewModel::testConnection,
             )
 
-            Spacer(modifier = Modifier.height(2.dp))
-
-            // Destructive but not primary: outlined in the error color, confirmed before it runs.
-            OutlinedButton(
-                onClick = { confirmLogout = true },
-                enabled = !loggingOut,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                shapes = ButtonDefaults.shapes(),
-            ) {
-                Text(stringResource(R.string.settings_logout))
+            // Destructive and final: an error-colored row in its own last group, confirmed before it runs.
+            SettingsGroup(Modifier.padding(top = 24.dp)) {
+                row {
+                    SettingsRow(
+                        title = stringResource(R.string.settings_logout),
+                        titleColor = MaterialTheme.colorScheme.error,
+                        onClick = { confirmLogout = true },
+                    )
+                }
             }
         }
     }

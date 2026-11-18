@@ -2,12 +2,14 @@ package com.m57.hermescontrol.ui.config
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -51,6 +53,8 @@ import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SearchBar
 import com.m57.hermescontrol.ui.common.SectionHeader
+import com.m57.hermescontrol.ui.common.SettingsGroupLabel
+import com.m57.hermescontrol.ui.common.SettingsListItem
 import com.m57.hermescontrol.ui.common.SkeletonListState
 import kotlinx.coroutines.launch
 
@@ -62,6 +66,10 @@ import kotlinx.coroutines.launch
 fun AgentSettingsScreen(
     onOpenDrawer: (() -> Unit)? = null,
     viewModel: AgentSettingsViewModel = viewModel { AgentSettingsViewModel() },
+    title: String = "エージェント設定",
+    settingIds: Set<String>? = null,
+    onBack: (() -> Unit)? = null,
+    headerContent: @Composable () -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -84,36 +92,46 @@ fun AgentSettingsScreen(
     }
 
     HermesScaffold(
-        title = { Text("エージェント設定") },
-        navigationIcon = onOpenDrawer?.let { NavIcon.Menu(it) },
+        title = { Text(title) },
+        navigationIcon = onBack?.let { NavIcon.Back(it) } ?: onOpenDrawer?.let { NavIcon.Menu(it) },
+        drawerGesturesEnabled = onBack == null,
         isRefreshing = state.isLoading,
         onRefresh = viewModel::load,
         snackbarHost = { SnackbarHost(snackbar) },
     ) {
-        val values = state.values
-        when {
-            values == null && state.isLoading -> {
-                SkeletonListState()
+        Column(Modifier.fillMaxSize()) {
+            if (state.values == null) {
+                Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp)) { headerContent() }
             }
+            Column(Modifier.weight(1f)) {
+                val values = state.values
+                when {
+                    values == null && state.isLoading -> {
+                        SkeletonListState()
+                    }
 
-            values == null -> {
-                ErrorState(message = state.errorMessage ?: "", onRetry = viewModel::load)
-            }
+                    values == null -> {
+                        ErrorState(message = state.errorMessage ?: "", onRetry = viewModel::load)
+                    }
 
-            else -> {
-                AgentSettingsList(
-                    state = state,
-                    values = values,
-                    query = query,
-                    onQueryChange = { query = it },
-                    expandedId = expandedId,
-                    onExpandedChange = { setting, open -> expandedId = if (open) setting.id else null },
-                    onChoose = ::choose,
-                    onRestore = { setting ->
-                        expandedId = null
-                        viewModel.restoreDefault(setting)
-                    },
-                )
+                    else -> {
+                        AgentSettingsList(
+                            state = state,
+                            values = values,
+                            settingIds = settingIds,
+                            query = query,
+                            onQueryChange = { query = it },
+                            expandedId = expandedId,
+                            onExpandedChange = { setting, open -> expandedId = if (open) setting.id else null },
+                            onChoose = ::choose,
+                            onRestore = { setting ->
+                                expandedId = null
+                                viewModel.restoreDefault(setting)
+                            },
+                            headerContent = headerContent,
+                        )
+                    }
+                }
             }
         }
     }
@@ -159,88 +177,113 @@ internal fun AgentSettingsNoticeEffect(
 }
 
 @Composable
-private fun AgentSettingsList(
+internal fun AgentSettingsList(
     state: AgentSettingsUiState,
     values: Map<String, kotlinx.serialization.json.JsonElement>,
+    settingIds: Set<String>?,
     query: String,
     onQueryChange: (String) -> Unit,
     expandedId: String?,
     onExpandedChange: (AgentSetting, Boolean) -> Unit,
     onChoose: (AgentSetting, AgentSettingOption) -> Unit,
     onRestore: (AgentSetting) -> Unit,
+    headerContent: @Composable () -> Unit = {},
 ) {
     val spacing = LocalSpacing.current
     val groups =
         state.visibleGroups
-            .map { group -> group.copy(settings = group.settings.filter { it.matches(query) }) }
-            .filter { it.settings.isNotEmpty() }
-    LazyColumn(Modifier.fillMaxSize().testTag("agent_settings_list")) {
-        item("google_connection") {
-            ListItem(
-                headlineContent = { Text("Google接続") },
-                supportingContent = { Text("アカウントを選び、HermesにGmailの読み取りを許可します。") },
-                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
-                modifier =
-                    Modifier.clickable {
-                        NavigationController.navigateTo(
-                            com.m57.hermescontrol.SettingsGoogleConnection,
-                        )
-                    },
-            )
+            .map { group ->
+                group.copy(
+                    settings =
+                        group.settings.filter {
+                            (settingIds == null || it.id in settingIds) &&
+                                it.matches(query)
+                        },
+                )
+            }.filter { it.settings.isNotEmpty() }
+    LazyColumn(
+        Modifier.fillMaxSize().testTag("agent_settings_list"),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
+    ) {
+        item("settings_links") { Column { headerContent() } }
+        if (settingIds == null) {
+            item("google_connection") {
+                ListItem(
+                    headlineContent = { Text("Google接続") },
+                    supportingContent = { Text("アカウントを選び、HermesにGmailの読み取りを許可します。") },
+                    trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                    modifier =
+                        Modifier.clickable {
+                            NavigationController.navigateTo(
+                                com.m57.hermescontrol.SettingsGoogleConnection,
+                            )
+                        },
+                )
+            }
         }
-        item("search") {
-            SearchBar(
-                query = query,
-                onQueryChange = onQueryChange,
-                placeholder = "設定を探す（例: 確認、記憶、時間）",
-                modifier = Modifier.padding(horizontal = spacing.lg, vertical = spacing.sm),
-            )
+        if (settingIds == null) {
+            item("search") {
+                SearchBar(
+                    query = query,
+                    onQueryChange = onQueryChange,
+                    placeholder = "設定を探す（例: 確認、記憶、時間）",
+                    modifier = Modifier.padding(vertical = spacing.sm),
+                )
+            }
         }
         groups.forEach { group ->
-            item("group_${group.title}") { SectionHeader(group.title, Modifier.padding(top = spacing.sm)) }
-            items(group.settings, key = { it.id }) { setting ->
-                AgentSettingItem(
-                    setting = setting,
-                    state = state,
-                    values = values,
-                    expanded = expandedId == setting.id,
-                    showDescription = true,
-                    onExpandedChange = { onExpandedChange(setting, it) },
-                    onChoose = { onChoose(setting, it) },
-                    onRestore = { onRestore(setting) },
-                )
+            item("group_${group.title}") { SettingsGroupLabel(group.title) }
+            itemsIndexed(group.settings, key = { _, setting -> setting.id }) { index, setting ->
+                SettingsListItem(first = index == 0, last = index == group.settings.lastIndex) {
+                    AgentSettingItem(
+                        setting = setting,
+                        state = state,
+                        values = values,
+                        expanded = expandedId == setting.id,
+                        showDescription = true,
+                        onExpandedChange = { onExpandedChange(setting, it) },
+                        onChoose = { onChoose(setting, it) },
+                        onRestore = { onRestore(setting) },
+                    )
+                }
             }
         }
         if (groups.isEmpty()) {
             item("empty") {
                 Text(
-                    "「$query」に合う設定はありません。下の詳細設定ではすべての項目を検索できます。",
+                    if (settingIds != null) {
+                        "この接続先では変更できる設定がありません。"
+                    } else {
+                        "「$query」に合う設定はありません。下の詳細設定ではすべての項目を検索できます。"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(spacing.lg),
                 )
             }
         }
-        item("advanced") {
-            HorizontalDivider(Modifier.padding(top = spacing.md))
-            ListItem(
-                headlineContent = { Text("詳細設定（上級者向け）") },
-                supportingContent = {
-                    Text(
-                        if (state.advancedFieldCount > 0) {
-                            "設定ファイルの全${state.advancedFieldCount}項目をそのまま編集します。"
-                        } else {
-                            "設定ファイルをそのまま編集します。"
-                        },
-                    )
-                },
-                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
-                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                modifier =
-                    Modifier.testTag("agent_settings_advanced").clickable {
-                        NavigationController.navigateTo(ConfigAdvancedScreen)
+        if (settingIds == null) {
+            item("advanced") {
+                HorizontalDivider(Modifier.padding(top = spacing.md))
+                ListItem(
+                    headlineContent = { Text("詳細設定（上級者向け）") },
+                    supportingContent = {
+                        Text(
+                            if (state.advancedFieldCount > 0) {
+                                "設定ファイルの全${state.advancedFieldCount}項目をそのまま編集します。"
+                            } else {
+                                "設定ファイルをそのまま編集します。"
+                            },
+                        )
                     },
-            )
+                    trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    modifier =
+                        Modifier.testTag("agent_settings_advanced").clickable {
+                            NavigationController.navigateTo(ConfigAdvancedScreen)
+                        },
+                )
+            }
         }
     }
 }

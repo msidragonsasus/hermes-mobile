@@ -114,14 +114,16 @@ class PasswordsScreenTest {
             compose.onAllNodesWithText("Example", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
         }
         screenshot("vault-list-light")
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        // Row actions live in the shared ︙ menu; the server still has to acknowledge the confirmed delete.
         compose
             .onNode(
                 androidx.compose.ui.test
-                    .hasContentDescription("Delete Example") or
-                    androidx.compose.ui.test
-                        .hasContentDescription("Exampleを削除"),
+                    .hasContentDescription(context.getString(R.string.settings_actions_for, "Example")),
             ).performClick()
-        val deleteLabel = InstrumentationRegistry.getInstrumentation().targetContext.getString(R.string.vault_delete)
+        val deleteLabel = context.getString(R.string.vault_delete)
+        compose.onNodeWithText(deleteLabel, substring = false).performClick()
+        compose.waitForIdle()
         compose.onNodeWithText(deleteLabel, substring = false).performClick()
         compose.waitUntil(5_000) { removed }
         val deleted = InstrumentationRegistry.getInstrumentation().targetContext.getString(R.string.vault_deleted)

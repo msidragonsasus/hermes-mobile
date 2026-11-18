@@ -66,6 +66,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.model.HubSkill
 import com.m57.hermescontrol.data.model.Skill
@@ -78,18 +79,22 @@ import com.m57.hermescontrol.ui.common.DetailDialog
 import com.m57.hermescontrol.ui.common.DetailRow
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
-import com.m57.hermescontrol.ui.common.FlatListRow
 import com.m57.hermescontrol.ui.common.FilterChipRow
+import com.m57.hermescontrol.ui.common.FlatListRow
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.LoadingState
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SearchBar
+import com.m57.hermescontrol.ui.common.SettingsFootnote
+import com.m57.hermescontrol.ui.common.SettingsGroupLabel
+import com.m57.hermescontrol.ui.common.SettingsListItem
+import com.m57.hermescontrol.ui.common.SettingsMenuItem
+import com.m57.hermescontrol.ui.common.SettingsRow
+import com.m57.hermescontrol.ui.common.SettingsPanel
 import com.m57.hermescontrol.ui.common.SkeletonListState
 import com.m57.hermescontrol.ui.common.ToastEffect
 import com.m57.hermescontrol.ui.common.listItemSpacing
 import com.m57.hermescontrol.ui.common.toDetailRows
-
-internal const val CATEGORY_ALL = "All"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -101,7 +106,6 @@ fun SkillsScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var query by remember { mutableStateOf("") }
     var selectedStatus by remember { mutableStateOf(SkillFilter.ALL_STATUSES) }
-    var selectedCategory by remember { mutableStateOf(CATEGORY_ALL) }
 
     LaunchedEffect(Unit) {
         viewModel.loadSkills()
@@ -144,7 +148,7 @@ fun SkillsScreen(
                         SkillsViewMode.HUB -> stringResource(R.string.skills_mode_hub)
                     }
                 },
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
 
             when (state.viewMode) {
@@ -155,13 +159,9 @@ fun SkillsScreen(
                         onQueryChange = { query = it },
                         selectedStatus = selectedStatus,
                         onStatusChange = { selectedStatus = it },
-                        selectedCategory = selectedCategory,
-                        onCategoryChange = { selectedCategory = it },
                         onToggle = viewModel::toggleSkill,
                         onEdit = viewModel::loadSkillContent,
                         onUninstall = viewModel::uninstallSkill,
-                        onSetSourceFilter = viewModel::setSourceFilter,
-                        sourceFilter = state.sourceFilter,
                         isUninstalling = state.isUninstalling,
                         uninstallingSkillName = state.uninstallingSkillName,
                         onRefresh = viewModel::loadSkills,
@@ -228,13 +228,9 @@ private fun InstalledSkillsView(
     onQueryChange: (String) -> Unit,
     selectedStatus: SkillFilter,
     onStatusChange: (SkillFilter) -> Unit,
-    selectedCategory: String?,
-    onCategoryChange: (String) -> Unit,
     onToggle: (Skill) -> Unit,
     onEdit: (String) -> Unit,
     onUninstall: (String) -> Unit,
-    onSetSourceFilter: (String?) -> Unit,
-    sourceFilter: String?,
     isUninstalling: Boolean,
     uninstallingSkillName: String?,
     onRefresh: () -> Unit,
@@ -242,23 +238,10 @@ private fun InstalledSkillsView(
 ) {
     var showDetail by remember { mutableStateOf<Skill?>(null) }
 
-    val categories =
-        remember(state.skills) {
-            state.skills
-                .mapNotNull { it.category }
-                .distinct()
-                .sorted()
-        }
-    val sources =
-        remember(state.skills) {
-            state.skills
-                .mapNotNull { it.source }
-                .distinct()
-                .sorted()
-        }
-
     val filteredSkills =
-        remember(state.skills, query, selectedStatus, selectedCategory, sourceFilter) {
+        // One filter row (DESIGN.md "Settings destinations"): search plus enabled state. Category and
+        // source no longer filter, so a stale selection kept by the activity-scoped ViewModel cannot hide skills.
+        remember(state.skills, query, selectedStatus) {
             state.skills.filter { skill ->
                 (
                     query.isBlank() || skill.name.contains(query, ignoreCase = true) ||
@@ -268,9 +251,7 @@ private fun InstalledSkillsView(
                         selectedStatus == SkillFilter.ALL_STATUSES ||
                             (selectedStatus == SkillFilter.ENABLED && skill.enabled) ||
                             (selectedStatus == SkillFilter.DISABLED && !skill.enabled)
-                    ) &&
-                    (selectedCategory == CATEGORY_ALL || skill.category == selectedCategory) &&
-                    (sourceFilter == null || skill.source == sourceFilter)
+                    )
             }
         }
 
@@ -279,13 +260,14 @@ private fun InstalledSkillsView(
             query = query,
             onQueryChange = onQueryChange,
             placeholder = stringResource(R.string.skills_search_placeholder),
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
 
         FilterChipRow(
             chips = SkillFilter.entries.toList(),
             selectedChip = selectedStatus,
             onChipSelected = onStatusChange,
+            horizontalPadding = 16.dp,
             chipLabel = { chip ->
                 Text(
                     text =
@@ -297,32 +279,6 @@ private fun InstalledSkillsView(
                 )
             },
         )
-
-        if (categories.isNotEmpty() || sources.isNotEmpty()) {
-            // Keep the sentinel value in state and translate only the label; comparing against the
-            // localized label broke the "all" filter outside English.
-            FilterChipRow(
-                chips = listOf(CATEGORY_ALL) + categories,
-                selectedChip = selectedCategory,
-                onChipSelected = onCategoryChange,
-                chipLabel = { chip ->
-                    Text(if (chip == CATEGORY_ALL) stringResource(R.string.skills_category_all) else chip)
-                },
-            )
-            if (sources.isNotEmpty()) {
-                FilterChipRow(
-                    chips = listOf<String?>(null) + sources,
-                    selectedChip = sourceFilter,
-                    onChipSelected = onSetSourceFilter,
-                    chipLabel = { source ->
-                        Text(
-                            text = source ?: stringResource(R.string.skills_source_all),
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                    },
-                )
-            }
-        }
 
         when {
             state.isLoading -> {
@@ -348,14 +304,18 @@ private fun InstalledSkillsView(
             else -> {
                 LazyColumn(
                     modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
-                    verticalArrangement = listItemSpacing,
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
                 ) {
+                    item(key = "installed_label") {
+                        SettingsGroupLabel(stringResource(R.string.skills_installed_count, filteredSkills.size))
+                    }
                     itemsIndexed(
                         filteredSkills,
                         key = { index, skill -> "${skill.name}:${skill.source ?: "unknown"}:$index" },
-                    ) { _, skill ->
+                    ) { index, skill ->
                         SkillCard(
+                            first = index == 0,
+                            last = index == filteredSkills.lastIndex,
                             skill = skill,
                             onToggle = { onToggle(skill) },
                             onAction = { onEdit(skill.name) },
@@ -386,143 +346,36 @@ private fun InstalledSkillsView(
 // ── Skill Card ─────────────────────────────────────────────────────────
 
 @Composable
-private fun SkillCard(
+internal fun SkillCard(
     skill: Skill,
     onToggle: () -> Unit,
     onAction: () -> Unit,
     onUninstall: (() -> Unit)?,
     isUninstalling: Boolean,
     onClick: () -> Unit,
+    first: Boolean = true,
+    last: Boolean = true,
 ) {
-    FlatListRow(modifier = Modifier.padding(horizontal = 12.dp), onClick = onClick) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(
-                modifier = Modifier.weight(1f).padding(horizontal = 8.dp, vertical = 8.dp),
-            ) {
-                // ── Top row: name + source badge + toggle ──
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = skill.name,
-                        style =
-                            MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.SemiBold,
-                            ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    skill.source?.let { source ->
-                        Spacer(modifier = Modifier.width(6.dp))
-                        SourceBadge(source = source)
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Switch(
-                        checked = skill.enabled,
-                        onCheckedChange = { onToggle() },
-                    )
-                }
-
-                // ── Category ──
-                skill.category?.let { cat ->
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = cat,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                // ── Description ──
-                skill.description?.let { desc ->
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = desc,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-
-                // ── Action buttons row ──
-                if (onUninstall != null) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        IconButton(onClick = onAction) {
-                            Icon(
-                                imageVector = Icons.Filled.Edit,
-                                contentDescription = stringResource(R.string.content_desc_edit_skill),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        IconButton(
-                            onClick = onUninstall,
-                            enabled = !isUninstalling,
-                        ) {
-                            if (isUninstalling) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp,
-                                )
-                            } else {
-                                val statusColors = LocalHermesStatusColors.current
-                                Icon(
-                                    imageVector = Icons.Filled.CloudOff,
-                                    contentDescription = stringResource(R.string.content_desc_uninstall_skill),
-                                    tint = statusColors.error,
-                                )
-                            }
-                        }
-                    }
+    val editLabel = stringResource(R.string.settings_action_edit)
+    val uninstallLabel = stringResource(R.string.skills_action_uninstall)
+    SettingsListItem(first = first, last = last) {
+        SettingsRow(
+            title = skill.name,
+            subtitle = skill.description?.takeIf { it.isNotBlank() } ?: skill.category,
+            checked = skill.enabled,
+            onCheckedChange = { onToggle() },
+            actions =
+                listOfNotNull(
+                    SettingsMenuItem(editLabel, onClick = onAction),
+                    onUninstall?.let { SettingsMenuItem(uninstallLabel, enabled = !isUninstalling, onClick = it) },
+                ),
+            onClick = onClick,
+            trailing =
+                if (isUninstalling) {
+                    { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) }
                 } else {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        IconButton(onClick = onAction) {
-                            Icon(
-                                imageVector = Icons.Filled.Edit,
-                                contentDescription = stringResource(R.string.content_desc_edit_skill),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-// ── Source Badge ───────────────────────────────────────────────────────
-
-@Composable
-private fun SourceBadge(source: String) {
-    val (color, label) =
-        when (source) {
-            "hub" -> MaterialTheme.colorScheme.tertiary to "hub"
-            "built-in" -> MaterialTheme.colorScheme.secondary to "built-in"
-            "optional" -> MaterialTheme.colorScheme.outline to "opt"
-            else -> MaterialTheme.colorScheme.outline to source
-        }
-    Surface(
-        color = color.copy(alpha = 0.15f),
-        shape = MaterialTheme.shapes.small,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = color,
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    null
+                },
         )
     }
 }
@@ -547,51 +400,15 @@ private fun HubBrowseView(
     var hubShowDetail by remember { mutableStateOf<HubSkill?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        OutlinedTextField(
-            value = hubQuery,
-            onValueChange = onHubQueryChange,
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-            placeholder = { Text(stringResource(R.string.skills_hub_search_placeholder)) },
-            trailingIcon = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (hubQuery.isNotEmpty()) {
-                        IconButton(onClick = {
-                            onHubQueryChange("")
-                            onClearSearch()
-                        }) {
-                            Icon(
-                                imageVector = Icons.Filled.Close,
-                                contentDescription = stringResource(R.string.action_clear),
-                            )
-                        }
-                    }
-                    IconButton(
-                        onClick = { onSearch(hubQuery) },
-                        enabled = hubQuery.isNotBlank(),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Search,
-                            contentDescription = stringResource(R.string.skills_hub_search_button),
-                        )
-                    }
-                }
+        SearchBar(
+            query = hubQuery,
+            onQueryChange = { value ->
+                onHubQueryChange(value)
+                if (value.isEmpty()) onClearSearch()
             },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions =
-                KeyboardActions(
-                    onSearch = {
-                        if (hubQuery.isNotBlank()) {
-                            onSearch(hubQuery)
-                        }
-                    },
-                ),
+            placeholder = stringResource(R.string.skills_hub_search_placeholder),
+            onSearch = { if (hubQuery.isNotBlank()) onSearch(hubQuery) },
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
 
         when {
@@ -616,14 +433,18 @@ private fun HubBrowseView(
             state.hubResults.isNotEmpty() -> {
                 LazyColumn(
                     modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
-                    verticalArrangement = listItemSpacing,
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
                 ) {
+                    item(key = "hub_results_label") {
+                        SettingsGroupLabel(stringResource(R.string.skills_hub_results_count, state.hubResults.size))
+                    }
                     itemsIndexed(
                         state.hubResults,
                         key = { index, hubSkill -> "${hubSkill.name}:${hubSkill.source ?: "unknown"}:$index" },
-                    ) { _, hubSkill ->
+                    ) { index, hubSkill ->
                         HubSkillCard(
+                            first = index == 0,
+                            last = index == state.hubResults.lastIndex,
                             hubSkill = hubSkill,
                             onInstall = { onInstall(hubSkill.name) },
                             isInstalling = isInstalling && installingSkillName == hubSkill.name,
@@ -734,24 +555,16 @@ private fun HubLandingView(
         else -> {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
-                verticalArrangement = listItemSpacing,
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
             ) {
                 if (state.hubSources.isNotEmpty()) {
                     item(key = "hub_sources_header") {
-                        Column(
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
-                        ) {
-                            Text(
-                                text = stringResource(R.string.skills_hub_sources_title),
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
+                        Column {
+                            SettingsGroupLabel(stringResource(R.string.skills_hub_sources_title))
                             Row(
                                 modifier =
                                     Modifier.horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
                                 state.hubSources.forEach { source ->
                                     SourceChip(source = source)
@@ -763,34 +576,26 @@ private fun HubLandingView(
 
                 if (state.hubFeatured.isNotEmpty()) {
                     item(key = "hub_featured_header") {
-                        Column(
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
-                        ) {
-                            Text(
-                                text = stringResource(R.string.skills_hub_featured_title),
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                            Text(
-                                text = stringResource(R.string.skills_hub_featured_subtitle),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                        SettingsGroupLabel(stringResource(R.string.skills_hub_featured_title))
                     }
                     itemsIndexed(
                         state.hubFeatured,
                         key = { index, hubSkill ->
                             "featured:${hubSkill.name}:${hubSkill.source ?: "unknown"}:$index"
                         },
-                    ) { _, hubSkill ->
+                    ) { index, hubSkill ->
                         HubSkillCard(
+                            first = index == 0,
+                            last = index == state.hubFeatured.lastIndex,
                             hubSkill = hubSkill,
                             onInstall = { onInstall(hubSkill.name) },
                             isInstalling =
                                 isInstalling && installingSkillName == hubSkill.name,
                             onClick = { onOpenDetail(hubSkill) },
                         )
+                    }
+                    item(key = "hub_featured_footnote") {
+                        SettingsFootnote(stringResource(R.string.skills_hub_featured_subtitle))
                     }
                 }
             }
@@ -1105,84 +910,27 @@ private fun ScanFindingRow(finding: SkillScanFinding) {
 // ── Hub Skill Card ─────────────────────────────────────────────────────
 
 @Composable
-private fun HubSkillCard(
+internal fun HubSkillCard(
     hubSkill: HubSkill,
     onInstall: () -> Unit,
     isInstalling: Boolean,
     onClick: () -> Unit,
+    first: Boolean = true,
+    last: Boolean = true,
 ) {
-    FlatListRow(modifier = Modifier.padding(horizontal = 12.dp), onClick = onClick) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
-        ) {
-            // ── Top row: name ──
-            Text(
-                text = hubSkill.name,
-                style =
-                    MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = FontWeight.SemiBold,
-                    ),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            // ── Category ──
-            hubSkill.category?.let { cat ->
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = cat,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            // ── Description ──
-            hubSkill.description?.let { desc ->
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = desc,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-
-            // ── Source badge + Install button ──
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                hubSkill.source?.let { source ->
-                    SourceBadge(source = source)
-                    Spacer(modifier = Modifier.width(8.dp))
+    SettingsListItem(first = first, last = last) {
+        SettingsRow(
+            title = hubSkill.name,
+            subtitle = hubSkill.description?.takeIf { it.isNotBlank() } ?: hubSkill.category,
+            onClick = onClick,
+            trailing = {
+                if (isInstalling) {
+                    CircularProgressIndicator(Modifier.padding(end = 12.dp).size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    TextButton(onClick = onInstall) { Text(stringResource(R.string.skills_hub_install)) }
                 }
-                Spacer(modifier = Modifier.weight(1f))
-                Button(
-                    onClick = onInstall,
-                    enabled = !isInstalling,
-                    shapes = ButtonDefaults.shapes(),
-                ) {
-                    if (isInstalling) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary,
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Filled.CloudDownload,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(stringResource(R.string.skills_hub_install))
-                    }
-                }
-            }
-        }
+            },
+        )
     }
 }
 

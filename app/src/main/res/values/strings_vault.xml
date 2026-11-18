@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="vault_title">Passwords &amp; Logins</string>
+    <string name="vault_title">Login information</string>
     <string name="vault_directory_description">Save website logins for Hermes to use</string>
     <string name="vault_profile">Profile: %1$s</string>
     <string name="vault_description">Saved in the connected Hermes vault. Passwords stay out of chat and are filled only on the registered site.</string>

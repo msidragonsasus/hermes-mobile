@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
@@ -38,6 +39,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -62,6 +64,10 @@ import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SearchBar
+import com.m57.hermescontrol.ui.common.SettingsFootnote
+import com.m57.hermescontrol.ui.common.SettingsGroup
+import com.m57.hermescontrol.ui.common.SettingsGroupLabel
+import com.m57.hermescontrol.ui.common.SettingsRow
 import com.m57.hermescontrol.ui.common.SkeletonListState
 import com.m57.hermescontrol.ui.common.ToastEffect
 import com.m57.hermescontrol.ui.common.rememberHasLoaded
@@ -107,20 +113,20 @@ fun ModelScreen(
 
     HermesScaffold(
         title = { Text(stringResource(R.string.screen_models)) },
-        navigationIcon = onOpenDrawer?.let { NavIcon.Menu(it) },
+        navigationIcon = onOpenDrawer?.let { NavIcon.Menu(it) } ?: NavIcon.Back { NavigationController.goBack() },
+        drawerGesturesEnabled = onOpenDrawer != null,
         isRefreshing = state.isLoading,
         onRefresh = { viewModel.loadAll(refresh = true) },
-    ) { paddingValues ->
+    ) {
         when {
             state.isLoading && state.providers.isEmpty() && !hasLoaded -> {
-                SkeletonListState(modifier = Modifier.padding(paddingValues))
+                SkeletonListState()
             }
 
             state.errorMessage != null -> {
                 ErrorState(
                     message = state.errorMessage ?: "",
                     onRetry = { viewModel.loadAll() },
-                    modifier = Modifier.padding(paddingValues),
                 )
             }
 
@@ -130,79 +136,50 @@ fun ModelScreen(
                     subtitle = stringResource(R.string.model_empty_desc),
                     actionLabel = stringResource(R.string.empty_action_configure_model),
                     onAction = { NavigationController.navigateTo(SettingsConnection) },
-                    modifier = Modifier.padding(paddingValues),
                 )
             }
 
             else -> {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 0.dp, bottom = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 0.dp, bottom = 24.dp),
                 ) {
-                    item("model-visibility") {
-                        TextButton(
-                            onClick = { showVisibilityEditor = true },
-                            shapes = ButtonDefaults.shapes(),
-                        ) { Text(stringResource(R.string.model_visibility_title)) }
-                        if (visibleProviders.isEmpty() && visiblePinnedModels.isEmpty()) {
-                            Text(stringResource(R.string.model_visibility_empty))
+                    // ── Model settings ──
+                    item("model-settings") {
+                        Column {
+                            ModelSettingsSection(
+                                mainProvider = state.mainModelProvider,
+                                mainModel = state.mainModelModel,
+                                auxTasks = state.auxTasks,
+                                moaEnabled = state.moaConfig != null,
+                                moaSummary =
+                                    if (state.moaConfig != null) {
+                                        val mc = state.moaConfig!!
+                                        "${mc.reference_models.size} ref · ${mc.aggregator.provider}/${shortModelName(
+                                            mc.aggregator.model,
+                                        )}"
+                                    } else {
+                                        ""
+                                    },
+                                onSetMainModel = { viewModel.openMainModelPicker() },
+                                onConfigureAux = { viewModel.openAuxDialog() },
+                                onConfigureMoa = { viewModel.openMoaDialog() },
+                                onConfigureVisibility = { showVisibilityEditor = true },
+                            )
+                            if (visibleProviders.isEmpty() && visiblePinnedModels.isEmpty()) {
+                                SettingsFootnote(stringResource(R.string.model_visibility_empty))
+                            }
                         }
                     }
 
-                    // ── Model Settings Card ──
-                    item {
-                        ModelSettingsSection(
-                            mainProvider = state.mainModelProvider,
-                            mainModel = state.mainModelModel,
-                            auxTasks = state.auxTasks,
-                            moaEnabled = state.moaConfig != null,
-                            moaSummary =
-                                if (state.moaConfig != null) {
-                                    val mc = state.moaConfig!!
-                                    "${mc.reference_models.size} ref · ${mc.aggregator.provider}/${shortModelName(
-                                        mc.aggregator.model,
-                                    )}"
-                                } else {
-                                    ""
-                                },
-                            onSetMainModel = { viewModel.openMainModelPicker() },
-                            onConfigureAux = { viewModel.openAuxDialog() },
-                            onConfigureMoa = { viewModel.openMoaDialog() },
-                        )
-                    }
-
-                    // ── Search Bar ──
-                    item {
-                        SearchBar(
-                            query = query,
-                            onQueryChange = { query = it },
-                            placeholder = stringResource(R.string.model_search_placeholder),
-                        )
-                    }
-
-                    // ── Pinned Models ──
+                    // ── Pinned models ──
                     if (visiblePinnedModels.isNotEmpty()) {
-                        item {
-                            var isPinnedSectionExpanded by rememberSaveable { mutableStateOf(true) }
-                            val filteredPinned =
-                                remember(query, visiblePinnedModels) {
-                                    if (query.isBlank()) {
-                                        visiblePinnedModels
-                                    } else {
-                                        visiblePinnedModels.filter {
-                                            it.modelName.contains(query, ignoreCase = true) ||
-                                                it.providerSlug.contains(query, ignoreCase = true)
-                                        }
-                                    }
-                                }
-
-                            if (filteredPinned.isNotEmpty()) {
+                        item("pinned") {
+                            Column {
+                                SettingsGroupLabel(stringResource(R.string.model_section_pinned))
                                 PinnedSectionCard(
-                                    pinnedModels = filteredPinned,
-                                    isExpanded = isPinnedSectionExpanded,
+                                    pinnedModels = visiblePinnedModels,
                                     activeProfile = state.activeProfile,
-                                    onToggleExpanded = { isPinnedSectionExpanded = !isPinnedSectionExpanded },
                                     onModelClick = { slug, model -> viewModel.selectModel(slug, model) },
                                     onUnpin = { slug, model -> viewModel.unpinModel(slug, model) },
                                 )
@@ -210,8 +187,19 @@ fun ModelScreen(
                         }
                     }
 
-                    // ── Provider List ──
-                    items(filteredProviders, key = { it.slug }) { provider ->
+                    // ── All models: one search row, then providers as one continuous group ──
+                    if (visibleProviders.isNotEmpty()) {
+                        item("models-label") { SettingsGroupLabel(stringResource(R.string.model_group_models)) }
+                        item("search") {
+                            SearchBar(
+                                query = query,
+                                onQueryChange = { query = it },
+                                placeholder = stringResource(R.string.model_search_placeholder),
+                                modifier = Modifier.padding(bottom = 8.dp),
+                            )
+                        }
+                    }
+                    itemsIndexed(filteredProviders, key = { _, provider -> provider.slug }) { index, provider ->
                         val isExpanded = expandedProviderSlug == provider.slug
                         val isCurrent = provider.is_current == true
 
@@ -228,6 +216,8 @@ fun ModelScreen(
                             onModelClick = { slug, model -> viewModel.selectModel(slug, model) },
                             onPin = { slug, model -> viewModel.pinModel(slug, model) },
                             onUnpin = { slug, model -> viewModel.unpinModel(slug, model) },
+                            first = index == 0,
+                            last = index == filteredProviders.lastIndex,
                         )
                     }
                 }
@@ -322,7 +312,7 @@ fun ModelScreen(
 // ────────────────────────────────────────────────────────────────────
 
 @Composable
-private fun ModelSettingsSection(
+internal fun ModelSettingsSection(
     mainProvider: String,
     mainModel: String,
     auxTasks: List<*>?,
@@ -331,162 +321,66 @@ private fun ModelSettingsSection(
     onSetMainModel: () -> Unit,
     onConfigureAux: () -> Unit,
     onConfigureMoa: () -> Unit,
+    onConfigureVisibility: (() -> Unit)? = null,
 ) {
-    // Count only the tasks listed here: the server may report more tasks than AUX_TASKS.
     val auxKeys = AUX_TASKS.map { it.key }.toSet()
-    val auxOverrideCount =
-        auxTasks?.let { tasks ->
-            tasks
-                .filterIsInstance<com.m57.hermescontrol.data.model.AuxiliaryTaskAssignment>()
-                .count { a -> a.task in auxKeys && a.provider.isNotBlank() && a.provider != "auto" }
-        } ?: 0
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors =
-            CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-            ),
-    ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Settings,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(16.dp),
-                )
-                Text(
-                    text = stringResource(R.string.model_settings),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                )
-                Text(
-                    text = stringResource(R.string.model_new_sessions),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Main model row
+    val overrides =
+        auxTasks
+            .orEmpty()
+            .filterIsInstance<com.m57.hermescontrol.data.model.AuxiliaryTaskAssignment>()
+            .count { it.task in auxKeys && it.provider.isNotBlank() && it.provider != "auto" }
+    SettingsGroupLabel(stringResource(R.string.model_settings))
+    SettingsGroup {
+        row {
             SettingsRow(
-                icon = {
-                    Icon(
-                        Icons.Filled.Star,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(16.dp),
-                    )
-                },
-                label = stringResource(R.string.model_main_label),
-                value =
+                title = stringResource(R.string.model_main_label),
+                subtitle =
                     if (mainProvider.isNotBlank()) {
                         "$mainProvider · $mainModel"
                     } else {
-                        stringResource(R.string.model_value_unset)
-                    },
-                actionLabel = stringResource(R.string.action_change),
-                onAction = onSetMainModel,
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Auxiliary tasks row
-            SettingsRow(
-                icon = {
-                    Icon(
-                        Icons.Filled.Build,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(16.dp),
-                    )
-                },
-                label = stringResource(R.string.model_aux_tasks_label),
-                value =
-                    if (auxOverrideCount > 0) {
                         stringResource(
-                            R.string.model_aux_summary_overrides,
-                            auxOverrideCount,
-                            AUX_TASKS.size - auxOverrideCount,
+                            R.string.model_value_unset,
                         )
+                    },
+                chevron = true,
+                onClick = onSetMainModel,
+            )
+        }
+        row {
+            SettingsRow(
+                title = stringResource(R.string.model_aux_tasks_label),
+                subtitle =
+                    if (overrides > 0) {
+                        stringResource(R.string.model_aux_summary_overrides, overrides, AUX_TASKS.size - overrides)
                     } else {
                         stringResource(R.string.model_aux_summary_all_auto, AUX_TASKS.size)
                     },
-                actionLabel = stringResource(R.string.action_configure),
-                onAction = onConfigureAux,
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // MOA row
-            SettingsRow(
-                icon = {
-                    Icon(
-                        Icons.Filled.Psychology,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(16.dp),
-                    )
-                },
-                label = stringResource(R.string.model_moa_label),
-                value = if (moaEnabled) moaSummary else stringResource(R.string.model_moa_not_loaded),
-                actionLabel = stringResource(R.string.action_configure),
-                onAction = onConfigureMoa,
-                actionEnabled = moaEnabled,
+                chevron = true,
+                onClick = onConfigureAux,
             )
         }
-    }
-}
-
-@Composable
-private fun SettingsRow(
-    icon: @Composable () -> Unit,
-    label: String,
-    value: String,
-    actionLabel: String,
-    onAction: () -> Unit,
-    actionEnabled: Boolean = true,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.weight(1f),
-        ) {
-            icon()
-            Column {
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.Medium,
-                )
-                Text(
-                    text = value,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+        // An unavailable advanced feature is omitted rather than shown as a disabled row.
+        if (moaEnabled) {
+            row {
+                SettingsRow(
+                    title = stringResource(R.string.model_moa_label),
+                    subtitle = moaSummary,
+                    chevron = true,
+                    onClick = onConfigureMoa,
                 )
             }
         }
-        // A disabled outlined button was nearly invisible; omit the action when it cannot run.
-        if (actionEnabled) {
-            OutlinedButton(
-                onClick = onAction,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                shapes = ButtonDefaults.shapes(),
-            ) {
-                Text(actionLabel, style = MaterialTheme.typography.labelSmall)
+        onConfigureVisibility?.let { open ->
+            row {
+                SettingsRow(
+                    title = stringResource(R.string.model_visibility_row),
+                    chevron = true,
+                    onClick = open,
+                )
             }
         }
     }
+    SettingsFootnote(stringResource(R.string.model_new_sessions))
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -543,7 +437,12 @@ private fun AuxTasksDialog(
                                     if (isAuto) {
                                         stringResource(R.string.model_aux_auto)
                                     } else {
-                                        val model = cur.model.ifBlank { stringResource(R.string.model_aux_provider_default) }
+                                        val model =
+                                            cur.model.ifBlank {
+                                                stringResource(
+                                                    R.string.model_aux_provider_default,
+                                                )
+                                            }
                                         "${cur.provider} · $model"
                                     },
                                 style = MaterialTheme.typography.bodySmall,
@@ -578,7 +477,10 @@ private fun AuxTasksDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss, shapes = ButtonDefaults.shapes()) { Text(stringResource(R.string.action_close)) }
+            TextButton(
+                onClick = onDismiss,
+                shapes = ButtonDefaults.shapes(),
+            ) { Text(stringResource(R.string.action_close)) }
         },
     )
 }
@@ -596,132 +498,28 @@ private fun AuxTasksDialog(
 // ────────────────────────────────────────────────────────────────────
 
 @Composable
-private fun PinnedSectionCard(
+internal fun PinnedSectionCard(
     pinnedModels: List<com.m57.hermescontrol.data.model.PinnedModel>,
-    isExpanded: Boolean,
     activeProfile: com.m57.hermescontrol.data.model.ProfileInfo?,
-    onToggleExpanded: () -> Unit,
     onModelClick: (String, String) -> Unit,
     onUnpin: (String, String) -> Unit,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth().animateContentSize().padding(bottom = 8.dp),
-        colors =
-            CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-            ),
-        onClick = onToggleExpanded,
-    ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.PushPin,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                    Text(
-                        text = stringResource(R.string.model_section_pinned),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
-
-                IconButton(onClick = onToggleExpanded) {
-                    Icon(
-                        imageVector = if (isExpanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
-                        contentDescription = stringResource(R.string.content_desc_pinned_section_toggle),
-                    )
-                }
-            }
-
-            AnimatedVisibility(visible = isExpanded) {
-                Column(modifier = Modifier.padding(top = 8.dp)) {
-                    pinnedModels.forEach { pinned ->
-                        val isActive =
-                            activeProfile?.provider == pinned.providerSlug &&
-                                activeProfile.model == pinned.modelName
-
-                        Card(
-                            onClick = { onModelClick(pinned.providerSlug, pinned.modelName) },
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            colors =
-                                CardDefaults.cardColors(
-                                    containerColor =
-                                        if (isActive) {
-                                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-                                        } else {
-                                            MaterialTheme.colorScheme.surface
-                                        },
-                                ),
-                            border =
-                                BorderStroke(
-                                    width = 1.dp,
-                                    color =
-                                        if (isActive) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
-                                        },
-                                ),
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = pinned.modelName,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
-                                        color =
-                                            if (isActive) {
-                                                MaterialTheme.colorScheme.onPrimaryContainer
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurface
-                                            },
-                                    )
-                                    Text(
-                                        text = pinned.providerSlug,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    if (isActive) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Check,
-                                            contentDescription = stringResource(R.string.content_desc_active_model),
-                                            tint = MaterialTheme.colorScheme.primary,
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = { onUnpin(pinned.providerSlug, pinned.modelName) },
-                                        modifier = Modifier.size(24.dp),
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.PushPin,
-                                            contentDescription = stringResource(R.string.content_desc_unpin_model),
-                                            tint = MaterialTheme.colorScheme.primary,
-                                        )
-                                    }
-                                }
-                            }
+    SettingsGroup(Modifier.animateContentSize()) {
+        pinnedModels.forEach { pinned ->
+            row {
+                val active =
+                    activeProfile?.provider == pinned.providerSlug && activeProfile.model == pinned.modelName
+                SettingsRow(
+                    title = pinned.modelName,
+                    subtitle = pinned.providerSlug,
+                    leading = { RadioButton(selected = active, onClick = null) },
+                    onClick = { onModelClick(pinned.providerSlug, pinned.modelName) },
+                    trailing = {
+                        IconButton(onClick = { onUnpin(pinned.providerSlug, pinned.modelName) }) {
+                            Icon(Icons.Filled.PushPin, stringResource(R.string.content_desc_unpin_model))
                         }
-                    }
-                }
+                    },
+                )
             }
         }
     }
@@ -732,7 +530,7 @@ private fun PinnedSectionCard(
 // ────────────────────────────────────────────────────────────────────
 
 @Composable
-private fun ProviderCard(
+internal fun ProviderCard(
     provider: com.m57.hermescontrol.data.model.ModelProvider,
     isExpanded: Boolean,
     isCurrent: Boolean,
@@ -743,195 +541,84 @@ private fun ProviderCard(
     onModelClick: (String, String) -> Unit,
     onPin: (String, String) -> Unit,
     onUnpin: (String, String) -> Unit,
+    first: Boolean = true,
+    last: Boolean = true,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        onClick = onToggleExpand,
-        colors =
-            CardDefaults.cardColors(
-                containerColor =
-                    if (isCurrent) {
-                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant
-                    },
-            ),
-    ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column {
-                    Text(
-                        text = provider.name,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
+    SettingsGroup(Modifier.animateContentSize(), first = first, last = last) {
+        row {
+            SettingsRow(
+                title = provider.name,
+                subtitle =
+                    listOfNotNull(
+                        provider.slug,
+                        if (isCurrent) stringResource(R.string.model_status_current) else null,
+                    ).joinToString(" · "),
+                onClick = onToggleExpand,
+                status = {
+                    Icon(
+                        if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        null,
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Text(
-                        text = stringResource(R.string.model_label_slug, provider.slug),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                if (isCurrent) {
-                    Text(
-                        text = stringResource(R.string.model_status_current),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold,
-                    )
+                },
+            )
+        }
+        provider.warning?.takeIf { it.isNotBlank() }?.let { warning ->
+            row {
+                SettingsFootnote(warning, Modifier.padding(bottom = 12.dp))
+            }
+        }
+        if (isExpanded) {
+            val models = provider.models.orEmpty().filter { query.isBlank() || it.contains(query, ignoreCase = true) }
+            if (models.isEmpty()) {
+                row {
+                    SettingsRow(title = stringResource(R.string.model_no_models), enabled = false)
                 }
             }
-
-            provider.warning?.let {
-                if (it.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    // Provider notes are informational (e.g. billing behavior), not errors.
-                    Text(
-                        text = it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-
-            AnimatedVisibility(visible = isExpanded) {
-                Column(modifier = Modifier.padding(top = 16.dp)) {
-                    Text(
-                        text = stringResource(R.string.model_label_available),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(bottom = 8.dp),
-                    )
-
-                    val models = provider.models.orEmpty()
-                    val filteredModels =
-                        if (query.isBlank()) {
-                            models
-                        } else {
-                            models.filter { it.contains(query, ignoreCase = true) }
+            models.forEach { model ->
+                row {
+                    val active = activeProfile?.provider == provider.slug && activeProfile.model == model
+                    val caps = provider.capabilities?.get(model)
+                    val hint =
+                        when {
+                            caps?.reasoning == false -> stringResource(R.string.model_hint_no_reasoning)
+                            caps?.can_disable_reasoning == false -> stringResource(R.string.model_hint_reasoning_always)
+                            else -> null
                         }
-
-                    if (filteredModels.isEmpty()) {
-                        Text(
-                            text = stringResource(R.string.model_no_models),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } else {
-                        filteredModels.forEach { model ->
-                            val isActive =
-                                activeProfile?.provider == provider.slug &&
-                                    activeProfile.model == model
-                            val caps = provider.capabilities?.get(model)
-                            Card(
-                                onClick = { onModelClick(provider.slug, model) },
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                colors =
-                                    CardDefaults.cardColors(
-                                        containerColor =
-                                            if (isActive) {
-                                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-                                            } else {
-                                                MaterialTheme.colorScheme.surface
-                                            },
-                                    ),
-                                border =
-                                    BorderStroke(
-                                        width = 1.dp,
-                                        color =
-                                            if (isActive) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
-                                            },
-                                    ),
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Column(
-                                        modifier = Modifier.weight(1f),
-                                    ) {
-                                        Text(
-                                            text = model,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
-                                            color =
-                                                if (isActive) {
-                                                    MaterialTheme.colorScheme.onPrimaryContainer
-                                                } else {
-                                                    MaterialTheme.colorScheme.onSurface
-                                                },
-                                            // Weight + wrap: a long model name grows
-                                            // the row vertically instead of pushing
-                                            // the check/pin buttons off-screen.
+                    val pinned = pinnedModels.any { it.providerSlug == provider.slug && it.modelName == model }
+                    SettingsRow(
+                        title = model,
+                        subtitle = hint,
+                        maxLines = 3,
+                        leading = { RadioButton(selected = active, onClick = null) },
+                        onClick = { onModelClick(provider.slug, model) },
+                        trailing = {
+                            IconButton(
+                                onClick = {
+                                    if (pinned) {
+                                        onUnpin(
+                                            provider.slug,
+                                            model,
                                         )
-                                        val hint =
-                                            when {
-                                                caps?.reasoning == false -> "no reasoning"
-                                                caps?.can_disable_reasoning == false -> "reasoning always on"
-                                                else -> null
-                                            }
-                                        if (hint != null) {
-                                            Text(
-                                                text = hint,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
+                                    } else {
+                                        onPin(provider.slug, model)
                                     }
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    ) {
-                                        if (isActive) {
-                                            Icon(
-                                                imageVector = Icons.Filled.Check,
-                                                contentDescription = stringResource(R.string.content_desc_active_model),
-                                                tint = MaterialTheme.colorScheme.primary,
-                                            )
-                                        }
-                                        val isPinned =
-                                            pinnedModels.any {
-                                                it.providerSlug == provider.slug && it.modelName == model
-                                            }
-                                        IconButton(
-                                            onClick = {
-                                                if (isPinned) {
-                                                    onUnpin(provider.slug, model)
-                                                } else {
-                                                    onPin(provider.slug, model)
-                                                }
-                                            },
-                                            modifier = Modifier.size(24.dp),
-                                        ) {
-                                            Icon(
-                                                imageVector =
-                                                    if (isPinned) {
-                                                        Icons.Filled.PushPin
-                                                    } else {
-                                                        Icons.Outlined.PushPin
-                                                    },
-                                                contentDescription =
-                                                    if (isPinned) {
-                                                        stringResource(R.string.content_desc_unpin_model)
-                                                    } else {
-                                                        "Pin model"
-                                                    },
-                                                tint = MaterialTheme.colorScheme.primary,
-                                            )
-                                        }
-                                    }
-                                }
+                                },
+                            ) {
+                                Icon(
+                                    if (pinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+                                    stringResource(
+                                        if (pinned) {
+                                            R.string.content_desc_unpin_model
+                                        } else {
+                                            R.string.content_desc_pin_model
+                                        },
+                                    ),
+                                )
                             }
-                        }
-                    }
+                        },
+                    )
                 }
             }
         }

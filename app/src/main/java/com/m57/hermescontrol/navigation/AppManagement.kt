@@ -185,10 +185,20 @@ object AppManagement {
 
     private val roots: Set<NavKey> by lazy { sections.flatMap { it.entries }.map { it.key }.toSet() + AdvancedScreen }
 
+    private val preferenceDetails =
+        setOf(
+            com.m57.hermescontrol.SettingsLanguage,
+            com.m57.hermescontrol.SettingsChat,
+            com.m57.hermescontrol.SettingsBehavior,
+            com.m57.hermescontrol.ConfigAdvancedScreen,
+        )
+
     /** Details inherit management scope from their parent without changing tab ownership. */
     fun contains(stack: List<NavKey>): Boolean =
         stack.any {
-            it in roots || it is com.m57.hermescontrol.agents.BotDefaultsKey ||
+            it in roots || it in preferenceDetails ||
+                it in com.m57.hermescontrol.ui.settings.SettingsDirectory.destinations ||
+                it is com.m57.hermescontrol.agents.BotDefaultsKey ||
                 it is com.m57.hermescontrol.agents.BotSettingsKey ||
                 it is com.m57.hermescontrol.ExternalServiceDetailKey ||
                 it is com.m57.hermescontrol.McpConnectionSettingsKey ||

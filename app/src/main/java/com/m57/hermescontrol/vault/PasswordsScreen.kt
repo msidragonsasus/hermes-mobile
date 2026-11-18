@@ -4,11 +4,14 @@ package com.m57.hermescontrol.vault
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -22,6 +25,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -37,6 +41,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.autofill.ContentType
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentType
@@ -44,6 +49,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.SecureFlagPolicy
 import androidx.lifecycle.Lifecycle
@@ -62,6 +68,11 @@ import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.LoadingState
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SearchBar
+import com.m57.hermescontrol.ui.common.SettingsFootnote
+import com.m57.hermescontrol.ui.common.SettingsGroupLabel
+import com.m57.hermescontrol.ui.common.SettingsListItem
+import com.m57.hermescontrol.ui.common.SettingsMenuItem
+import com.m57.hermescontrol.ui.common.SettingsRow
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -146,33 +157,15 @@ internal fun VaultContent(
         }
     }
 
-    VaultScaffold(onRefresh = { if (!loading && !busy) refresh++ }, isRefreshing = loading, actions = {
-        IconButton(onClick = {
-            formError = null
-            add = true
-        }, enabled = loaded && error == null && !busy) {
-            Icon(Icons.Default.Add, stringResource(R.string.vault_add))
-        }
-    }) {
+    val deleteLabel = stringResource(R.string.vault_delete)
+    VaultScaffold(onRefresh = { if (!loading && !busy) refresh++ }, isRefreshing = loading) {
         Column(Modifier.fillMaxSize()) {
-            Column(Modifier.padding(horizontal = spacing.lg, vertical = spacing.sm)) {
-                Text(
-                    stringResource(R.string.vault_profile, profile),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
+            notice?.let {
+                SettingsFootnote(
+                    stringResource(it),
+                    Modifier.padding(horizontal = 16.dp).testTag("vault_notice"),
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
-                Text(
-                    stringResource(R.string.vault_description),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                notice?.let {
-                    Text(
-                        stringResource(it),
-                        Modifier.testTag("vault_notice"),
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
             }
             when {
                 loading && !loaded -> {
@@ -201,7 +194,7 @@ internal fun VaultContent(
                         query = query,
                         onQueryChange = { query = it },
                         placeholder = stringResource(R.string.vault_search),
-                        modifier = Modifier.padding(horizontal = spacing.lg, vertical = spacing.sm),
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = spacing.sm),
                     )
                     val visible =
                         items.filter {
@@ -212,32 +205,54 @@ internal fun VaultContent(
                     if (visible.isEmpty()) {
                         EmptyState(title = stringResource(R.string.vault_no_results))
                     } else {
-                        LazyColumn {
-                            items(visible, key = { "${it.backend}:${it.id}" }) { item ->
-                                ListItem(
-                                    leadingContent = { Icon(Icons.Default.Key, contentDescription = null) },
-                                    headlineContent = { Text(item.label) },
-                                    supportingContent = {
-                                        Column {
-                                            item.identifier?.let { Text(it) }
-                                            item.origin?.let { Text(it) }
-                                            if (item.has_otp == true) Text(stringResource(R.string.vault_otp_badge))
-                                            if (item.backend != "local") Text(item.backend)
-                                        }
-                                    },
-                                    trailingContent =
-                                        if (item.backend == "local") {
-                                            {
-                                                IconButton(onClick = { deleting = item }, enabled = !busy) {
-                                                    Icon(
-                                                        Icons.Default.DeleteOutline,
-                                                        stringResource(R.string.vault_delete_named, item.label),
-                                                    )
-                                                }
-                                            }
-                                        } else {
-                                            null
+                        LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
+                            item("logins_label") {
+                                SettingsGroupLabel(stringResource(R.string.settings_group_logins, visible.size))
+                            }
+                            itemsIndexed(visible, key = { _, item -> "${item.backend}:${item.id}" }) { index, item ->
+                                SettingsListItem(first = index == 0, last = false) {
+                                    SettingsRow(
+                                        title = item.label,
+                                        subtitle =
+                                            listOfNotNull(
+                                                item.identifier,
+                                                item.origin,
+                                                stringResource(R.string.vault_otp_badge).takeIf { item.has_otp == true },
+                                                item.backend.takeIf { it != "local" },
+                                            ).joinToString(" · "),
+                                        leading = {
+                                            Icon(Icons.Default.Key, contentDescription = null, Modifier.size(24.dp))
                                         },
+                                        actions =
+                                            if (item.backend == "local") {
+                                                listOf(SettingsMenuItem(deleteLabel) { deleting = item })
+                                            } else {
+                                                emptyList()
+                                            },
+                                        actionsEnabled = !busy,
+                                    )
+                                }
+                            }
+                            item("logins_add") {
+                                SettingsListItem(first = false, last = true) {
+                                    SettingsRow(
+                                        title = stringResource(R.string.vault_add),
+                                        leading = { Icon(Icons.Default.Add, contentDescription = null, Modifier.size(24.dp)) },
+                                        enabled = loaded && error == null && !busy,
+                                        onClick = {
+                                            formError = null
+                                            add = true
+                                        },
+                                    )
+                                }
+                            }
+                            item("logins_footnote") {
+                                SettingsFootnote(
+                                    stringResource(
+                                        R.string.vault_footnote,
+                                        profile,
+                                        stringResource(R.string.vault_description),
+                                    ),
                                 )
                             }
                         }

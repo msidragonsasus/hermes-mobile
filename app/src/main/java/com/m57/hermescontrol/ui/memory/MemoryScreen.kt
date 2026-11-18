@@ -49,10 +49,10 @@ import com.m57.hermescontrol.data.model.LearningGraphResponse
 import com.m57.hermescontrol.data.model.MemoryProviderStatusRow
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
-import com.m57.hermescontrol.ui.common.FlatListRow
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SectionHeader
+import com.m57.hermescontrol.ui.common.SettingsPanel
 import com.m57.hermescontrol.ui.common.SkeletonListState
 import com.m57.hermescontrol.ui.common.StatCard
 import com.m57.hermescontrol.ui.common.StatusBadge
@@ -110,11 +110,12 @@ fun MemoryScreen(
 
     HermesScaffold(
         title = { Text(stringResource(R.string.screen_memory)) },
-        navigationIcon = onOpenDrawer?.let { NavIcon.Menu(it) },
+        navigationIcon = onOpenDrawer?.let { NavIcon.Menu(it) } ?: NavIcon.Back { NavigationController.goBack() },
+        drawerGesturesEnabled = onOpenDrawer != null,
         isRefreshing = state.isLoading,
         onRefresh = { viewModel.load() },
         modifier = modifier,
-    ) { paddingValues ->
+    ) {
         when {
             state.isLoading && state.memory == null -> {
                 SkeletonListState(modifier = Modifier)
@@ -166,8 +167,8 @@ private fun MemoryContent(
     ) {
         // Active provider + builtin files
         item {
-            FlatListRow {
-                Column(modifier = Modifier.padding(vertical = 12.dp)) {
+            SettingsPanel {
+                Column(modifier = Modifier.padding(16.dp)) {
                     if (memory.active.isNullOrBlank()) {
                         Text(
                             text = stringResource(R.string.memory_builtin),
@@ -390,8 +391,8 @@ private fun MemoryProviderRow(
     isActive: Boolean,
     onClick: () -> Unit,
 ) {
-    FlatListRow(onClick = onClick) {
-        Column(modifier = Modifier.padding(vertical = 10.dp)) {
+    SettingsPanel(onClick = onClick) {
+        Column(modifier = Modifier.padding(16.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),

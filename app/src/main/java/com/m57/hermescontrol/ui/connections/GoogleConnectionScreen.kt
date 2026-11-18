@@ -141,7 +141,7 @@ internal fun GoogleConnectionContent(
     val status = state.status
     val accounts = status?.accounts.orEmpty()
     val error = MaterialTheme.colorScheme.error
-    Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = spacing.md)) {
+    Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         SettingsGroup {
             row {
                 SettingsRow(
@@ -310,10 +310,5 @@ internal fun GoogleConnectionContent(
 
 @Composable
 internal fun Footnote(text: String) {
-    Text(
-        text,
-        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp),
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+    com.m57.hermescontrol.ui.common.SettingsFootnote(text)
 }

@@ -24,11 +24,16 @@ import com.m57.hermescontrol.ConfigScreen
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.SettingsAbout
+import com.m57.hermescontrol.SettingsAppearance
+import com.m57.hermescontrol.SettingsBehavior
+import com.m57.hermescontrol.SettingsChat
 import com.m57.hermescontrol.SettingsConnection
+import com.m57.hermescontrol.SettingsLanguage
 import com.m57.hermescontrol.SettingsScreen
 import com.m57.hermescontrol.navigation.AppManagement
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.config.AgentSettingsCatalog
+import com.m57.hermescontrol.ui.settings.SettingsDirectory
 
 /** One searchable thing: a screen, or a single setting inside one. */
 private data class SearchHit(
@@ -42,13 +47,13 @@ private data class SearchHit(
 /** App settings items that live inline on [SettingsScreen] (or one level below it). */
 private val appSettingItems: List<Pair<Int, NavKey>> =
     listOf(
-        R.string.settings_item_theme to SettingsScreen,
-        R.string.settings_item_theme_preset to SettingsScreen,
-        R.string.settings_item_use_dynamic_colors to SettingsScreen,
-        R.string.settings_item_language to SettingsScreen,
-        R.string.settings_item_typing_effect to SettingsScreen,
-        R.string.settings_item_chat_font_size to SettingsScreen,
-        R.string.settings_item_auto_reconnect to SettingsScreen,
+        R.string.settings_item_theme to SettingsAppearance,
+        R.string.settings_item_theme_preset to SettingsAppearance,
+        R.string.settings_item_use_dynamic_colors to SettingsAppearance,
+        R.string.settings_item_language to SettingsLanguage,
+        R.string.settings_item_typing_effect to SettingsChat,
+        R.string.settings_item_chat_font_size to SettingsAppearance,
+        R.string.settings_item_auto_reconnect to SettingsBehavior,
         R.string.settings_sec_connection to SettingsConnection,
         R.string.settings_sec_about to SettingsAbout,
     )
@@ -63,7 +68,7 @@ fun AdvancedScreenContent() {
     val matches = if (q.isEmpty()) emptyList() else hits.filter { hit -> hit.terms.any { it.lowercase().contains(q) } }
 
     HermesScaffold(
-        title = { Text(stringResource(R.string.app_management_title)) },
+        title = { Text(stringResource(R.string.settings_advanced)) },
         navigationIcon = NavIcon.Back { NavigationController.goBack() },
         drawerGesturesEnabled = false,
     ) {
@@ -99,6 +104,14 @@ fun AdvancedScreenContent() {
                     }
                 }
                 return@LazyColumn
+            }
+            item("app_preferences") {
+                DirectoryRow(
+                    title = stringResource(R.string.settings_app_advanced),
+                    subtitle = stringResource(R.string.settings_app_advanced_desc),
+                    icon = null,
+                    onClick = { NavigationController.navigateTo(SettingsBehavior) },
+                )
             }
             item("purpose") {
                 Text(
@@ -152,11 +165,13 @@ private fun DirectoryRow(
 @Composable
 private fun searchIndex(): List<SearchHit> {
     val screens =
-        AppManagement.sections.flatMap { it.entries }.map { entry ->
-            val label = stringResource(entry.labelRes)
-            val description = stringResource(entry.descriptionRes)
-            SearchHit("screen:${entry.key}", label, description, listOf(label, description), entry.key)
-        }
+        (AppManagement.sections.flatMap { it.entries } + SettingsDirectory.sections.flatMap { it.entries })
+            .distinctBy { it.key }
+            .map { entry ->
+                val label = stringResource(entry.labelRes)
+                val description = stringResource(entry.descriptionRes)
+                SearchHit("screen:${entry.key}", label, description, listOf(label, description), entry.key)
+            }
     val appLocation = stringResource(R.string.management_search_in_app_settings)
     val appItems =
         appSettingItems.map { (res, key) ->

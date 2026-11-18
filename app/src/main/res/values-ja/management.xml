@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="management_external_services">外部サービス連携</string>
+    <string name="management_external_services">コネクター</string>
     <string name="management_external_services_desc">Gmail・カレンダー・Figma・Slackなどの用途と接続設定</string>
     <string name="app_management_title">アプリ管理</string>
     <string name="app_management_desc">接続先・エージェントの機能・自動化・アプリの設定</string>

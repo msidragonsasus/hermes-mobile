@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -40,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
@@ -213,6 +215,7 @@ fun SearchBar(
     onQueryChange: (String) -> Unit,
     modifier: Modifier = Modifier,
     placeholder: String = "Search…",
+    onSearch: (() -> Unit)? = null,
 ) {
     val textColor = MaterialTheme.colorScheme.onSurface
     BasicTextField(
@@ -229,6 +232,7 @@ fun SearchBar(
         singleLine = true,
         textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { onSearch?.invoke() }),
         decorationBox = { innerTextField ->
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -277,6 +281,7 @@ fun <T> FilterChipRow(
     selectedChip: T?,
     onChipSelected: (T) -> Unit,
     modifier: Modifier = Modifier,
+    horizontalPadding: Dp = LocalSpacing.current.md,
     chipLabel: @Composable (T) -> Unit = { Text(it.toString()) },
 ) {
     val spacing = LocalSpacing.current
@@ -284,16 +289,18 @@ fun <T> FilterChipRow(
         modifier = modifier.fillMaxWidth(),
         contentPadding =
             PaddingValues(
-                horizontal = spacing.md,
+                horizontal = horizontalPadding,
                 vertical = spacing.xs,
             ),
         horizontalArrangement = Arrangement.spacedBy(spacing.sm),
     ) {
         items(chips, key = { it.toString() }) { chip ->
+            // DESIGN.md "Filter chips": no outline; selection is the filled state.
             FilterChip(
                 selected = chip == selectedChip,
                 onClick = { onChipSelected(chip) },
                 label = { chipLabel(chip) },
+                border = null,
             )
         }
     }

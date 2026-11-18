@@ -10,12 +10,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.m57.hermescontrol.ExternalServiceDetailKey
 import com.m57.hermescontrol.McpConnectionSettingsKey
 import com.m57.hermescontrol.McpServersScreen
 import com.m57.hermescontrol.NavigationController
+import com.m57.hermescontrol.R
 import com.m57.hermescontrol.SettingsGoogleConnection
 import com.m57.hermescontrol.career.careerScope
 import com.m57.hermescontrol.ui.common.EmptyState
@@ -37,7 +39,7 @@ fun ExternalServicesScreen() {
     val state by model.state.collectAsStateWithLifecycle()
     LaunchedEffect(model) { model.refresh() }
     HermesScaffold(
-        title = { Text("外部サービス連携") },
+        title = { Text(stringResource(R.string.management_external_services)) },
         navigationIcon = NavIcon.Back { NavigationController.goBack() },
         drawerGesturesEnabled = false,
         isRefreshing = state.loading,
@@ -126,7 +128,12 @@ private fun ExternalServiceManagementScreen(serviceId: String) {
         }
     LaunchedEffect(plan) {
         val install = plan as? ServiceConnectPlan.Install ?: return@LaunchedEffect
-        if (install.entry.env.orEmpty().isNotEmpty()) mcp.beginCatalogSetup(install.entry)
+        if (install.entry.env
+                .orEmpty()
+                .isNotEmpty()
+        ) {
+            mcp.beginCatalogSetup(install.entry)
+        }
     }
     // After installing an OAuth entry, go straight on to its sign-in.
     LaunchedEffect(mcpState.lastAddedServerName, mcpState.servers) {
@@ -143,16 +150,26 @@ private fun ExternalServiceManagementScreen(serviceId: String) {
         when {
             plan == ServiceConnectPlan.GoogleWorkspace && workspaceState != null -> {
                 when {
-                    workspaceState.busy -> ConnectSheetStatus("Googleでアカウントを選んで許可してください。", busy = true)
-                    workspaceState.error != null -> ConnectSheetStatus(workspaceState.error, error = true)
-                    workspaceState.connectedEmail != null ->
+                    workspaceState.busy -> {
+                        ConnectSheetStatus("Googleでアカウントを選んで許可してください。", busy = true)
+                    }
+
+                    workspaceState.error != null -> {
+                        ConnectSheetStatus(workspaceState.error, error = true)
+                    }
+
+                    workspaceState.connectedEmail != null -> {
                         ConnectSheetStatus(
                             listOf(workspaceState.connectedEmail, "接続しました。Hermesから使えます。")
                                 .filter { it.isNotBlank() }
                                 .joinToString(" を"),
                             done = true,
                         )
-                    else -> ConnectSheetStatus()
+                    }
+
+                    else -> {
+                        ConnectSheetStatus()
+                    }
                 }
             }
 

@@ -241,7 +241,7 @@ object ScreenRegistry {
             ) { sessionId, openDrawer -> AchievementsScreenContent(onOpenDrawer = openDrawer) },
             ScreenDefinition(
                 SettingsScreen,
-                R.string.screen_settings,
+                R.string.settings_home_title,
                 Icons.Filled.Settings,
                 DrawerSection.INSPECT,
             ) { sessionId, openDrawer ->

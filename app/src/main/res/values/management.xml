@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="management_external_services">External services</string>
+    <string name="management_external_services">Connectors</string>
     <string name="management_external_services_desc">Explore Gmail, Calendar, Figma, Slack and other connections</string>
     <string name="app_management_title">App management</string>
     <string name="app_management_desc">Connection, agent capabilities, automation and app settings</string>

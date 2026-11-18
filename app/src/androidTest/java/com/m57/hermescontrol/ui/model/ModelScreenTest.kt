@@ -1,10 +1,12 @@
 package com.m57.hermescontrol.ui.model
 
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.MediumTest
+import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.model.ModelProvider
 import com.m57.hermescontrol.data.model.PinnedModel
 import io.mockk.every
@@ -24,6 +26,9 @@ class ModelScreenTest {
 
     private val mockViewModel = mockk<ModelViewModel>(relaxed = true)
     private val uiStateFlow = MutableStateFlow(ModelUiState())
+
+    // Read in the composition: the app may use its own language, unlike the instrumentation context.
+    private var pinnedLabel = ""
 
     @Before
     fun setUp() {
@@ -53,13 +58,14 @@ class ModelScreenTest {
             )
 
         composeTestRule.setContent {
+            pinnedLabel = stringResource(R.string.model_section_pinned)
             ModelScreen(
                 onOpenDrawer = {},
                 viewModel = mockViewModel,
             )
         }
 
-        composeTestRule.onNodeWithText("Pinned Models").assertDoesNotExist()
+        composeTestRule.onNodeWithText(pinnedLabel).assertDoesNotExist()
     }
 
     @Test
@@ -88,13 +94,14 @@ class ModelScreenTest {
             )
 
         composeTestRule.setContent {
+            pinnedLabel = stringResource(R.string.model_section_pinned)
             ModelScreen(
                 onOpenDrawer = {},
                 viewModel = mockViewModel,
             )
         }
 
-        composeTestRule.onNodeWithText("Pinned Models").assertIsDisplayed()
+        composeTestRule.onNodeWithText(pinnedLabel).assertIsDisplayed()
         composeTestRule.onNodeWithText("gpt-4").assertIsDisplayed()
     }
 }

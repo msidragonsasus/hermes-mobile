@@ -72,6 +72,6 @@
     <string name="drawer_specialist_bots">専門bot</string>
     <string name="drawer_bot_working">作業中</string>
     <string name="drawer_create_bot">新しいbotを作成</string>
-    <string name="drawer_settings_management">設定・管理</string>
+    <string name="drawer_settings_management">設定</string>
     <string name="drawer_switch_profile_failed">Hermes（メイン）へ切り替えられませんでした</string>
 </resources>

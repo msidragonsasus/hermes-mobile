@@ -5,16 +5,22 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -22,6 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -32,15 +39,26 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.m57.hermescontrol.R
 
 /*
- * Grouped settings for a single connected service (DESIGN.md "Connected service
- * screens", user decision 2026-10-24). Each section is one rounded group with
- * hairline dividers inside; the section label sits outside the group. Use only on
- * management/detail screens, never for feeds or lists of items.
+ * Grouped settings for the settings directory, its destinations and
+ * connected-service details (DESIGN.md "Settings destinations"). Each section
+ * is one rounded group with 16dp-inset hairlines inside; its label sits
+ * outside and an explanation is one footnote below it. Rows put selection on
+ * the leading side, a switch, status or chevron on the trailing side, and
+ * per-item actions in one ︙ menu. These groups never wrap feeds.
  */
+
+/** Hairline inset shared by every group, so dividers line up across screens. */
+val SettingsDividerInset: Dp = 16.dp
 
 /** Label above a [SettingsGroup]. */
 @Composable
@@ -50,9 +68,24 @@ fun SettingsGroupLabel(
 ) {
     Text(
         text,
-        modifier = modifier.padding(start = 16.dp, top = 24.dp, bottom = 8.dp),
+        modifier = modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 8.dp),
         style = MaterialTheme.typography.titleSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/** One short explanation under a group, aligned with the row text. */
+@Composable
+fun SettingsFootnote(
+    text: String,
+    modifier: Modifier = Modifier,
+    color: Color = Color.Unspecified,
+) {
+    Text(
+        text,
+        modifier = modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp),
+        style = MaterialTheme.typography.bodySmall,
+        color = if (color != Color.Unspecified) color else MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
 
@@ -65,31 +98,104 @@ class SettingsGroupScope internal constructor() {
     }
 }
 
-/** One rounded group. Renders nothing when no row was added. */
+/**
+ * One rounded group. Renders nothing when no row was added. In a lazy list a
+ * group may be split into consecutive segments: only the [first] segment has
+ * top corners, only the [last] has bottom corners, and segments are joined
+ * by the same hairline used between rows.
+ */
 @Composable
 fun SettingsGroup(
     modifier: Modifier = Modifier,
+    dividerInset: Dp = SettingsDividerInset,
+    first: Boolean = true,
+    last: Boolean = true,
     content: SettingsGroupScope.() -> Unit,
 ) {
     val scope = SettingsGroupScope().apply(content)
     if (scope.rows.isEmpty()) return
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.extraLarge,
+        shape = settingsSegmentShape(first, last),
         color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
         Column {
             scope.rows.forEachIndexed { index, row ->
-                if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                if (index > 0) SettingsDivider(dividerInset)
                 row()
             }
+            if (!last) SettingsDivider(dividerInset)
+        }
+    }
+}
+
+@Composable
+private fun SettingsDivider(inset: Dp) {
+    HorizontalDivider(
+        modifier = Modifier.padding(horizontal = inset),
+        color = MaterialTheme.colorScheme.outlineVariant,
+    )
+}
+
+@Composable
+private fun settingsSegmentShape(
+    first: Boolean,
+    last: Boolean,
+): androidx.compose.ui.graphics.Shape {
+    val corners = MaterialTheme.shapes.extraLarge
+    val square = CornerSize(0.dp)
+    return corners.copy(
+        topStart = if (first) corners.topStart else square,
+        topEnd = if (first) corners.topEnd else square,
+        bottomStart = if (last) corners.bottomStart else square,
+        bottomEnd = if (last) corners.bottomEnd else square,
+    )
+}
+
+/** Compound settings form, sharing the same surface as simple grouped rows. */
+@Composable
+fun SettingsPanel(
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    SettingsGroup(modifier) {
+        row {
+            Column(
+                Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+                content = content,
+            )
+        }
+    }
+}
+
+/** A lazy-list row in a continuous group; only the group's outer corners are rounded. */
+@Composable
+fun SettingsListItem(
+    first: Boolean,
+    last: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    SettingsGroup(modifier, first = first, last = last) {
+        row {
+            Column(
+                Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+                content = content,
+            )
         }
     }
 }
 
 /**
- * A row inside [SettingsGroup]: optional leading avatar/icon, title, one meta line,
- * and either trailing value text with a chevron or a trailing control (menu).
+ * A row inside [SettingsGroup]: optional leading radio/avatar/icon, title, one
+ * meta line, then on the trailing side in this order: value text, [status]
+ * badge, chevron, a [checked] switch, the [actions] ︙ menu, or a custom
+ * [trailing] control. Icon-button trailing content keeps a 4dp end inset so
+ * its glyph lines up with a chevron or switch at 16dp.
+ *
+ * With [checked] and no [onClick], the whole row toggles the switch.
  */
 @Composable
 fun SettingsRow(
@@ -100,18 +206,44 @@ fun SettingsRow(
     titleColor: Color = Color.Unspecified,
     leading: (@Composable () -> Unit)? = null,
     value: String? = null,
+    status: (@Composable () -> Unit)? = null,
     chevron: Boolean = false,
     enabled: Boolean = true,
     maxLines: Int = 2,
+    subtitleMaxLines: Int = 2,
+    checked: Boolean? = null,
+    onCheckedChange: ((Boolean) -> Unit)? = null,
+    actions: List<SettingsMenuItem> = emptyList(),
+    actionsEnabled: Boolean = true,
     onClick: (() -> Unit)? = null,
     trailing: (@Composable RowScope.() -> Unit)? = null,
 ) {
+    val rowToggles = checked != null && onClick == null && onCheckedChange != null
+    val iconTrailing = trailing != null || actions.isNotEmpty()
     Row(
         modifier
             .fillMaxWidth()
-            .heightIn(min = 56.dp)
-            .then(if (onClick != null) Modifier.clickable(enabled = enabled, onClick = onClick) else Modifier)
-            .padding(start = 16.dp, end = if (trailing != null) 4.dp else 16.dp, top = 10.dp, bottom = 10.dp),
+            .heightIn(min = 60.dp)
+            .then(
+                when {
+                    rowToggles -> {
+                        Modifier.toggleable(
+                            value = checked == true,
+                            enabled = enabled,
+                            role = Role.Switch,
+                            onValueChange = { onCheckedChange?.invoke(it) },
+                        )
+                    }
+
+                    onClick != null -> {
+                        Modifier.clickable(enabled = enabled, onClick = onClick)
+                    }
+
+                    else -> {
+                        Modifier
+                    }
+                },
+            ).padding(start = 16.dp, end = if (iconTrailing) 4.dp else 16.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -133,8 +265,13 @@ fun SettingsRow(
                 Text(
                     it,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = if (subtitleColor != Color.Unspecified) subtitleColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
+                    color =
+                        if (subtitleColor != Color.Unspecified) {
+                            subtitleColor
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    maxLines = subtitleMaxLines,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -148,6 +285,7 @@ fun SettingsRow(
                 overflow = TextOverflow.Ellipsis,
             )
         }
+        status?.invoke()
         if (chevron) {
             Icon(
                 Icons.AutoMirrored.Filled.KeyboardArrowRight,
@@ -156,7 +294,49 @@ fun SettingsRow(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        if (checked != null) {
+            Switch(
+                checked = checked,
+                onCheckedChange = if (rowToggles) null else onCheckedChange,
+                enabled = enabled && onCheckedChange != null,
+                modifier = Modifier.semantics { contentDescription = title },
+            )
+        }
+        if (actions.isNotEmpty()) {
+            SettingsOverflowMenu(
+                items = actions,
+                contentDescription = stringResource(R.string.settings_actions_for, title),
+                enabled = actionsEnabled,
+            )
+        }
         trailing?.invoke(this)
+    }
+}
+
+/** Last row of a compound form group: one right-aligned primary pill that submits the form. */
+@Composable
+fun SettingsFormSubmit(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    busy: Boolean = false,
+) {
+    Row(
+        modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        PrimaryPillButton(onClick = onClick, enabled = enabled) {
+            if (busy) {
+                CircularProgressIndicator(
+                    Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(label)
+        }
     }
 }
 

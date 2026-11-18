@@ -18,7 +18,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
-import com.m57.hermescontrol.navigation.AdvancedScreen
+import com.m57.hermescontrol.SettingsScreen
 import com.m57.hermescontrol.navigation.ShellTab
 
 /** Only authenticated navigation supplies this menu to the shared top bar. */
@@ -30,10 +30,10 @@ val LocalManagementScope = compositionLocalOf { false }
 @Composable
 fun ShellMenu() {
     IconButton(
-        onClick = { NavigationController.navigateTo(AdvancedScreen) },
+        onClick = { NavigationController.navigateTo(SettingsScreen) },
         modifier = Modifier.testTag("shell_menu"),
     ) {
-        Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.app_management_title))
+        Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.settings_home_title))
     }
 }
 

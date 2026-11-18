@@ -1,52 +1,29 @@
 package com.m57.hermescontrol.ui.settings
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Key
-import androidx.compose.material.icons.filled.Link
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation3.runtime.NavKey
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
-import com.m57.hermescontrol.SettingsAbout
-import com.m57.hermescontrol.SettingsConnection
-import com.m57.hermescontrol.SettingsExternalServices
-import com.m57.hermescontrol.SettingsPasswords
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.NavIcon
-import com.m57.hermescontrol.ui.common.SectionHeader
-import com.m57.hermescontrol.ui.settings.components.AppearanceSection
-import com.m57.hermescontrol.ui.settings.components.BehaviorSection
-import com.m57.hermescontrol.ui.settings.components.ChatSection
-import com.m57.hermescontrol.ui.settings.components.LanguageSection
+import com.m57.hermescontrol.ui.common.SettingsGroup
+import com.m57.hermescontrol.ui.common.SettingsGroupLabel
+import com.m57.hermescontrol.ui.common.SettingsPanel
 
-/**
- * App settings on one page. The appearance, language, chat and behaviour controls used to sit
- * behind separate drill-downs of one to three items each; they are now laid out inline under
- * section headings, and only the connection and About pages remain separate destinations.
- */
+/** Daily settings have one entry point; technical editors remain under Details. */
 @Composable
 fun SettingsScreen(
     onOpenDrawer: (() -> Unit)? = null,
@@ -54,108 +31,58 @@ fun SettingsScreen(
     onLogout: () -> Unit = {},
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
-    viewModel: SettingsViewModel = viewModel { SettingsViewModel() },
+    onNavigate: (NavKey) -> Unit = { NavigationController.navigateTo(it) },
 ) {
-    val state by viewModel.uiState.collectAsStateWithLifecycle()
-
     HermesScaffold(
-        title = { Text(stringResource(R.string.screen_settings)) },
-        navigationIcon = onBack?.let { NavIcon.Back(it) } ?: onOpenDrawer?.let { NavIcon.Menu(it) },
-        drawerGesturesEnabled = onBack == null,
+        title = { Text(stringResource(R.string.settings_home_title)) },
+        navigationIcon = NavIcon.Back(onBack ?: { NavigationController.goBack() }),
+        drawerGesturesEnabled = false,
     ) {
-        Column(
-            modifier =
-                modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState()),
-        ) {
-            SectionHeader(stringResource(R.string.settings_sec_appearance))
-            AppearanceSection(
-                themePreference = state.themePreference,
-                onThemeChange = viewModel::onThemeChange,
-                useDynamicColors = state.useDynamicColors,
-                onUseDynamicColorsChange = viewModel::onUseDynamicColorsChange,
-                themePreset = state.themePreset,
-                onThemePresetChange = viewModel::onThemePresetChange,
-            )
-            SectionDivider()
-            SectionHeader(stringResource(R.string.settings_sec_language))
-            LanguageSection(
-                appLanguage = state.appLanguage,
-                onAppLanguageChange = viewModel::onAppLanguageChange,
-            )
-            SectionDivider()
-            SectionHeader(stringResource(R.string.settings_sec_chat))
-            ChatSection(
-                typingEffectEnabled = state.typingEffectEnabled,
-                onTypingEffectEnabledChange = viewModel::onTypingEffectEnabledChange,
-                typingEffectDelayMs = state.typingEffectDelayMs,
-                onTypingEffectDelayMsChange = viewModel::onTypingEffectDelayMsChange,
-                chatFontScale = state.chatFontScale,
-                onChatFontScaleChange = viewModel::onChatFontScaleChange,
-            )
-            SectionDivider()
-            SectionHeader(stringResource(R.string.settings_sec_behavior))
-            BehaviorSection(
-                autoReconnect = state.autoReconnect,
-                onAutoReconnectChange = viewModel::onAutoReconnectChange,
-                pushConfigured = state.pushConfigured,
-            )
-            SectionDivider()
-            LinkRow(
-                icon = Icons.Filled.Link,
-                label = stringResource(R.string.settings_sec_connection),
-                onClick = { NavigationController.navigateTo(SettingsConnection) },
-            )
-            LinkRow(
-                icon = Icons.Filled.Link,
-                label = stringResource(R.string.management_external_services),
-                onClick = { NavigationController.navigateTo(SettingsExternalServices) },
-            )
-            LinkRow(
-                icon = Icons.Filled.Key,
-                label = stringResource(R.string.vault_title),
-                onClick = { NavigationController.navigateTo(SettingsPasswords) },
-            )
-            LinkRow(
-                icon = Icons.Filled.Info,
-                label = stringResource(R.string.settings_sec_about),
-                onClick = { NavigationController.navigateTo(SettingsAbout) },
-            )
-        }
+        SettingsDirectoryContent(modifier, onNavigate)
     }
 }
 
 @Composable
-private fun SectionDivider() {
-    HorizontalDivider(
-        modifier = Modifier.padding(top = 8.dp),
-        color = MaterialTheme.colorScheme.outlineVariant,
-    )
-}
-
-/** Flat drill-down row matching the App management directory (no card, same chevron). */
-@Composable
-private fun LinkRow(
-    icon: ImageVector,
-    label: String,
-    onClick: () -> Unit,
+internal fun SettingsDirectoryContent(
+    modifier: Modifier = Modifier,
+    onNavigate: (NavKey) -> Unit,
 ) {
-    ListItem(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onClick),
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        leadingContent = { Icon(imageVector = icon, contentDescription = null) },
-        headlineContent = { Text(text = label) },
-        trailingContent = {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-            )
-        },
-    )
+    LazyColumn(
+        modifier.fillMaxSize().testTag("settings_directory"),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+    ) {
+        SettingsDirectory.sections.forEach { section ->
+            item("section_${section.id}") {
+                SettingsGroupLabel(stringResource(section.titleRes))
+                SettingsGroup(dividerInset = 16.dp) {
+                    section.entries.forEach { entry ->
+                        row {
+                            SettingsLinkRow(
+                                label = stringResource(entry.labelRes),
+                                icon = entry.icon,
+                                modifier = Modifier.testTag("settings_${entry.key}"),
+                                onClick = { onNavigate(entry.key) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        item("footer") {
+            SettingsGroup(modifier = Modifier.padding(top = 24.dp), dividerInset = 16.dp) {
+                SettingsDirectory.footer.forEach { entry ->
+                    row {
+                        SettingsLinkRow(
+                            label = stringResource(entry.labelRes),
+                            icon = entry.icon,
+                            modifier = Modifier.testTag("settings_${entry.key}"),
+                            onClick = { onNavigate(entry.key) },
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -176,10 +103,10 @@ internal fun InfoRow(
     }
 }
 
-/** Settings group body. Flat on the page background (no card); headings and dividers separate groups. */
+/** Shared compound form group for daily settings and their legacy aliases. */
 @Composable
 internal fun SectionCard(content: @Composable () -> Unit) {
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-        content()
+    SettingsPanel(Modifier.padding(vertical = 8.dp)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) { content() }
     }
 }

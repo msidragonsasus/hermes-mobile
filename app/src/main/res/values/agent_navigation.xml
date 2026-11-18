@@ -72,6 +72,6 @@
     <string name="drawer_specialist_bots">Specialist bots</string>
     <string name="drawer_bot_working">Working</string>
     <string name="drawer_create_bot">Create new bot</string>
-    <string name="drawer_settings_management">Settings &amp; Management</string>
+    <string name="drawer_settings_management">Settings</string>
     <string name="drawer_switch_profile_failed">Could not switch back to Hermes (Main)</string>
 </resources>

@@ -22,7 +22,10 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.theme.LocalSpacing
-import com.m57.hermescontrol.ui.settings.SectionCard
+import com.m57.hermescontrol.ui.common.SettingsFootnote
+import com.m57.hermescontrol.ui.common.SettingsGroup
+import com.m57.hermescontrol.ui.common.SettingsGroupLabel
+import com.m57.hermescontrol.ui.common.SettingsRow
 import com.m57.hermescontrol.ui.settings.SettingsUiState
 import com.m57.hermescontrol.ui.settings.SettingsViewModel
 
@@ -33,52 +36,37 @@ internal fun CredentialTransportSection(
 ) {
     LaunchedEffect(viewModel) { viewModel.observeCredentialTransport() }
     val title = stringResource(R.string.settings_credential_http_title)
-    SectionCard {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(LocalSpacing.current.md),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                title,
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyLarge,
-            )
-            Switch(
-                modifier = Modifier.semantics { contentDescription = title },
+    SettingsGroupLabel(stringResource(R.string.settings_group_credential_http))
+    SettingsGroup {
+        row {
+            // The switch keeps its own callback: turning it on opens the confirmation dialog below.
+            SettingsRow(
+                title = title,
+                subtitle =
+                    listOf(
+                        state.credentialTransportBaseUrl,
+                        stringResource(R.string.settings_credential_http_profile, state.credentialTransportProfile),
+                    ).filter { it.isNotBlank() }.joinToString(" · "),
                 checked = state.credentialTransportAllowed,
-                enabled = state.credentialTransportEligible,
                 onCheckedChange = viewModel::onCredentialTransportChange,
-                colors =
-                    SwitchDefaults.colors(
-                        checkedThumbColor = MaterialTheme.colorScheme.primary,
-                        checkedTrackColor = MaterialTheme.colorScheme.primaryContainer,
-                    ),
+                enabled = state.credentialTransportEligible,
             )
         }
-        Text(state.credentialTransportBaseUrl, style = MaterialTheme.typography.bodySmall)
-        Text(
-            stringResource(R.string.settings_credential_http_profile, state.credentialTransportProfile),
-            style = MaterialTheme.typography.bodySmall,
+    }
+    SettingsFootnote(
+        stringResource(
+            when {
+                state.credentialTransportBaseUrl.startsWith("https://") -> R.string.settings_credential_http_https
+                state.credentialTransportEligible -> R.string.settings_credential_http_description
+                else -> R.string.settings_credential_http_ineligible
+            },
+        ),
+    )
+    if (state.credentialTransportError) {
+        SettingsFootnote(
+            stringResource(R.string.settings_credential_http_error),
+            color = MaterialTheme.colorScheme.error,
         )
-        Text(
-            stringResource(
-                when {
-                    state.credentialTransportBaseUrl.startsWith("https://") -> R.string.settings_credential_http_https
-                    state.credentialTransportEligible -> R.string.settings_credential_http_description
-                    else -> R.string.settings_credential_http_ineligible
-                },
-            ),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        if (state.credentialTransportError) {
-            Text(
-                stringResource(R.string.settings_credential_http_error),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-        }
     }
     state.credentialTransportConfirmEndpoint?.let { endpoint ->
         AlertDialog(

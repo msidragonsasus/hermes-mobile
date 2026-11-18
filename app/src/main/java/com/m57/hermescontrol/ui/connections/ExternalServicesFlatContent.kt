@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -39,7 +40,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.model.McpServer
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.CompactListRow
@@ -47,6 +50,7 @@ import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.SearchBar
 import com.m57.hermescontrol.ui.common.SettingsGroup
 import com.m57.hermescontrol.ui.common.SettingsGroupLabel
+import com.m57.hermescontrol.ui.common.SettingsListItem
 import com.m57.hermescontrol.ui.common.SettingsMenuItem
 import com.m57.hermescontrol.ui.common.SettingsOverflowMenu
 import com.m57.hermescontrol.ui.common.SettingsRow
@@ -97,12 +101,12 @@ internal fun ExternalServicesContent(
             .filter { filter != "要確認" || !it.error.isNullOrBlank() || it.status in setOf("error", "failed") }
     LazyColumn(
         modifier = Modifier.fillMaxSize().testTag("external_services"),
-        contentPadding = PaddingValues(horizontal = spacing.md),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
     ) {
         item {
             SearchBar(query, { query = it }, placeholder = "サービス名・使い方で検索")
             Row(
-                Modifier.horizontalScroll(rememberScrollState()),
+                Modifier.horizontalScroll(rememberScrollState()).padding(top = spacing.xs),
                 horizontalArrangement = Arrangement.spacedBy(spacing.sm),
             ) {
                 listOf("すべて", "設定済み", "要確認").forEach { label ->
@@ -126,37 +130,50 @@ internal fun ExternalServicesContent(
                 }
             }
         }
-        items(filtered, key = { it.id }) { service ->
-            CompactListRow(
-                modifier = Modifier.testTag("service_${service.id}"),
-                onClick = { onOpenService(service.id) },
-                trailing = { ConnectionBadge(serviceConnectionState(service, state)) },
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(spacing.sm),
-                ) {
-                    ServiceIcon(service.id)
-                    Column {
-                        Text(service.name, style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            service.summary,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
+        if (filtered.isNotEmpty()) item { SettingsGroupLabel(stringResource(R.string.settings_group_connectors)) }
+        itemsIndexed(filtered, key = { _, service -> service.id }) { index, service ->
+            SettingsListItem(first = index == 0, last = index == filtered.lastIndex) {
+                val status = serviceConnectionState(service, state)
+                SettingsRow(
+                    title = service.name,
+                    subtitle = service.summary,
+                    modifier = Modifier.testTag("service_${service.id}"),
+                    leading = { ServiceIcon(service.id, 24.dp) },
+                    onClick = { onOpenService(service.id) },
+                    // "Not set" is the quiet default; only states worth noticing get a badge.
+                    status =
+                        if (status != ServiceConnectionState.NOT_CONFIGURED) {
+                            { ConnectionBadge(status) }
+                        } else {
+                            null
+                        },
+                    chevron = true,
+                )
             }
         }
-        if (other.isNotEmpty()) item { SectionLabel("その他の接続") }
-        items(
+        if (other.isNotEmpty()) item { SettingsGroupLabel("その他の接続") }
+        itemsIndexed(
             other,
-            key = { "server:${it.name}" },
-        ) { server -> ConnectionTargetRow(server) { onOpenServer(server.name) } }
+            key = { _, server -> "server:${server.name}" },
+        ) { index, server ->
+            SettingsListItem(first = index == 0, last = index == other.lastIndex) {
+                ConnectionTargetRow(server) { onOpenServer(server.name) }
+            }
+        }
         if (filtered.isEmpty() && other.isEmpty()) {
             item { EmptyState(title = "該当するサービスがありません", subtitle = "検索語や絞り込みを変えてください。") }
         }
-        item { TextButton(onClick = onAdvanced) { Text("カスタム接続・詳細設定") } }
+        item {
+            SettingsGroup(Modifier.padding(top = 24.dp)) {
+                row {
+                    SettingsRow(
+                        title = stringResource(R.string.settings_group_custom_connections),
+                        chevron = true,
+                        onClick = onAdvanced,
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -184,7 +201,7 @@ internal fun ExternalServiceDetailContent(
     var info by rememberSaveable(service.id) { mutableStateOf(false) }
     var allActions by rememberSaveable(service.id) { mutableStateOf(false) }
     val warning = MaterialTheme.colorScheme.error
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = spacing.md)) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         SettingsGroup {
             row {
                 SettingsRow(
@@ -232,7 +249,12 @@ internal fun ExternalServiceDetailContent(
         if (service.id == "slack") {
             SettingsGroupLabel("接続済みアカウント")
             SettingsGroup {
-                slackAccountRows(slackState ?: SlackConnectionUiState(), onConnect ?: onSlackConnect, onSlackCancel, onSlackRefresh)
+                slackAccountRows(
+                    slackState ?: SlackConnectionUiState(),
+                    onConnect ?: onSlackConnect,
+                    onSlackCancel,
+                    onSlackRefresh,
+                )
             }
         }
 
@@ -324,31 +346,16 @@ internal fun ExternalServiceDetailContent(
 private const val ACTIONS_PREVIEW = 6
 
 @Composable
-private fun SectionLabel(text: String) {
-    val spacing = LocalSpacing.current
-    Text(
-        text,
-        modifier = Modifier.padding(top = spacing.lg, bottom = spacing.xs),
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.outline,
-    )
-}
-
-@Composable
 private fun ConnectionTargetRow(
     server: McpServer,
     onClick: () -> Unit,
 ) {
-    CompactListRow(onClick = onClick, trailing = {
-        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, modifier = Modifier.size(20.dp))
-    }) {
-        Text(server.name, style = MaterialTheme.typography.titleSmall)
-        Text(
-            "${connectionHost(server.url) ?: "Hermesサーバー上の接続"} · ${if (server.enabled) "有効" else "無効"}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
+    SettingsRow(
+        title = server.name,
+        subtitle = "${connectionHost(server.url) ?: "Hermesサーバー上の接続"} · ${if (server.enabled) "有効" else "無効"}",
+        chevron = true,
+        onClick = onClick,
+    )
 }
 
 @Composable

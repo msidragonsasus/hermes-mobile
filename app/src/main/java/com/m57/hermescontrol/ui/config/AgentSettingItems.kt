@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
@@ -35,6 +36,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.SearchBar
+import com.m57.hermescontrol.ui.common.SettingsFootnote
+import com.m57.hermescontrol.ui.common.SettingsRow
 import kotlinx.serialization.json.JsonElement
 
 /** Long lists (timezones) are searched rather than scrolled inside the page. */
@@ -50,15 +53,14 @@ internal fun AgentSwitchItem(
     showDescription: Boolean,
     onToggle: (Boolean) -> Unit,
 ) {
-    ListItem(
-        headlineContent = { Text(setting.title) },
-        supportingContent = if (showDescription) ({ Text(setting.description) }) else null,
-        trailingContent = { Switch(checked = checked, onCheckedChange = null, enabled = !saving) },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        modifier =
-            Modifier
-                .testTag("agent_setting_${setting.id}")
-                .toggleable(value = checked, enabled = !saving, role = Role.Switch, onValueChange = onToggle),
+    SettingsRow(
+        title = setting.title,
+        subtitle = setting.description.takeIf { showDescription },
+        subtitleMaxLines = Int.MAX_VALUE,
+        checked = checked,
+        onCheckedChange = onToggle,
+        enabled = !saving,
+        modifier = Modifier.testTag("agent_setting_${setting.id}"),
     )
 }
 
@@ -82,22 +84,20 @@ internal fun AgentChoiceItem(
     val spacing = LocalSpacing.current
     val rotation by animateFloatAsState(if (expanded) 180f else 0f, label = "chevron")
     Column(Modifier.fillMaxWidth()) {
-        ListItem(
-            headlineContent = { Text(setting.title) },
-            supportingContent = { Text(summary, color = MaterialTheme.colorScheme.primary) },
-            trailingContent = {
+        SettingsRow(
+            title = setting.title,
+            subtitle = summary,
+            enabled = !saving,
+            onClick = { onExpandedChange(!expanded) },
+            status = {
                 Icon(
                     Icons.Default.KeyboardArrowDown,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.rotate(rotation),
+                    modifier = Modifier.size(20.dp).rotate(rotation),
                 )
             },
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            modifier =
-                Modifier
-                    .testTag("agent_setting_${setting.id}")
-                    .clickable(enabled = !saving) { onExpandedChange(!expanded) },
+            modifier = Modifier.testTag("agent_setting_${setting.id}"),
         )
         AnimatedVisibility(
             visible = expanded,
@@ -125,19 +125,13 @@ internal fun AgentChoiceItem(
                 } else {
                     schemaOptions
                 }
-            Column(Modifier.padding(start = spacing.sm, end = spacing.lg, bottom = spacing.sm)) {
-                Text(
-                    setting.description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = spacing.md, vertical = spacing.xs),
-                )
+            // Options continue the same row anatomy: 16dp text edge, leading radio, one meta line.
+            Column(Modifier.padding(bottom = spacing.sm)) {
+                SettingsFootnote(setting.description, Modifier.padding(bottom = spacing.xs))
                 if (current == null) {
-                    Text(
+                    SettingsFootnote(
                         "今は詳細設定で個別の値が入っています。ここで選ぶと上書きされます。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = spacing.md, vertical = spacing.xs),
+                        Modifier.padding(bottom = spacing.xs),
                     )
                 }
                 if (searchable) {
@@ -145,16 +139,15 @@ internal fun AgentChoiceItem(
                         query = filter,
                         onQueryChange = { filter = it },
                         placeholder = "探す",
-                        modifier = Modifier.padding(horizontal = spacing.md, vertical = spacing.xs),
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = spacing.xs),
                     )
                 }
                 shown.forEach { option ->
                     val selected = option == current
-                    ListItem(
-                        headlineContent = { Text(option.label) },
-                        supportingContent = option.description?.let { { Text(it) } },
-                        leadingContent = { RadioButton(selected = selected, onClick = null) },
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    SettingsRow(
+                        title = option.label,
+                        subtitle = option.description,
+                        leading = { RadioButton(selected = selected, onClick = null) },
                         modifier =
                             Modifier.selectable(selected = selected, enabled = !saving, role = Role.RadioButton) {
                                 if (selected) onExpandedChange(false) else onPick(option)
@@ -162,10 +155,11 @@ internal fun AgentChoiceItem(
                     )
                 }
                 if (canRestore) {
-                    TextButton(
+                    SettingsRow(
+                        title = "既定に戻す",
+                        titleColor = MaterialTheme.colorScheme.primary,
                         onClick = onRestore,
-                        modifier = Modifier.padding(horizontal = spacing.xs),
-                    ) { Text("既定に戻す") }
+                    )
                 }
             }
         }

@@ -25,19 +25,28 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.data.config.ConnectionProfile
 import com.m57.hermescontrol.data.config.resolveBaseUrl
+import com.m57.hermescontrol.ui.common.SettingsFootnote
+import com.m57.hermescontrol.ui.common.SettingsGroup
+import com.m57.hermescontrol.ui.common.SettingsGroupLabel
+import com.m57.hermescontrol.ui.common.SettingsMenuItem
+import com.m57.hermescontrol.ui.common.SettingsPanel
+import com.m57.hermescontrol.ui.common.SettingsRow
 import com.m57.hermescontrol.ui.settings.SectionCard
 import com.m57.hermescontrol.ui.settings.SettingsUiState
 import com.m57.hermescontrol.ui.settings.SettingsViewModel
@@ -49,99 +58,15 @@ internal fun ConnectionSection(
     passwordVisible: Boolean,
     onPasswordVisibilityToggle: () -> Unit,
 ) {
-    SectionCard {
-        // ── Saved profiles list ──────────────────────────────────
-        if (state.profiles.isNotEmpty()) {
-            Text(
-                text = stringResource(R.string.settings_saved_profiles, state.profiles.size),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-
-            state.profiles.forEach { profile ->
-                val isActive = profile.id == state.selectedProfileId
-                Card(
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 2.dp)
-                            .clickable(role = Role.Button) { viewModel.selectProfile(profile.id) },
-                    colors =
-                        CardDefaults.cardColors(
-                            // The active profile is marked by its outline; a saturated fill overwhelmed the page.
-                            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                        ),
-                    border =
-                        if (isActive) {
-                            BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-                        } else {
-                            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-                        },
-                    elevation = CardDefaults.cardElevation(0.dp),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = profile.name,
-                                style =
-                                    MaterialTheme.typography.bodyMedium.copy(
-                                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
-                                    ),
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            Text(
-                                text = profile.resolveBaseUrl(state.baseUrl),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-                            IconButton(
-                                onClick = { viewModel.openEditProfile(profile.id) },
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Edit,
-                                    contentDescription = stringResource(R.string.settings_action_edit_profile),
-                                    modifier = Modifier.size(18.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            IconButton(
-                                onClick = { viewModel.requestDeleteProfile(profile.id) },
-                            ) {
-                                // Trash icon: an X read as "close" rather than "delete".
-                                Icon(
-                                    imageVector = Icons.Filled.Delete,
-                                    contentDescription = stringResource(R.string.content_desc_delete_profile),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── Add profile button ───────────────────────────────────────
-        OutlinedButton(
-            onClick = viewModel::openAddProfile,
-            modifier = Modifier.fillMaxWidth(),
-            shapes = ButtonDefaults.shapes(),
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Add,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(modifier = Modifier.size(4.dp))
-            Text(stringResource(R.string.settings_action_add_profile))
-        }
-    }
+    ConnectionProfilesGroup(
+        profiles = state.profiles,
+        selectedProfileId = state.selectedProfileId,
+        baseUrl = state.baseUrl,
+        onSelect = viewModel::selectProfile,
+        onEdit = viewModel::openEditProfile,
+        onDelete = viewModel::requestDeleteProfile,
+        onAdd = viewModel::openAddProfile,
+    )
 
     CredentialTransportSection(state, viewModel)
 
@@ -171,54 +96,80 @@ internal fun ConnectionSection(
     }
 }
 
+/** "接続を確認" as a row; its result is one footnote under the group, colored by outcome. */
 @Composable
-internal fun TestResultCard(testResult: String?) {
-    AnimatedVisibility(
-        visible = testResult != null,
-        enter = fadeIn(),
-        exit = fadeOut(),
-    ) {
+internal fun ConnectionCheckGroup(
+    isTesting: Boolean,
+    testResult: String?,
+    onTest: () -> Unit,
+) {
+    SettingsGroupLabel(stringResource(R.string.settings_group_connection_check))
+    SettingsGroup {
+        row {
+            SettingsRow(
+                title = stringResource(R.string.settings_action_test_connection),
+                enabled = !isTesting,
+                onClick = onTest,
+                trailing =
+                    if (isTesting) {
+                        { CircularProgressIndicator(Modifier.padding(end = 12.dp).size(18.dp), strokeWidth = 2.dp) }
+                    } else {
+                        null
+                    },
+            )
+        }
+    }
+    AnimatedVisibility(visible = testResult != null, enter = fadeIn(), exit = fadeOut()) {
         testResult?.let { result ->
-            Card(
-                colors =
-                    CardDefaults.cardColors(
-                        containerColor =
-                            if (result.startsWith("✅")) {
-                                MaterialTheme.colorScheme.primaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.errorContainer
-                            },
-                    ),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(
-                    text = result,
-                    modifier = Modifier.padding(16.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
+            SettingsFootnote(
+                result,
+                color =
+                    if (result.startsWith("✅")) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
+            )
         }
     }
 }
 
 @Composable
-internal fun TestConnectionButton(
-    isTesting: Boolean,
-    onTest: () -> Unit,
+internal fun ConnectionProfilesGroup(
+    profiles: List<ConnectionProfile>,
+    selectedProfileId: String?,
+    baseUrl: String,
+    onSelect: (String) -> Unit,
+    onEdit: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onAdd: () -> Unit,
 ) {
-    OutlinedButton(
-        onClick = onTest,
-        enabled = !isTesting,
-        modifier = Modifier.fillMaxWidth(),
-        shapes = ButtonDefaults.shapes(),
-    ) {
-        if (isTesting) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(18.dp),
-                strokeWidth = 2.dp,
+    val editLabel = stringResource(R.string.settings_action_edit)
+    val deleteLabel = stringResource(R.string.action_delete)
+    SettingsGroupLabel(stringResource(R.string.settings_saved_profiles, profiles.size))
+    SettingsGroup {
+        profiles.forEach { profile ->
+            row {
+                SettingsRow(
+                    title = profile.name,
+                    modifier = Modifier.testTag("connection_profile_${profile.id}"),
+                    subtitle = profile.resolveBaseUrl(baseUrl),
+                    leading = { RadioButton(selected = profile.id == selectedProfileId, onClick = null) },
+                    onClick = { onSelect(profile.id) },
+                    actions =
+                        listOf(
+                            SettingsMenuItem(editLabel) { onEdit(profile.id) },
+                            SettingsMenuItem(deleteLabel) { onDelete(profile.id) },
+                        ),
+                )
+            }
+        }
+        row {
+            SettingsRow(
+                title = stringResource(R.string.settings_action_add_profile),
+                leading = { Icon(Icons.Default.Add, null, Modifier.size(24.dp)) },
+                onClick = onAdd,
             )
-        } else {
-            Text(stringResource(R.string.settings_action_test_connection))
         }
     }
 }

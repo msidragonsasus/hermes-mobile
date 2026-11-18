@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="vault_title">パスワードとログイン</string>
+    <string name="vault_title">ログイン情報</string>
     <string name="vault_directory_description">各サイトのログイン情報を登録してHermesで使う</string>
     <string name="vault_profile">プロファイル：%1$s</string>
     <string name="vault_description">接続先のHermesに暗号化して保存します。パスワードをチャットに送らず、登録したサイトでだけ入力に使います。</string>
