@@ -41,17 +41,33 @@ object OkHttpProvider {
             .build()
     }
 
+    /**
+     * Upper bound for the WebSocket upgrade handshake. With readTimeout(0) the
+     * 101 response read otherwise has no deadline: a half-open TCP path (e.g. a
+     * Tailscale relay or a stalled gateway) left the client in CONNECTING
+     * forever with neither onOpen nor onFailure, and every later connect()
+     * skipped as "already in flight".
+     */
+    const val WS_HANDSHAKE_TIMEOUT_MS: Long = 20_000L
+
     // WebSocket-optimized variant (infinite read timeout, ping interval)
     val websocket: OkHttpClient by lazy {
-        base
-            .newBuilder()
-            .cookieJar(resolveCookieJar())
-            // OkHttp exits the call timeout on upgrade; established sockets stay unbounded.
-            .callTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(0, TimeUnit.MILLISECONDS)
-            .pingInterval(30, TimeUnit.SECONDS)
-            .build()
+        configureWebSocket(base.newBuilder().cookieJar(resolveCookieJar())).build()
     }
+
+    /**
+     * Applies the WebSocket client policy. callTimeout bounds only the upgrade:
+     * OkHttp exits the call timeout once WebSocket streams are created, so an
+     * established socket is governed by pingInterval and the health watchdog.
+     */
+    internal fun configureWebSocket(
+        builder: OkHttpClient.Builder,
+        handshakeTimeoutMs: Long = WS_HANDSHAKE_TIMEOUT_MS,
+    ): OkHttpClient.Builder =
+        builder
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .callTimeout(handshakeTimeoutMs, TimeUnit.MILLISECONDS)
+            .pingInterval(30, TimeUnit.SECONDS)
 
     // Short-timeout variant for probes and ticket minting
     val probe: OkHttpClient by lazy {
