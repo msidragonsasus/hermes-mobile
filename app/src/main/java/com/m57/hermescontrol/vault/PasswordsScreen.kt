@@ -217,7 +217,9 @@ internal fun VaultContent(
                                             listOfNotNull(
                                                 item.identifier,
                                                 item.origin,
-                                                stringResource(R.string.vault_otp_badge).takeIf { item.has_otp == true },
+                                                stringResource(
+                                                    R.string.vault_otp_badge,
+                                                ).takeIf { item.has_otp == true },
                                                 item.backend.takeIf { it != "local" },
                                             ).joinToString(" · "),
                                         leading = {
@@ -237,7 +239,13 @@ internal fun VaultContent(
                                 SettingsListItem(first = false, last = true) {
                                     SettingsRow(
                                         title = stringResource(R.string.vault_add),
-                                        leading = { Icon(Icons.Default.Add, contentDescription = null, Modifier.size(24.dp)) },
+                                        leading = {
+                                            Icon(
+                                                Icons.Default.Add,
+                                                contentDescription = null,
+                                                Modifier.size(24.dp),
+                                            )
+                                        },
                                         enabled = loaded && error == null && !busy,
                                         onClick = {
                                             formError = null

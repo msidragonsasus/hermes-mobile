@@ -255,18 +255,8 @@ object NavigationController {
         }
     }
 
-    @Suppress("UNUSED_PARAMETER")
     fun openChatSessionFromNotification(sessionId: String) {
-        // M5 Step 2: Land in the main conversation at the latest position instead of switching
-        // to a potentially stale session ID with no history UI to return from.
-        pendingAttentionNavigation = null
-        pendingChatNavigation =
-            PendingChatNavigation(
-                sessionId = "",
-                scrollToBottom = true,
-                requestId = ++nextChatNavigationRequestId,
-            )
-        if (backStack?.any { roleOf(it) == NavigationRole.AUTH } != true) navigateTo(ChatScreen)
+        openChatResult(sessionId)
     }
 
     fun openChatWithPrefill(prompt: String) {

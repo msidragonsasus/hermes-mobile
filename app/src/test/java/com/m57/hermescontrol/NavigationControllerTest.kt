@@ -131,7 +131,7 @@ class NavigationControllerTest {
     }
 
     @Test
-    fun `notification chat request asks for bottom without binding stale session id`() {
+    fun `notification chat request asks for bottom even when chat is already active`() {
         val backStack = NavBackStack<NavKey>(ChatScreen)
         NavigationController.backStack = backStack
 
@@ -141,8 +141,7 @@ class NavigationControllerTest {
         val second = NavigationController.consumePendingChatNavigation()
 
         assertEquals(1, backStack.size)
-        assertEquals("", first?.sessionId)
-        assertNull(NavigationController.pendingSessionId)
+        assertEquals("stored-session", first?.sessionId)
         assertTrue(first?.scrollToBottom == true)
         assertTrue(second?.scrollToBottom == true)
         assertTrue("repeated taps must be distinct events", first?.requestId != second?.requestId)
@@ -297,8 +296,7 @@ class NavigationControllerTest {
         NavigationController.backStack = NavBackStack<NavKey>(LandingScreen, AuthLoginScreen)
         NavigationController.openChatSessionFromNotification("stored")
         assertEquals(listOf(LandingScreen, AuthLoginScreen), NavigationController.backStack!!.toList())
-        assertNull(NavigationController.pendingSessionId)
-        assertTrue(NavigationController.pendingChatNavigation?.scrollToBottom == true)
+        assertEquals("stored", NavigationController.pendingSessionId)
     }
 
     @Test

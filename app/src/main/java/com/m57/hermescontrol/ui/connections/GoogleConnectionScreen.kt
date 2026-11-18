@@ -310,5 +310,6 @@ internal fun GoogleConnectionContent(
 
 @Composable
 internal fun Footnote(text: String) {
-    com.m57.hermescontrol.ui.common.SettingsFootnote(text)
+    com.m57.hermescontrol.ui.common
+        .SettingsFootnote(text)
 }

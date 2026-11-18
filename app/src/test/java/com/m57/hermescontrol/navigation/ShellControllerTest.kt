@@ -12,9 +12,7 @@ import com.m57.hermescontrol.ToolsetDetailKey
 import com.m57.hermescontrol.career.CareerMailSettingsKey
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -59,8 +57,7 @@ class ShellControllerTest {
         NavigationController.openChatSessionFromNotification("session-one")
         assertEquals(ShellTab.AGENT, shell.selectedTab)
         assertEquals(listOf(ChatScreen), shell.backStack.toList())
-        assertNull(NavigationController.pendingSessionId)
-        assertTrue(NavigationController.pendingChatNavigation?.scrollToBottom == true)
+        assertEquals("session-one", NavigationController.pendingSessionId)
         NavigationController.selectTab(ShellTab.TODAY)
         assertEquals(listOf(TodayScreen, AdvancedScreen), shell.backStack.toList())
     }

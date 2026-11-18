@@ -36,9 +36,9 @@ import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.config.ConnectionProfile
 import com.m57.hermescontrol.data.model.AccountLimitWindow
 import com.m57.hermescontrol.data.model.AccountLimitsResponse
+import com.m57.hermescontrol.data.model.HubSkill
 import com.m57.hermescontrol.data.model.ModelProvider
 import com.m57.hermescontrol.data.model.PluginInfo
-import com.m57.hermescontrol.data.model.HubSkill
 import com.m57.hermescontrol.data.model.Skill
 import com.m57.hermescontrol.theme.HermesControlTheme
 import com.m57.hermescontrol.theme.ThemePreference

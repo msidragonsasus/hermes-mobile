@@ -36,8 +36,8 @@ import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.SettingsGroup
 import com.m57.hermescontrol.ui.common.SettingsRow
 import com.m57.hermescontrol.ui.settings.components.AboutSection
-import com.m57.hermescontrol.ui.settings.components.ConnectionSection
 import com.m57.hermescontrol.ui.settings.components.ConnectionCheckGroup
+import com.m57.hermescontrol.ui.settings.components.ConnectionSection
 
 /**
  * Drill-down sub-pages for Settings (connection and About; the rest is inline on SettingsScreen). Each is its own NavKey destination

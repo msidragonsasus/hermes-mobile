@@ -48,7 +48,7 @@ object OkHttpProvider {
      * forever with neither onOpen nor onFailure, and every later connect()
      * skipped as "already in flight".
      */
-    const val WS_HANDSHAKE_TIMEOUT_MS: Long = 20_000L
+    const val WS_HANDSHAKE_TIMEOUT_MS: Long = 15_000L
 
     // WebSocket-optimized variant (infinite read timeout, ping interval)
     val websocket: OkHttpClient by lazy {
