@@ -96,7 +96,7 @@ object NavigationController {
 
     var pendingChatNavigation: PendingChatNavigation? by mutableStateOf(null)
         private set
-    val pendingSessionId: String? get() = pendingChatNavigation?.sessionId
+    val pendingSessionId: String? get() = pendingChatNavigation?.sessionId?.takeIf { it.isNotBlank() }
 
     fun pendingSessionIdForProfile(activeProfile: String?): String? {
         val current = pendingChatNavigation ?: return null
@@ -255,8 +255,18 @@ object NavigationController {
         }
     }
 
+    @Suppress("UNUSED_PARAMETER")
     fun openChatSessionFromNotification(sessionId: String) {
-        openChatResult(sessionId)
+        // M5 Step 2: Land in the main conversation at the latest position instead of switching
+        // to a potentially stale session ID with no history UI to return from.
+        pendingAttentionNavigation = null
+        pendingChatNavigation =
+            PendingChatNavigation(
+                sessionId = "",
+                scrollToBottom = true,
+                requestId = ++nextChatNavigationRequestId,
+            )
+        if (backStack?.any { roleOf(it) == NavigationRole.AUTH } != true) navigateTo(ChatScreen)
     }
 
     fun openChatWithPrefill(prompt: String) {
@@ -292,7 +302,12 @@ object NavigationController {
         val restored =
             encoded?.let { runCatching { Json.decodeFromString<PendingChatNavigation>(it) }.getOrNull() }
                 ?: return
-        if (restored.sessionId.isBlank() || restored.requestId <= 0 || restored.requestId == Long.MAX_VALUE) return
+        if ((restored.sessionId.isBlank() && !restored.scrollToBottom) ||
+            restored.requestId <= 0 ||
+            restored.requestId == Long.MAX_VALUE
+        ) {
+            return
+        }
         if (restored.requestId <= lastConsumedChatNavigationId ||
             restored.requestId <= (pendingChatNavigation?.requestId ?: 0)
         ) {
@@ -311,7 +326,7 @@ object NavigationController {
         return if (target == null || target == active) current else null
     }
 
-    fun consumePendingSessionId(): String? = consumePendingChatNavigation()?.sessionId
+    fun consumePendingSessionId(): String? = consumePendingChatNavigation()?.sessionId?.takeIf { it.isNotBlank() }
 
     /** Clear the stack and navigate to the given screen atomically. */
     fun resetTo(screen: NavKey) {

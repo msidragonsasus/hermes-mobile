@@ -10,6 +10,8 @@ import com.m57.hermescontrol.SettingsConnection
 import com.m57.hermescontrol.agents.AgentDetailKey
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -58,7 +60,7 @@ class AgentNavigationTest {
     }
 
     @Test
-    fun historyAndNotificationSessionTargetsKeepTheirOriginalIds() {
+    fun explicitSessionTargetsKeepIdWhileNotificationLandsInMainChat() {
         NavigationController.navigateTo(AgentScreen)
         NavigationController.navigateTo(HistoryScreen)
         NavigationController.openChatSession("existing-session")
@@ -67,7 +69,8 @@ class AgentNavigationTest {
         assertEquals("existing-session", NavigationController.consumePendingSessionId())
         repeat(2) { NavigationController.openChatSessionFromNotification("notification-session") }
         assertEquals(listOf(ChatScreen), shell.backStack.toList())
-        assertEquals("notification-session", NavigationController.consumePendingSessionId())
+        assertNull(NavigationController.pendingSessionId)
+        assertTrue(NavigationController.consumePendingChatNavigation()?.scrollToBottom == true)
     }
 
     @Test

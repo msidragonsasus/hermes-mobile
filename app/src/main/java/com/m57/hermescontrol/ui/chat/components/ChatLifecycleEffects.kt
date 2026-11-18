@@ -48,14 +48,14 @@ fun ChatLifecycleEffects(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // Switch to session from notification/history (profile-scoped so cross-profile hops never mix)
+    // Switch to session from history/explicit target (profile-scoped), or scroll to latest on notification return
     val pendingNavigation = NavigationController.pendingChatNavigation
     val pendingMainRequest = NavigationController.pendingMainConversationRequestId
     LaunchedEffect(sessionId, pendingNavigation, pendingMainRequest, connectionStatus) {
         if (connectionStatus != ConnectionStatus.CONNECTED) return@LaunchedEffect
         val activeProfile = AuthManager.activeProfileId.value
         val request = NavigationController.consumePendingChatNavigation(activeProfile)
-        val target = request?.sessionId ?: sessionId
+        val target = request?.sessionId?.takeIf { it.isNotBlank() } ?: sessionId
         if (!target.isNullOrBlank()) {
             viewModel.switchSession(target)
         } else if (NavigationController.consumePendingMainConversationRequest()) {
