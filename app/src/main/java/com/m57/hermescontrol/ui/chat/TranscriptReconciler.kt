@@ -37,6 +37,9 @@ internal fun reconcileTranscript(
     // filtering/reasoning folding must not change the raw position association.
     val positionByMapperId = raw.indices.associateBy { "rest-$session-${offset + it}" }
     val reservedIds = (state.messages + state.stagedCanonicalMessages).map { it.id }.toMutableSet()
+    // Unique-id lookups (a duplicated id resolves to nothing, like singleOrNull); linear scans per
+    // row made a resume reconcile take seconds on the main thread.
+    val stateIndex = state.messages.uniqueById()
     val mappedWithPositions =
         mapServerMessages(session, raw, offset, false, emptyList()).map { message ->
             val position = positionByMapperId.getValue(message.id)
@@ -64,9 +67,7 @@ internal fun reconcileTranscript(
             // History may omit streamed reasoning. An exact scoped row/ACK alias lets us
             // retain it without using the reasoning or prose to establish identity.
             val alias = row?.let { state.responseLedger.aliases[it.toString()] }
-            val antecedent =
-                state.messages.singleOrNull { it.id == alias }
-                    ?: state.messages.singleOrNull { it.id == id }
+            val antecedent = alias?.let(stateIndex::get) ?: stateIndex[id]
             message.copy(id = id, sourceBody = source).withRetainedReasoning(antecedent) to position
         }
     val mapped = mappedWithPositions.map { it.first }
@@ -203,18 +204,20 @@ internal fun reconcileTranscript(
     val toolDisplayKeys = selectToolDisplayKeys(state, target, session, mappedWithPositions, raw, ledger, claims)
     // Compare payload versions only AFTER an exact address/alias selected the antecedent.
     // Display projection may replace that physical version, not arbitrary protected prose/cards.
+    val messagesById = messages.groupBy { it.id }
     val physicalSupersededIds =
         mappedWithPositions
             .flatMap { (canonical, position) ->
                 val address = addressById[canonical.id]
                 val alias = address?.let { ledger.aliases[it.toString()] }
-                messages
-                    .filter { it.id == canonical.id || (alias != null && it.id == alias) }
-                    .filter { old ->
-                        address != null &&
-                            ledger.aliases.none { (row, id) -> id == old.id && row != address.toString() } &&
-                            canonical.supersedesPhysicalSource(old, raw[position])
-                    }.map { it.id }
+                (
+                    messagesById[canonical.id].orEmpty() +
+                        alias?.takeIf { it != canonical.id }?.let(messagesById::get).orEmpty()
+                ).filter { old ->
+                    address != null &&
+                        ledger.aliases.none { (row, id) -> id == old.id && row != address.toString() } &&
+                        canonical.supersedesPhysicalSource(old, raw[position])
+                }.map { it.id }
             }.toSet()
     val available = (messages + visibleCandidates).associateBy { it.id }.toMutableMap()
     for ((canonicalId, local) in toolDisplayKeys) {
@@ -222,10 +225,11 @@ internal fun reconcileTranscript(
         available[canonicalId] = body
         available[body.id] = body
     }
+    val aliasIndex = messages.uniqueById()
     for ((address, alias) in ledger.aliases) {
         val row = address.toLongOrNull() ?: continue
         val id = canonicalMessageId(target, session, row)
-        if (id !in available) messages.singleOrNull { it.id == alias }?.let { available[id] = it.copy(id = id) }
+        if (id !in available) aliasIndex[alias]?.let { available[id] = it.copy(id = id) }
     }
     for (record in ledger.responses) {
         val exhaustive = record.authority.terminals.firstOrNull { it.complete == true }
@@ -331,9 +335,10 @@ internal fun reconcileTranscript(
         ) {
             continue
         }
+        val recordMessageIds = record.messageIds.toHashSet()
         val ownedTools =
             messages.filter {
-                it.id in record.messageIds && it.role == MessageRole.TOOL &&
+                it.id in recordMessageIds && it.role == MessageRole.TOOL &&
                     it.toolCallId.isNotBlank()
             }
         val canonicalTools = visibleIds.map { available.getValue(it) }.filter { it.role == MessageRole.TOOL }
@@ -408,12 +413,13 @@ internal fun reconcileTranscript(
                         .orEmpty()
             }.toSet()
     val projectedBySourceId = mutableMapOf<String, ChatMessage>()
+    val messageIndex = messages.uniqueById()
     val permittedWithPositions =
         visibleCandidates.filter { allAddressesById[it.id] !in consumed }.map { canonical ->
             val address = allAddressesById[canonical.id]
             val alias = address?.let { ledger.aliases[it.toString()] }
-            val local = messages.singleOrNull { it.id == alias } ?: toolDisplayKeys[canonical.id]
-            val canonicalAntecedent = messages.singleOrNull { it.id == canonical.id }
+            val local = alias?.let(messageIndex::get) ?: toolDisplayKeys[canonical.id]
+            val canonicalAntecedent = messageIndex[canonical.id]
             val protectedAntecedents =
                 listOfNotNull(local, canonicalAntecedent).filter {
                     it.id in protectedIds || address in disputedAddresses
@@ -432,7 +438,7 @@ internal fun reconcileTranscript(
                     // The exact scoped address identifies the row; the fingerprint identifies
                     // its observed payload version, never another equal-text segment.
                     val observedId = disputedBodyId(canonical)
-                    val priorObservation = messages.singleOrNull { it.id == observedId }
+                    val priorObservation = messageIndex[observedId]
                     canonical.copy(
                         id = observedId,
                         attachments = canonical.attachments ?: priorObservation?.attachments,
@@ -575,8 +581,59 @@ internal fun reconcileTranscript(
             older,
             live = state.isAgentTyping || state.responseStatusUnknown,
         )
-    return state.copy(messages = foldedMessages, responseLedger = foldedLedger, stagedCanonicalMessages = staged)
+    val visible =
+        if (latest && offset == 0 && !older && !state.isAgentTyping && !state.responseStatusUnknown) {
+            dropAbsorbedOrphans(foldedMessages, foldedLedger)
+        } else {
+            foldedMessages
+        }
+    return state.copy(messages = visible, responseLedger = foldedLedger, stagedCanonicalMessages = staged)
 }
+
+/**
+ * A streamed reply that never got tied to a turn (its completion was lost, or it was pushed while
+ * the socket reconnected) stays as an ownerless local bubble after the server row arrives. On the
+ * newest page such a bubble is dropped only when a server row of the same role already holds its
+ * whole body (equal, or the bubble is a cut-off prefix) and is not older than it, so nothing is lost.
+ */
+private fun dropAbsorbedOrphans(
+    messages: List<ChatMessage>,
+    ledger: ResponseLedger,
+): List<ChatMessage> {
+    val owned = ledger.responses.flatMap { it.messageIds + it.userIds }.toHashSet() + ledger.aliases.values
+
+    fun normalized(text: String) = text.replace("\r\n", "\n").trim()
+    val servers =
+        messages
+            .filter { it.id.startsWith("canonical:") && it.role == MessageRole.ASSISTANT }
+            .map { it to normalized(it.content) }
+            .filter { (_, body) -> body.isNotEmpty() }
+    val absorbed = mutableSetOf<String>()
+    val used = mutableSetOf<String>()
+    for (local in messages) {
+        if (local.role != MessageRole.ASSISTANT || local.id in owned || local.isStreaming) continue
+        // Only live stream bubbles (random UUID ids): server-derived or legacy ids, whose
+        // provenance is unknown, are never matched by text.
+        if (!LIVE_BUBBLE_ID.matches(local.id)) continue
+        if (local.approvalInfo != null || local.clarifyInfo != null || !local.attachments.isNullOrEmpty()) continue
+        if (local.displayKind != null || local.toolOutputRiskData != null) continue
+        val body = normalized(local.content)
+        if (body.isEmpty()) continue
+        val server =
+            servers.firstOrNull { (server, serverBody) ->
+                server.id !in used && server.timestamp >= local.timestamp - ORPHAN_CLOCK_SKEW_MS &&
+                    serverBody.startsWith(body)
+            } ?: continue
+        used += server.first.id
+        absorbed += local.id
+    }
+    return if (absorbed.isEmpty()) messages else messages.filterNot { it.id in absorbed }
+}
+
+private val LIVE_BUBBLE_ID = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+/** Device and server clocks differ; a server copy may carry a slightly earlier timestamp. */
+private const val ORPHAN_CLOCK_SKEW_MS = 10 * 60 * 1000L
 
 /**
  * Context compression re-inserts the kept transcript under NEW row ids and deactivates the old
@@ -737,17 +794,46 @@ private fun adoptRewrittenRows(
                 pendingInputs = ledger.pendingInputs,
             )
     }
-    if (newestPage) {
+    if (newestPage && rewriteSeen(raw)) {
         val lowest = rawRows.min()
         val highest = rawRows.max()
-        val dead =
-            messages
-                .filter { message ->
-                    val row = canonicalRowOf(message.id, target, session) ?: return@filter false
-                    row in lowest..highest && row !in rawRows
-                }.map { it.id }
-                .toSet()
-        if (dead.isNotEmpty()) messages = messages.filterNot { it.id in dead }
+
+        fun gone(row: Long) = row in lowest..highest && row !in rawRows
+        val dead = mutableSetOf<String>()
+        messages.forEach { message ->
+            if (canonicalRowOf(message.id, target, session)?.let(::gone) == true) dead += message.id
+        }
+        // A local bubble shown for a row (exact ACK/alias) goes with that row.
+        val goneAliases = ledger.aliases.filterKeys { it.toLongOrNull()?.let(::gone) == true }
+        dead += goneAliases.values
+        // A turn whose user row was rewritten or rewound away keeps no local copy:
+        // the newest page already holds its current rows (or the turn was removed).
+        // A turn counts as running only while a reply is actually streaming; a turn whose
+        // completion was never received (socket dropped, app backgrounded) is not running.
+        val live = state.isAgentTyping || state.responseStatusUnknown
+        for (record in ledger.responses) {
+            if (live && (record.finishedAt == null || record.id == ledger.activeId)) continue
+            val userRows = record.userRowIds + listOfNotNull(record.authority.opening?.userRowId)
+            if (userRows.isEmpty() || !userRows.all(::gone)) continue
+            dead += record.userIds + record.messageIds
+        }
+        val liveIds = rawRows.map { canonicalMessageId(target, session, it) }.toSet()
+        dead.removeAll(liveIds)
+        if (dead.isNotEmpty()) {
+            messages = messages.filterNot { it.id in dead }
+            ledger =
+                ledger.copy(
+                    aliases = ledger.aliases - goneAliases.keys,
+                    pendingInputs = ledger.pendingInputs - dead,
+                    responses =
+                        ledger.responses.map {
+                            it.copy(
+                                userIds = it.userIds.filterNot { id -> id in dead },
+                                messageIds = it.messageIds.filterNot { id -> id in dead },
+                            )
+                        },
+                )
+        }
     }
     ledger = ledger.copy(canonicalUids = ledger.canonicalUids + uidByRow)
     return if (messages === state.messages && ledger == state.responseLedger) {
@@ -756,6 +842,25 @@ private fun adoptRewrittenRows(
         state.copy(messages = messages, responseLedger = ledger)
     }
 }
+
+/**
+ * Rows are inserted in time order, so on a page sorted by row id the timestamps only move
+ * forward. A compression rewrite re-inserts kept messages with their ORIGINAL timestamps after
+ * newer rows; a clear step back in time is the visible trace that rows were rewritten, and only
+ * then may a missing row inside the page be treated as deactivated.
+ */
+private fun rewriteSeen(raw: List<SessionMessage>): Boolean {
+    var newest: Long? = null
+    for (row in raw.filter { (it.id ?: 0) > 0 }.sortedBy { it.id }) {
+        val at = row.timestampEpochMs ?: continue
+        if (newest != null && at < newest - REWRITE_CLOCK_STEP_MS) return true
+        newest = maxOf(newest ?: at, at)
+    }
+    return false
+}
+
+/** A step back in row time larger than ordinary clock jitter. */
+private const val REWRITE_CLOCK_STEP_MS = 60 * 1000L
 
 /** The row of a [canonicalMessageId] for this target and session, or null. */
 private fun canonicalRowOf(
@@ -807,6 +912,11 @@ private fun foldUnprovenLocalTurns(
     var current = messages
     var result = ledger
     val folded = mutableSetOf<Long>()
+    var claimsVersion: ResponseLedger? = null
+    var claimsByRecord: Map<String, Set<Long>> = emptyMap()
+    var membersByRecord: Map<String, Set<String>> = emptyMap()
+    var claimCounts: Map<Long, Int> = emptyMap()
+    var memberCounts: Map<String, Int> = emptyMap()
     for (initial in ledger.responses) {
         val record = result.responses.singleOrNull { it.id == initial.id } ?: continue
         if (record.authority.revocations.isNotEmpty()) continue // Disputed: keep every body.
@@ -835,18 +945,29 @@ private fun foldUnprovenLocalTurns(
         fun backed(id: String) =
             id in positionOfDisplay || id in result.aliases.values || id.startsWith("canonical:") ||
                 id.startsWith("unaddressed:") || id.startsWith("disputed:") || id.startsWith("rest-")
-        val otherClaims =
-            result.responses
-                .filter { it.id != record.id }
-                .flatMap { it.claimedRows(result) }
-                .toSet()
-        val otherMembers =
-            result.responses
-                .filter { it.id != record.id }
-                .flatMap { it.userIds + it.messageIds }
-                .toSet()
-        if (span.any { rows[it] == null || rows[it] in otherClaims || rows[it] in folded }) continue
-        if (span.mapNotNull { rows[it]?.let(::displayOf) }.any { it in otherMembers }) continue
+        // Counted once per ledger version: rebuilding every other record's claims for every
+        // record made a resume reconcile quadratic in the turn history (seconds on the main thread).
+        if (claimsVersion !== result) {
+            claimsVersion = result
+            claimsByRecord = result.responses.associate { it.id to it.claimedRows(result).toHashSet() }
+            membersByRecord = result.responses.associate { it.id to (it.userIds + it.messageIds).toHashSet() }
+            claimCounts =
+                HashMap<Long, Int>().also { counts ->
+                    claimsByRecord.values.forEach { claims -> claims.forEach { counts.merge(it, 1, Int::plus) } }
+                }
+            memberCounts =
+                HashMap<String, Int>().also { counts ->
+                    membersByRecord.values.forEach { members -> members.forEach { counts.merge(it, 1, Int::plus) } }
+                }
+        }
+        val ownClaims = claimsByRecord[record.id].orEmpty()
+        val ownMembers = membersByRecord[record.id].orEmpty()
+
+        fun claimedByOther(row: Long) = (claimCounts[row] ?: 0) - (if (row in ownClaims) 1 else 0) > 0
+
+        fun memberOfOther(id: String) = (memberCounts[id] ?: 0) - (if (id in ownMembers) 1 else 0) > 0
+        if (span.any { rows[it] == null || claimedByOther(rows[it]!!) || rows[it] in folded }) continue
+        if (span.mapNotNull { rows[it]?.let(::displayOf) }.any(::memberOfOther)) continue
         val substitutes = mutableMapOf<String, ChatMessage>()
         // The proven root replaces the turn's unresolved local user bubble, unless the root is
         // already shown through it (an exact ACK alias) or the bubble holds something the row lacks.
@@ -989,14 +1110,16 @@ private fun ChatMessage.withLocalPresentation(local: ChatMessage): ChatMessage =
     )
 
 /** Every row address this response already claims (inputs, receipts, coverage and aliases). */
-private fun ResponseRecord.claimedRows(ledger: ResponseLedger): List<Long> =
-    canonicalRowIds + userRowIds + listOfNotNull(authority.opening?.userRowId) +
+private fun ResponseRecord.claimedRows(ledger: ResponseLedger): List<Long> {
+    val members = (userIds + messageIds).toHashSet()
+    return canonicalRowIds + userRowIds + listOfNotNull(authority.opening?.userRowId) +
         authority.controls.mapNotNull { it.userRowId } + authority.terminals.flatMap { it.rowIds } +
         authority.canonical?.rowIds.orEmpty() +
         ledger.aliases
-            .filterValues { it in userIds || it in messageIds }
+            .filterValues { it in members }
             .keys
             .mapNotNull { it.toLongOrNull() }
+}
 
 /** Exact source-version correspondence, not text-based row identity or replacement proof. */
 private fun ChatMessage.supersedesPhysicalSource(
@@ -1174,4 +1297,13 @@ private fun verifiedCanonicalWindow(
     val ids = window.map { it.id?.toLong()?.takeIf { row -> row > 0 } ?: return null }
     if (ids.size != ids.distinct().size) return null
     return ids
+}
+
+/** Messages by id; an id that occurs more than once maps to nothing (as `singleOrNull` would). */
+private fun List<ChatMessage>.uniqueById(): Map<String, ChatMessage> {
+    val counts = HashMap<String, Int>(size)
+    forEach { counts.merge(it.id, 1, Int::plus) }
+    return HashMap<String, ChatMessage>(size).also { index ->
+        forEach { if (counts[it.id] == 1) index[it.id] = it }
+    }
 }
