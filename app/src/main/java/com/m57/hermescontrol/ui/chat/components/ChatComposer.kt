@@ -3,6 +3,7 @@ package com.m57.hermescontrol.ui.chat.components
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -14,10 +15,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -139,9 +143,11 @@ fun ChatComposer(
 }
 
 /**
- * The chat input bar. Idle it is a single slim row — attach, text, mic — and the model and
- * thinking-depth controls sit in their own quiet row beneath the input capsule.
+ * The chat input bar. Idle it is a single slim pill — attach, text, mic. With the keyboard up
+ * (or a draft) it opens into a rounded panel whose bottom row holds attach, the model and
+ * thinking-depth controls, mic and send.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ChatInputBar(
     inputFieldValue: TextFieldValue,
@@ -201,8 +207,6 @@ fun ChatInputBar(
     var showAttachmentMenu by remember { mutableStateOf(false) }
     var isFocused by remember { mutableStateOf(false) }
 
-    // An unconfigured conversation reveals options when the user starts composing.
-    val composing = isFocused || inputFieldValue.text.isNotEmpty() || pendingAttachments.isNotEmpty()
     var showReasoning by remember { mutableStateOf(false) }
     var reasoningDismissedAt by remember { mutableStateOf(0L) }
 
@@ -309,58 +313,172 @@ fun ChatInputBar(
                 }
             }
 
+            // Idle (no keyboard, nothing typed) the composer is one slim pill: attach, text, mic.
+            // While typing it opens into a rounded panel: the text spans the width and the
+            // attach, model, thinking-depth, mic and send controls share the row beneath it.
+            val expanded =
+                (isFocused && WindowInsets.isImeVisible) || inputFieldValue.text.isNotEmpty() ||
+                    pendingAttachments.isNotEmpty()
+            val attachControl: @Composable () -> Unit = {
+                if (showAttachmentButton) {
+                    Box {
+                        IconButton(
+                            onClick = { showAttachmentMenu = true },
+                            enabled = isConnected && attachmentsEnabled,
+                            modifier =
+                                Modifier
+                                    .padding(
+                                        vertical = actionPadding,
+                                    ).size(style.actionSize)
+                                    .testTag("chat_attach_button"),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = stringResource(R.string.chat_attach_file),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        AttachmentPickerMenu(
+                            expanded = showAttachmentMenu,
+                            onDismiss = { showAttachmentMenu = false },
+                            onPhoto = {
+                                showAttachmentMenu = false
+                                onImageTap()
+                            },
+                            onCamera = {
+                                showAttachmentMenu = false
+                                onCameraTap()
+                            },
+                            onFile = {
+                                showAttachmentMenu = false
+                                onFileTap()
+                            },
+                        )
+                    }
+                }
+            }
+            val trailingControls: @Composable () -> Unit = {
+                // Send replaces the mic as soon as a send is possible — text typed OR an
+                // attachment pending (issue #956).
+                if (canSend && onSteer != null) {
+                    IconButton(
+                        onClick = onSteer,
+                        enabled = sendEnabled,
+                        modifier =
+                            Modifier
+                                .padding(
+                                    vertical = actionPadding,
+                                ).size(style.actionSize)
+                                .testTag("chat_steer_button"),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = stringResource(R.string.draft_steer),
+                        )
+                    }
+                }
+                AnimatedContent(
+                    targetState = canSend || showSendWhenEmpty,
+                    transitionSpec = {
+                        (scaleIn(initialScale = 0.8f) + fadeIn())
+                            .togetherWith(scaleOut(targetScale = 0.8f) + fadeOut())
+                    },
+                    label = "send_toggle",
+                ) { showSend ->
+                    if (isAgentTyping && onStop != null) {
+                        FilledIconButton(
+                            onClick = onStop,
+                            shapes = IconButtonDefaults.shapes(),
+                            modifier =
+                                Modifier
+                                    .padding(
+                                        vertical = actionPadding,
+                                    ).size(style.actionSize)
+                                    .testTag(stopTestTag),
+                        ) {
+                            Icon(
+                                Icons.Default.Stop,
+                                contentDescription = stringResource(R.string.group_chat_action_stop),
+                            )
+                        }
+                    } else if (showSend) {
+                        FilledIconButton(
+                            onClick = onSend,
+                            enabled = canSend && sendEnabled,
+                            shapes = IconButtonDefaults.shapes(),
+                            modifier =
+                                Modifier
+                                    .padding(
+                                        vertical = actionPadding,
+                                    ).size(style.actionSize)
+                                    .testTag(sendTestTag),
+                        ) {
+                            Icon(
+                                imageVector =
+                                    if (queueOnSend) Icons.Default.Schedule else Icons.AutoMirrored.Filled.Send,
+                                contentDescription =
+                                    stringResource(
+                                        if (queueOnSend) R.string.draft_add_queue else R.string.chat_send_desc,
+                                    ),
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    } else if (isListening) {
+                        FilledIconButton(
+                            onClick = onMicTap,
+                            shapes = IconButtonDefaults.shapes(),
+                            colors =
+                                IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError,
+                                ),
+                            modifier =
+                                Modifier
+                                    .padding(
+                                        vertical = actionPadding,
+                                    ).size(style.actionSize)
+                                    .testTag("mic_stop_button"),
+                        ) {
+                            Icon(Icons.Default.Stop, contentDescription = "Stop listening")
+                        }
+                    } else {
+                        IconButton(
+                            onClick = onMicTap,
+                            enabled = isConnected && microphoneEnabled,
+                            modifier =
+                                Modifier
+                                    .padding(
+                                        vertical = actionPadding,
+                                    ).size(style.actionSize)
+                                    .testTag("mic_button"),
+                        ) {
+                            Icon(
+                                Icons.Default.Mic,
+                                contentDescription = "Mic",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
             Surface(
-                modifier = Modifier.fillMaxWidth().testTag("chat_composer_surface"),
-                shape = style.composerShape,
+                modifier = Modifier.fillMaxWidth().animateContentSize().testTag("chat_composer_surface"),
+                shape = if (expanded) MaterialTheme.shapes.extraLarge else style.composerShape,
                 color = MaterialTheme.colorScheme.surfaceContainer,
             ) {
                 Column {
-                    // ── Input row: [attach] [text] [mic | send] ──
                     Row(
                         modifier =
                             Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = spacing.xs),
+                                .padding(
+                                    start = if (expanded) spacing.md else spacing.xs,
+                                    end = if (expanded) spacing.md else spacing.xs,
+                                    top = if (expanded) spacing.xs else 0.dp,
+                                ),
                         verticalAlignment = Alignment.Bottom,
                     ) {
-                        // Anchor the popup to its own button, independently of the input field.
-                        if (showAttachmentButton) {
-                            Box {
-                                IconButton(
-                                    onClick = { showAttachmentMenu = true },
-                                    enabled = isConnected && attachmentsEnabled,
-                                    modifier =
-                                        Modifier
-                                            .padding(
-                                                vertical = actionPadding,
-                                            ).size(style.actionSize)
-                                            .testTag("chat_attach_button"),
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Add,
-                                        contentDescription = stringResource(R.string.chat_attach_file),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                AttachmentPickerMenu(
-                                    expanded = showAttachmentMenu,
-                                    onDismiss = { showAttachmentMenu = false },
-                                    onPhoto = {
-                                        showAttachmentMenu = false
-                                        onImageTap()
-                                    },
-                                    onCamera = {
-                                        showAttachmentMenu = false
-                                        onCameraTap()
-                                    },
-                                    onFile = {
-                                        showAttachmentMenu = false
-                                        onFileTap()
-                                    },
-                                )
-                            }
-                        }
-
+                        if (!expanded) attachControl()
                         val placeholderText =
                             inputPlaceholder ?: when {
                                 responseStatusUnknown -> {
@@ -465,136 +583,46 @@ fun ChatInputBar(
                             )
                         }
 
-                        // Send replaces the mic as soon as a send is possible — text typed OR an
-                        // attachment pending (issue #956).
-                        if (canSend && onSteer != null) {
-                            IconButton(
-                                onClick = onSteer,
-                                enabled = sendEnabled,
-                                modifier =
-                                    Modifier
-                                        .padding(
-                                            vertical = actionPadding,
-                                        ).size(style.actionSize)
-                                        .testTag("chat_steer_button"),
-                            ) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.Send,
-                                    contentDescription = stringResource(R.string.draft_steer),
-                                )
-                            }
-                        }
-                        AnimatedContent(
-                            targetState = canSend || showSendWhenEmpty,
-                            transitionSpec = {
-                                (scaleIn(initialScale = 0.8f) + fadeIn())
-                                    .togetherWith(scaleOut(targetScale = 0.8f) + fadeOut())
-                            },
-                            label = "send_toggle",
-                        ) { showSend ->
-                            if (isAgentTyping && onStop != null) {
-                                FilledIconButton(
-                                    onClick = onStop,
-                                    shapes = IconButtonDefaults.shapes(),
-                                    modifier =
-                                        Modifier
-                                            .padding(
-                                                vertical = actionPadding,
-                                            ).size(style.actionSize)
-                                            .testTag(stopTestTag),
-                                ) {
-                                    Icon(
-                                        Icons.Default.Stop,
-                                        contentDescription = stringResource(R.string.group_chat_action_stop),
-                                    )
-                                }
-                            } else if (showSend) {
-                                FilledIconButton(
-                                    onClick = onSend,
-                                    enabled = canSend && sendEnabled,
-                                    shapes = IconButtonDefaults.shapes(),
-                                    modifier =
-                                        Modifier
-                                            .padding(
-                                                vertical = actionPadding,
-                                            ).size(style.actionSize)
-                                            .testTag(sendTestTag),
-                                ) {
-                                    Icon(
-                                        imageVector =
-                                            if (queueOnSend) Icons.Default.Schedule else Icons.AutoMirrored.Filled.Send,
-                                        contentDescription =
-                                            stringResource(
-                                                if (queueOnSend) R.string.draft_add_queue else R.string.chat_send_desc,
-                                            ),
-                                        modifier = Modifier.size(20.dp),
-                                    )
-                                }
-                            } else if (isListening) {
-                                FilledIconButton(
-                                    onClick = onMicTap,
-                                    shapes = IconButtonDefaults.shapes(),
-                                    colors =
-                                        IconButtonDefaults.filledIconButtonColors(
-                                            containerColor = MaterialTheme.colorScheme.error,
-                                            contentColor = MaterialTheme.colorScheme.onError,
-                                        ),
-                                    modifier =
-                                        Modifier
-                                            .padding(
-                                                vertical = actionPadding,
-                                            ).size(style.actionSize)
-                                            .testTag("mic_stop_button"),
-                                ) {
-                                    Icon(Icons.Default.Stop, contentDescription = "Stop listening")
-                                }
-                            } else {
-                                IconButton(
-                                    onClick = onMicTap,
-                                    enabled = isConnected && microphoneEnabled,
-                                    modifier =
-                                        Modifier
-                                            .padding(
-                                                vertical = actionPadding,
-                                            ).size(style.actionSize)
-                                            .testTag("mic_button"),
-                                ) {
-                                    Icon(
-                                        Icons.Default.Mic,
-                                        contentDescription = "Mic",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        if (!expanded) trailingControls()
+                    }
+                    if (expanded) {
+                        Row(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = spacing.xs)
+                                    .testTag("chat_composer_toolbar"),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            attachControl()
+                            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                                if (showModelControls) {
+                                    ComposerOptionsRow(
+                                        currentSessionModel = currentSessionModel,
+                                        reasoningLevel = reasoningLevel,
+                                        onModelTap = onModelTap,
+                                        onReasoningTap = {
+                                            if (onReasoningPickerTap != null) {
+                                                onReasoningPickerTap()
+                                                return@ComposerOptionsRow
+                                            }
+                                            // The tap that closed the popup from outside also lands on this
+                                            // button; don't reopen it straight away.
+                                            val justClosed =
+                                                android.os.SystemClock.uptimeMillis() - reasoningDismissedAt < 300
+                                            showReasoning = !showReasoning && !justClosed
+                                        },
+                                        supportsReasoning = supportsReasoning,
+                                        enabled = modelControlsEnabled,
+                                        reasoningDisplayName = reasoningDisplayName,
+                                        compact = true,
                                     )
                                 }
                             }
+                            trailingControls()
                         }
                     }
                 }
-            }
-            // Keep configured model controls discoverable without changing the input capsule.
-            AnimatedVisibility(
-                visible = showModelControls && (composing || currentSessionModel != null || reasoningLevel != null),
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically(),
-            ) {
-                ComposerOptionsRow(
-                    currentSessionModel = currentSessionModel,
-                    reasoningLevel = reasoningLevel,
-                    onModelTap = onModelTap,
-                    onReasoningTap = {
-                        if (onReasoningPickerTap != null) {
-                            onReasoningPickerTap()
-                            return@ComposerOptionsRow
-                        }
-                        // The tap that closed the popup from outside also lands on this
-                        // button; don't reopen it straight away.
-                        val justClosed = android.os.SystemClock.uptimeMillis() - reasoningDismissedAt < 300
-                        showReasoning = !showReasoning && !justClosed
-                    },
-                    supportsReasoning = supportsReasoning,
-                    enabled = modelControlsEnabled,
-                    reasoningDisplayName = reasoningDisplayName,
-                    modifier = Modifier.testTag("chat_composer_toolbar"),
-                )
             }
         }
     }

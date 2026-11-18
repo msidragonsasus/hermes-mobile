@@ -92,10 +92,18 @@ fun ComposerOptionsRow(
     supportsReasoning: Boolean? = null,
     enabled: Boolean = true,
     reasoningDisplayName: String? = null,
+    compact: Boolean = false,
 ) {
-    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    // Compact sits inside the open composer beside send: no prefixes, stronger labels.
+    val labelColor = if (compact) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+    val modelName = friendlyModelName(currentSessionModel) ?: stringResource(R.string.chat_model_default)
+    val effortName =
+        reasoningDisplayName ?: stringResource(
+            R.string.chat_reasoning_label,
+            stringResource(reasoningLabelRes(reasoningLevel)),
+        )
     Row(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 4.dp),
+        modifier = (if (compact) modifier else modifier.fillMaxWidth()).padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
@@ -105,39 +113,40 @@ fun ComposerOptionsRow(
             modifier = Modifier.weight(1f, fill = false).widthIn(max = 220.dp).testTag("model_chip"),
         ) {
             Text(
-                text = "model: ${friendlyModelName(
-                    currentSessionModel,
-                ) ?: stringResource(R.string.chat_model_default)}",
+                text = if (compact) modelName else "model: $modelName",
                 style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (compact) FontWeight.SemiBold else null,
                 color = labelColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false),
             )
-            Icon(
-                Icons.Default.KeyboardArrowDown,
-                contentDescription = null,
-                tint = labelColor,
-                modifier = Modifier.size(18.dp),
-            )
+            if (!compact) {
+                Icon(
+                    Icons.Default.KeyboardArrowDown,
+                    contentDescription = null,
+                    tint = labelColor,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
         TextButton(
             onClick = onReasoningTap,
             enabled = enabled && supportsReasoning != false,
             modifier = Modifier.testTag("reasoning_chip"),
         ) {
-            Icon(
-                Icons.Default.Psychology,
-                contentDescription = null,
-                tint = labelColor,
-                modifier = Modifier.size(18.dp),
-            )
+            if (!compact) {
+                Icon(
+                    Icons.Default.Psychology,
+                    contentDescription = null,
+                    tint = labelColor,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
             Text(
-                text = "effort: ${reasoningDisplayName ?: stringResource(
-                    R.string.chat_reasoning_label,
-                    stringResource(reasoningLabelRes(reasoningLevel)),
-                )}",
+                text = if (compact) effortName else "effort: $effortName",
                 style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (compact) FontWeight.SemiBold else null,
                 color = labelColor,
                 maxLines = 1,
                 modifier = Modifier.padding(start = 4.dp),
