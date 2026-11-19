@@ -68,8 +68,6 @@ internal fun ConnectionSection(
         onAdd = viewModel::openAddProfile,
     )
 
-    CredentialTransportSection(state, viewModel)
-
     // ── Dialogs ──────────────────────────────────────────────────────────
 
     if (state.showProfileDialog) {

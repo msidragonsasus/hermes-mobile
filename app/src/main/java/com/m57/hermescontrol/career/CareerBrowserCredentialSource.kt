@@ -35,8 +35,8 @@ import javax.net.ssl.SSLException
 internal enum class CareerBrowserCredentialFailure(
     val userMessage: String,
 ) {
-    HTTPS_REQUIRED("保存済みID・パスワードを取得できません。HTTPS接続を使うか、接続設定でこのTailscale接続へのHTTP取得を許可してください。"),
-    TRUSTED_TRANSPORT_REJECTED("Hermesサーバーが許可済みのTailscale接続を確認できません。接続先とサーバーのTailscale設定を確認してください。"),
+    HTTPS_REQUIRED("保存済みID・パスワードを取得できません。Hermesの接続先URLを確認してください。"),
+    TRUSTED_TRANSPORT_REJECTED("HermesサーバーがHTTP接続での自動入力を拒否しました。サーバー側の就活コーチを更新してください。"),
     SERVER_HTTPS_REQUIRED("HermesサーバーがHTTPS接続として確認できないため、自動入力を拒否しました。サーバーのHTTPS・プロキシ設定を確認してください。"),
     TLS_FAILED("Hermesの安全な接続を確認できません。証明書と接続設定を確認してください。"),
     SESSION_REQUIRED("Hermesへのログイン状態を確認し、マイページを開き直してください。"),
@@ -85,25 +85,22 @@ internal class CareerBrowserCredentialSource(
 
     private val base = AuthManager.getBaseUrl().toHttpUrlOrNull()
     private val profile = AppScope.PROFILE
-    private val transportConsent =
-        if (base?.isHttps == false && trustedTailnetEndpoint == null) {
-            runCatching { AuthManager.credentialTransportState() }.getOrNull()
-        } else {
-            null
-        }
-    private val trustedEndpoint = trustedTailnetEndpoint ?: transportConsent?.allowedEndpoint.orEmpty()
+
+    // Hermes is reached over a trusted LAN/Tailscale; an HTTP base is the operator's chosen transport.
+    private val trustedEndpoint =
+        (trustedTailnetEndpoint?.toHttpUrlOrNull() ?: base)?.takeIf { base?.isHttps == false && !it.isHttps }
     private val tailnetTrust =
         CareerBrowserTailnetTrust(
             base,
             trustedEndpoint,
             scope,
-            if (base?.isHttps == false && trustedEndpoint.isNotEmpty()) AuthManager.getSessionCookie() else null,
+            if (trustedEndpoint != null) AuthManager.getSessionCookie() else null,
         )
 
     val transportWarning: String?
         get() =
             if (tailnetTrust.enabled) {
-                "保存済みID・パスワードは、Tailscale内のHermesサーバーからHTTPで受け取ります(通信の保護はTailscaleに依存)。表示中のページとの通信とは別です。"
+                "保存済みID・パスワードは、HermesサーバーからHTTPで受け取ります(通信の保護はLAN/Tailscaleに依存)。表示中のページとの通信とは別です。"
             } else {
                 null
             }
@@ -564,10 +561,7 @@ internal class CareerBrowserCredentialSource(
         // Evaluate the trust latch even when the ordinary scope guard also rejects the request.
         val trustedSessionCurrent =
             !tailnetTrust.enabled ||
-                (
-                    tailnetTrust.isCurrent(currentBase, currentScope, gated, AuthManager.getSessionCookie()) &&
-                        (transportConsent == null || AuthManager.isCredentialTransportCurrent(transportConsent))
-                )
+                tailnetTrust.isCurrent(currentBase, currentScope, gated, AuthManager.getSessionCookie())
         return scope == currentScope && gated && base == currentBase && trustedSessionCurrent
     }
 

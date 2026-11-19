@@ -80,8 +80,8 @@ def create_router(store_factory=Store, *, run_worker=False, browser_consent=Fals
         return getattr(request.app.state, 'career_browser_access', None)
 
     def browser_request_guard(request):
-        if request.url.scheme != 'https':
-            raise HTTPException(403, detail={'code': 'browser_tls_required'})
+        # Hermes is served on a trusted LAN/Tailscale; HTTP is the intended
+        # transport there, so TLS is not required for these native requests.
         # Native OkHttp sends no browser Origin / Fetch Metadata. Reject even
         # same-origin Dashboard scripts using ambient cookies, not just CSRF.
         if 'origin' in request.headers or any(h.lower().startswith('sec-fetch-') for h in request.headers):
@@ -149,10 +149,6 @@ def create_router(store_factory=Store, *, run_worker=False, browser_consent=Fals
         from fastapi.responses import JSONResponse
         from starlette.concurrency import run_in_threadpool
         from .mypage_browser_credentials import browser_credentials
-        # Activation must verify the ASGI server's proxy-header trust and real
-        # TLS termination. request.url.scheme alone cannot prove the transport.
-        if request.url.scheme != "https":
-            raise HTTPException(403, detail={"code": "browser_tls_required"})
         if consent_access is not None:
             browser_request_guard(request)
         if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
@@ -192,8 +188,6 @@ def create_router(store_factory=Store, *, run_worker=False, browser_consent=Fals
     async def browser_access_control(request: Request):
         from .browser_access import BrowserAccessManager
         from starlette.concurrency import run_in_threadpool
-        if request.url.scheme != "https":
-            raise HTTPException(403, detail={"code": "browser_tls_required"})
         manager = browser_manager(request)
         if not isinstance(manager, BrowserAccessManager):
             from fastapi.responses import JSONResponse

@@ -1,8 +1,6 @@
 package com.m57.hermescontrol.career
 
 import com.m57.hermescontrol.data.local.AuthManager
-import com.m57.hermescontrol.data.local.CredentialTransportConsent
-import com.m57.hermescontrol.data.local.CredentialTransportState
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
@@ -139,53 +137,24 @@ class CareerBrowserCredentialDiagnosticsTest {
         }
 
     @Test
-    fun cleartextIsRejectedBeforeAnyHttpCall() =
+    fun cleartextBaseIsUsedWithoutAnyHttpsOrSettingsOptIn() =
         runTest(dispatcher) {
-            base.value = "http://gateway.example.test/"
+            base.value = "http://gateway.example.test:9119/"
             val source = source()
-            assertNull(source.prepare("dummy-company", 1, policy))
-            assertEquals(CareerBrowserCredentialFailure.HTTPS_REQUIRED, source.lastFailure)
-            verify(exactly = 0) { client.newCall(any()) }
+            val result = async { source.prepare("dummy-company", 1, policy) }
+            advanceUntilIdle()
+            assertEquals("http", request.captured.url.scheme)
+            assertEquals("gateway.example.test", request.captured.url.host)
+            respond(200, target(""""approval_id":"${"a".repeat(64)}","expires_in":60,"requires_confirmation":false"""))
+            advanceUntilIdle()
+            assertFalse(checkNotNull(result.await()).requiresConfirmation)
+            assertTrue(checkNotNull(source.transportWarning).contains("HTTP"))
         }
 
     @Test
-    fun runtimePermissionDefaultsOffAndRevokeRegrantCannotRevivePendingSource() =
+    fun cleartextEndpointRequiresAuthenticatedSession() =
         runTest(dispatcher) {
             base.value = "http://100.64.10.20:9119/"
-            var saved: String? = null
-            val consent = CredentialTransportConsent(read = { saved }, write = { saved = it })
-            every { AuthManager.credentialTransportState() } answers { consent.state(careerScope(), base.value) }
-            every { AuthManager.isCredentialTransportCurrent(any()) } answers {
-                firstArg<CredentialTransportState>() == consent.state(careerScope(), base.value)
-            }
-            val disabled = CareerBrowserCredentialSource(careerScope(), clientFactory = { client })
-            assertNull(disabled.prepare("dummy-company", 1, policy))
-            assertEquals(CareerBrowserCredentialFailure.HTTPS_REQUIRED, disabled.lastFailure)
-            verify(exactly = 0) { client.newCall(any()) }
-            consent.enable(consent.state(careerScope(), base.value), careerScope(), base.value)
-            val source = CareerBrowserCredentialSource(careerScope(), clientFactory = { client })
-            val prepared = async { source.prepare("dummy-company", 1, policy) }
-            advanceUntilIdle()
-            consent.invalidateContext()
-            consent.enable(consent.state(careerScope(), base.value), careerScope(), base.value)
-            respond(
-                200,
-                target("\"approval_id\":\"${"a".repeat(64)}\",\"expires_in\":60,\"requires_confirmation\":false"),
-            )
-            advanceUntilIdle()
-            assertNull(prepared.await())
-            assertEquals(CareerBrowserCredentialFailure.SCOPE_CHANGED, source.lastFailure)
-            assertNull(source.prepare("dummy-company", 1, policy))
-            verify(exactly = 1) { client.newCall(any()) }
-        }
-
-    @Test
-    fun exactTailnetEndpointRequiresExplicitDeclarationAndAuthenticatedSession() =
-        runTest(dispatcher) {
-            base.value = "http://100.64.10.20:9119/"
-            val disabled = source()
-            assertNull(disabled.prepare("dummy-company", 1, policy))
-            assertEquals(CareerBrowserCredentialFailure.HTTPS_REQUIRED, disabled.lastFailure)
             session = null
             val signedOut = source(base.value)
             assertNull(signedOut.prepare("dummy-company", 1, policy))

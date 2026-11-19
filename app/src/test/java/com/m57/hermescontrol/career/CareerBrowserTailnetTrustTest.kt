@@ -5,6 +5,7 @@ import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -21,7 +22,7 @@ class CareerBrowserTailnetTrustTest {
         endpoint: String = this.endpoint,
         declaration: String = this.endpoint,
         session: String? = "synthetic-session",
-    ) = CareerBrowserTailnetTrust(endpoint.toHttpUrl(), declaration, scope, session)
+    ) = CareerBrowserTailnetTrust(endpoint.toHttpUrl(), declaration.toHttpUrlOrNull(), scope, session)
 
     @Test
     fun anotherConfiguredEndpointWorksOnlyWithItsOwnExplicitDeclaration() {
@@ -59,20 +60,6 @@ class CareerBrowserTailnetTrustTest {
             )
         for (value in rejected) {
             assertFalse(value, trust(endpoint = value).enabled)
-            assertFalse(value, trust(declaration = value).enabled)
-        }
-    }
-
-    @Test
-    fun declarationMustBeExactLiteralEvenWhenParserWouldNormalizeItToTheApprovedUrl() {
-        for (value in listOf(
-            "http://@100.64.10.20:9119/",
-            "http://100.64.10.20:9119/a/../",
-            "http://100.64.10.20:9119/./",
-            " http://100.64.10.20:9119/",
-            "http://100.64.10.20:9119/\n",
-            "HTTP://100.64.10.20:9119/",
-        )) {
             assertFalse(value, trust(declaration = value).enabled)
         }
     }

@@ -415,7 +415,7 @@ class CareerBrowserCredentialSourceTest {
     }
 
     @Test
-    fun connectionChangeAndCleartextGatewayFailClosed() =
+    fun connectionChangeFailsClosed() =
         runTest(dispatcher) {
             var invoked = false
             val operation =
@@ -431,8 +431,6 @@ class CareerBrowserCredentialSourceTest {
             advanceUntilIdle()
             assertFalse(operation.await())
             assertFalse(invoked)
-            base.value = "http://gateway.example.test/"
-            assertFalse(source().use("dummy-company", 1, policy, approval()) { error("must not fill") })
         }
 
     @Test

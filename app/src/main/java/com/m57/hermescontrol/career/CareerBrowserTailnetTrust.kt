@@ -1,7 +1,6 @@
 package com.m57.hermescontrol.career
 
 import com.m57.hermescontrol.data.local.AppScope
-import com.m57.hermescontrol.data.local.credentialTransportEndpoint
 import com.m57.hermescontrol.data.remote.SESSION_COOKIE_NAME
 import okhttp3.Cookie
 import okhttp3.CookieJar
@@ -14,14 +13,13 @@ internal fun HttpUrl.credentialRequestUrl(path: String): HttpUrl =
         .addQueryParameter("profile", AppScope.PROFILE)
         .build()
 
-/** Explicit operator declaration, never an IP-range or VPN-presence inference. In-memory only. */
+/** Pins credential requests to the exact configured HTTP Hermes base. In-memory only. */
 internal class CareerBrowserTailnetTrust(
     base: HttpUrl?,
-    declaration: String,
+    private val endpoint: HttpUrl?,
     private val scope: String,
     sessionCookie: String?,
 ) {
-    private val endpoint = credentialTransportEndpoint(declaration)
     private val requestUrls =
         listOf(
             "browser-access/prepare",
