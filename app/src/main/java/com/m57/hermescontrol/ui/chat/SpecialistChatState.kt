@@ -105,6 +105,12 @@ internal data class SpecialistChatState(
                 }
             }
     val canAct: Boolean get() = ready && !loading && !busy && request == null && pendingTurn == null
+    val needsSessionResolution: Boolean get() = !legacy && snapshot != null && sessionId == null
+    val showsFooterActions: Boolean
+        get() =
+            pendingApply || editing || request != null || pendingTurn != null || error != null ||
+                busy || (loading && snapshot == null) || needsSessionResolution
+    val showsFooter: Boolean get() = showsFooterActions || activeDraft?.kind == "edit"
 
     fun hasInFlightTurn(nowSeconds: Double = System.currentTimeMillis() / 1000.0): Boolean =
         (busy && request?.turn != null) || (pendingTurn?.expires_at ?: 0.0) > nowSeconds
@@ -170,7 +176,7 @@ internal class SpecialistChatController(
 
     fun setEditing(editing: Boolean) {
         val current = state.value
-        if (current.canEnterEdit && current.canAct) {
+        if (current.canAct && (if (editing) current.canEnterEdit else current.editing)) {
             mutableState.value = current.copy(editing = editing, error = current.error.takeIf { current.pendingApply })
         }
     }

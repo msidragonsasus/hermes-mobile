@@ -37,8 +37,8 @@ android {
         targetSdk = 37
         // Version overrides passed from CI via -PversionName / -PversionCode
         // Falls back to defaults for local development.
-        versionCode = (project.findProperty("versionCode") as? String)?.toIntOrNull() ?: 1
-        versionName = (project.findProperty("versionName") as? String) ?: "1.0-dev"
+        versionCode = (project.findProperty("versionCode") as? String)?.toIntOrNull() ?: 1138
+        versionName = (project.findProperty("versionName") as? String) ?: "1.0.138"
 
         // Embed git commit SHA for the About card in Settings
         val gitSha =

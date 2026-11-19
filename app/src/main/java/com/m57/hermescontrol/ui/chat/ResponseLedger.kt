@@ -36,6 +36,8 @@ data class ResponseLedger(
     val pendingSubmissions: Map<String, String> = emptyMap(),
     val possibleContinuations: Map<String, String> = emptyMap(),
     val unboundControls: List<ControlInputEvidence> = emptyList(),
+    /** REST transcript links used only to present recovered tools alongside their answer. */
+    val toolAnswerIds: Map<String, String> = emptyMap(),
 ) {
     fun open(): ResponseLedger {
         val response = ResponseRecord()

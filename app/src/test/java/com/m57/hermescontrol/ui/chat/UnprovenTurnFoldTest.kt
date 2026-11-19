@@ -2,9 +2,16 @@ package com.m57.hermescontrol.ui.chat
 
 import com.m57.hermescontrol.data.model.SessionMessage
 import com.m57.hermescontrol.ui.chat.fakes.FakeChatMessageDao
+import com.m57.hermescontrol.ui.chat.fullbleed.AgentEntry
+import com.m57.hermescontrol.ui.chat.fullbleed.ChatTurn
+import com.m57.hermescontrol.ui.chat.fullbleed.ReplyLifecycle
+import com.m57.hermescontrol.ui.chat.fullbleed.groupIntoTurns
+import com.m57.hermescontrol.ui.chat.fullbleed.hasActivity
+import com.m57.hermescontrol.ui.chat.fullbleed.replyFooters
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -174,6 +181,78 @@ class UnprovenTurnFoldTest {
                     ),
             )
         assertEquals(once, shown(duplicated))
+    }
+
+    @Test
+    fun restoredToolsShareTheFoldedAnswerTurnWithoutGrantingReplyAuthority() {
+        val history =
+            listOf(
+                row(10, "user", "original"),
+                row(11, "tool", "search results"),
+                row(12, "tool", "extracted source"),
+                row(13, "assistant", "local answer"),
+                row(14, "user", "another question"),
+                row(15, "tool", "other results"),
+                row(16, "assistant", "another answer"),
+            )
+        val restored = reconciled(localTurn(10L, terminal = noReceipt()), history)
+        val turns = groupIntoTurns(restored.messages, restored.responseLedger)
+        assertEquals(4, turns.size)
+        val first = turns[1] as ChatTurn.Agent
+        val firstTools = first.entries.filterIsInstance<AgentEntry.ToolRow>()
+        val firstAnswer = first.entries.filterIsInstance<AgentEntry.Prose>().single()
+        assertEquals(listOf("search results", "extracted source"), firstTools.map { it.message.content })
+        assertEquals("local answer", firstAnswer.message.content)
+        assertTrue(first.hasActivity())
+
+        val second = turns[3] as ChatTurn.Agent
+        val secondTool = second.entries.filterIsInstance<AgentEntry.ToolRow>().single()
+        assertEquals("other results", secondTool.message.content)
+        val record = restored.responseLedger.responses.single()
+        assertEquals(listOf(canonicalMessageId(target, session, 13L)), record.messageIds)
+        assertTrue(turns.replyFooters(ReplyLifecycle(ledger = restored.responseLedger)).all { it == null })
+    }
+
+    @Test
+    fun cachedAnswerFollowedByToolsRendersOneActivityHeader() {
+        val history =
+            listOf(
+                row(10, "user", "original"),
+                row(11, "tool", "search results"),
+                row(12, "tool", "extracted source"),
+                row(13, "assistant", "local answer"),
+            )
+        val stored = reconciled(localTurn(10L, terminal = noReceipt()), history)
+        val user = stored.messages.first()
+        val tools = stored.messages.filter { it.role == MessageRole.TOOL }
+        val answer = stored.messages.last().copy(reasoningText = "verify source")
+        val cached =
+            stored.copy(
+                messages = listOf(user, answer) + tools,
+                responseLedger = stored.responseLedger.copy(toolAnswerIds = emptyMap()),
+            )
+        val restored = reconciled(cached, history)
+        val turns = groupIntoTurns(restored.messages, restored.responseLedger)
+        val reply = turns.filterIsInstance<ChatTurn.Agent>().single()
+        assertEquals(listOf(answer), reply.entries.filterIsInstance<AgentEntry.Prose>().map { it.message })
+        assertEquals(tools, reply.entries.filterIsInstance<AgentEntry.ToolRow>().map { it.message })
+        assertTrue(reply.hasActivity())
+    }
+
+    @Test
+    fun recoveredToolDoesNotCrossAnotherUserTurn() {
+        val answer = canonical(13L, MessageRole.ASSISTANT, "local answer")
+        val otherUser = canonical(14L, MessageRole.USER, "another question")
+        val tool = canonical(12L, MessageRole.TOOL, "search results")
+        val ledger =
+            ResponseLedger(
+                responses = listOf(ResponseRecord(id = "r", messageIds = listOf(answer.id))),
+                toolAnswerIds = mapOf(tool.id to answer.id),
+            )
+
+        val agentTurns = groupIntoTurns(listOf(answer, otherUser, tool), ledger).filterIsInstance<ChatTurn.Agent>()
+        val expectedTurns = listOf(listOf(AgentEntry.Prose(answer)), listOf(AgentEntry.ToolRow(tool)))
+        assertEquals(expectedTurns, agentTurns.map { it.entries })
     }
 
     @Test fun foldedTurnOwnsTheServerRows() {

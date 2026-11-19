@@ -82,6 +82,8 @@ class SpecialistChatControllerTest {
                     .first()
                     .content,
             )
+            assertTrue(chat.state.value.showsFooter)
+            assertFalse(chat.state.value.canEnterEdit)
             assertFalse(chat.submit("まだ正規会話がない"))
             gate.complete(Unit)
             runCurrent()
@@ -108,6 +110,7 @@ class SpecialistChatControllerTest {
             assertFalse(chat.state.value.canAct)
             runCurrent()
             assertEquals(setupDraft, chat.state.value.activeDraft)
+            assertFalse(chat.state.value.showsFooter)
             assertEquals(
                 1,
                 chat.state.value
@@ -134,6 +137,7 @@ class SpecialistChatControllerTest {
             chat.confirm(setupDraft.id, 1)
             runCurrent()
             assertTrue(chat.state.value.pendingApply)
+            assertTrue(chat.state.value.showsFooter)
             assertTrue(chat.state.value.blocksNormalInput)
             assertFalse(
                 chat.state.value.snapshot!!
@@ -151,6 +155,13 @@ class SpecialistChatControllerTest {
             chat.apply()
             runCurrent()
             assertFalse(chat.state.value.blocksNormalInput)
+            assertFalse(chat.state.value.showsFooter)
+            assertTrue(chat.state.value.canEnterEdit)
+            chat.setEditing(true)
+            assertEquals("edit", chat.state.value.turnMode)
+            assertTrue(chat.state.value.showsFooter)
+            chat.setEditing(false)
+            assertFalse(chat.state.value.showsFooter)
             assertTrue(
                 chat.state.value.snapshot!!
                     .routing_ready,
@@ -169,6 +180,28 @@ class SpecialistChatControllerTest {
             assertEquals(listOf(greeting.content, "技術調査を担当して", "下書きを作成しました"), resumed.take(3).map { it.content })
             assertEquals(resumed.map { it.id }.distinct().size, resumed.size)
         }
+
+    @Test
+    fun completedSetupFooterOnlyShowsWhenThereIsSomethingToHandle() {
+        val completed =
+            SpecialistChatState(
+                sessionId = "bot-chat",
+                capabilities = supported,
+                snapshot = initial.copy(setup_completed = true, activation = "applied", applied_revision = 3),
+            )
+        assertFalse(completed.showsFooter)
+        assertFalse(completed.copy(loading = true).showsFooter)
+        val waitingForNextSession = completed.snapshot?.copy(activation = "next_session_boundary")
+        assertFalse(completed.copy(snapshot = waitingForNextSession).showsFooter)
+        assertTrue(completed.copy(sessionId = null).showsFooter)
+        assertTrue(completed.copy(error = "uncertain").showsFooter)
+        assertTrue(completed.copy(busy = true).showsFooter)
+        assertTrue(completed.copy(request = SpecialistChatRequest(rejected = true)).showsFooter)
+        val pending = SpecialistPendingTurn("pending", "設定を変更して", 0.0)
+        val withPending = completed.copy(snapshot = completed.snapshot?.copy(pending_turn = pending))
+        assertTrue(withPending.showsFooter)
+        assertFalse(withPending.copy(dismissedPendingId = pending.request_id).showsFooter)
+    }
 
     @Test
     fun editToolRefreshesServerDiffAndUsesEditConfirm() =
@@ -214,6 +247,9 @@ class SpecialistChatControllerTest {
             snapshot = snapshot.copy(draft = proposal)
             chat.refresh()
             runCurrent()
+            assertFalse(chat.state.value.editing)
+            assertTrue(chat.state.value.showsFooter)
+            assertFalse(chat.state.value.showsFooterActions)
             assertEquals(
                 before,
                 chat.state.value.activeDraft

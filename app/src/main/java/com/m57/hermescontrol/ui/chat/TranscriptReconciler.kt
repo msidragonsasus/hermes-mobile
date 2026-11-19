@@ -587,7 +587,42 @@ internal fun reconcileTranscript(
         } else {
             foldedMessages
         }
-    return state.copy(messages = visible, responseLedger = foldedLedger, stagedCanonicalMessages = staged)
+    val toolAnswerIds = recoveredToolAnswerIds(page.subList(0, mapped.size), visible, foldedLedger)
+    return state.copy(
+        messages = visible,
+        responseLedger = foldedLedger.copy(toolAnswerIds = toolAnswerIds),
+        stagedCanonicalMessages = staged,
+    )
+}
+
+/** Recover presentation links from the server order, independently of receipt ownership. */
+private fun recoveredToolAnswerIds(
+    page: List<ChatMessage>,
+    visible: List<ChatMessage>,
+    ledger: ResponseLedger,
+): Map<String, String> {
+    if (ledger.responses.isEmpty()) return emptyMap()
+    val visibleIds = visible.mapTo(HashSet()) { it.id }
+    val ownedIds = ledger.responses.flatMapTo(HashSet()) { it.messageIds }
+    val links =
+        ledger.toolAnswerIds.filterTo(mutableMapOf()) { (tool, answer) ->
+            tool in visibleIds && tool !in ownedIds && answer in visibleIds && answer in ownedIds
+        }
+    var answerId: String? = null
+    for (row in page.asReversed()) {
+        if (row.role == MessageRole.TOOL && row.displayKind == null) {
+            if (answerId != null && row.id in visibleIds && row.id !in ownedIds && !row.id.startsWith("disputed:")) {
+                links[row.id] = answerId
+            }
+        } else {
+            answerId =
+                row.id.takeIf {
+                    row.role == MessageRole.ASSISTANT && row.displayKind == null &&
+                        it in ownedIds && it in visibleIds && !it.startsWith("disputed:")
+                }
+        }
+    }
+    return links
 }
 
 /**
@@ -1028,9 +1063,31 @@ private fun foldUnprovenLocalTurns(
         }
         if (substitutes.isEmpty()) continue
         val absorbedIds = substitutes.values.map { it.id }.toSet()
+        // History may have inserted a later user turn between the locally
+        // cached prompt and answer. Use the exact server slot for folded rows
+        // that would otherwise stay on the wrong side of that user boundary.
+        val displayRoot = current.indexOfFirst { it.id == rootShown?.id }
+        val nextDisplayUser =
+            (displayRoot + 1 until current.size).firstOrNull {
+                val message = current[it]
+                message.role == MessageRole.USER && message.displayKind == null && message.id !in substitutes
+            }
+        val serverSlotReplacements =
+            if (displayRoot >= 0 && nextDisplayUser != null) {
+                val turnIds = current.subList(displayRoot + 1, nextDisplayUser).mapTo(HashSet()) { it.id }
+                val laterIds = current.subList(nextDisplayUser, current.size).mapTo(HashSet()) { it.id }
+                substitutes.filter { (localId, server) -> localId in laterIds && server.id in turnIds }
+            } else {
+                emptyMap()
+            }
+        val replacementsByServerId = serverSlotReplacements.values.associateBy { it.id }
         current =
             current.mapNotNull { message ->
-                substitutes[message.id] ?: message.takeUnless { it.id in absorbedIds }
+                when {
+                    message.id in serverSlotReplacements -> null
+                    message.id in replacementsByServerId -> replacementsByServerId[message.id]
+                    else -> substitutes[message.id] ?: message.takeUnless { it.id in absorbedIds }
+                }
             }
         val removedIds = substitutes.keys
         val ownedUsers = substitutes.values.filter { it.role == MessageRole.USER }.map { it.id }

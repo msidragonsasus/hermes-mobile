@@ -23,12 +23,9 @@ import com.m57.hermescontrol.data.model.SpecialistAppConnection
 import com.m57.hermescontrol.data.model.SpecialistSettingsPreview
 import com.m57.hermescontrol.data.model.SpecialistSetupMessage
 import com.m57.hermescontrol.theme.LocalSpacing
+import com.m57.hermescontrol.ui.chat.components.ConversationActionCard
 
 internal const val SPECIALIST_SETUP_REVIEW = "specialist-setup-review"
-internal val SpecialistChatState.showsFooter: Boolean
-    get() =
-        snapshot?.setup_completed == true || request != null || pendingTurn != null ||
-            error != null || loading || busy || (snapshot != null && sessionId == null)
 
 internal fun ChatMessage.isSpecialistSetupText(): Boolean = id.startsWith("specialist:")
 
@@ -78,6 +75,7 @@ internal fun SpecialistReviewCard(
     state: SpecialistChatState,
     canUseSession: Boolean,
     onConfirm: (String, Int) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val draft = state.activeDraft ?: return
     val revision = state.snapshot?.revision ?: return
@@ -98,7 +96,7 @@ internal fun SpecialistReviewCard(
     val before = draft.before
     val none = stringResource(R.string.specialist_chat_none)
     Surface(
-        modifier = Modifier.fillMaxWidth().testTag("specialist_chat_review"),
+        modifier = modifier.fillMaxWidth().testTag("specialist_chat_review"),
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
@@ -220,79 +218,63 @@ internal fun SpecialistChatActions(
     onRetry: () -> Unit,
     onResolveSession: () -> Unit,
     onApply: () -> Unit,
-    onEdit: (Boolean) -> Unit,
+    onReturnToChat: () -> Unit,
     onRecoverText: (String) -> Unit,
 ) {
+    if (!state.showsFooterActions) return
     val snapshot = state.snapshot
     val pending = state.pendingTurn
     val request = state.request
     val waiting = state.hasInFlightTurn()
-    Column(
-        modifier = Modifier.padding(vertical = LocalSpacing.current.sm).testTag("specialist_chat_actions"),
-        verticalArrangement = Arrangement.spacedBy(LocalSpacing.current.xs),
-    ) {
-        if (snapshot?.setup_completed == true) {
-            val confirmation =
-                if (state.pendingApply) R.string.specialist_chat_saved_pending else R.string.specialist_chat_saved
-            val routing =
-                if (snapshot.routing_ready) {
-                    R.string.specialist_chat_routing_ready
-                } else {
-                    R.string.specialist_chat_routing_pending
+    val spacing = LocalSpacing.current
+    ConversationActionCard(modifier = Modifier.testTag("specialist_chat_actions")) {
+        Column(
+            modifier = Modifier.padding(spacing.md),
+            verticalArrangement = Arrangement.spacedBy(spacing.xs),
+        ) {
+            if (state.pendingApply) {
+                Text(
+                    stringResource(R.string.specialist_chat_saved_pending),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
+            if (waiting) {
+                Text(stringResource(R.string.specialist_chat_thinking), style = MaterialTheme.typography.bodySmall)
+            } else if (state.busy || (state.loading && snapshot == null)) {
+                Text(stringResource(R.string.specialist_chat_waiting), style = MaterialTheme.typography.bodySmall)
+            }
+            state.error?.let { error ->
+                Text(stringResource(specialistErrorResource(error)), style = MaterialTheme.typography.bodySmall)
+            }
+            if (state.needsSessionResolution) {
+                TextButton(onClick = onResolveSession, enabled = connected) {
+                    Text(stringResource(R.string.specialist_chat_open_canonical))
                 }
-            Text(stringResource(confirmation), style = MaterialTheme.typography.labelLarge)
-            Text(stringResource(routing), style = MaterialTheme.typography.bodySmall)
-            if (snapshot.isNextSessionBoundaryActivation) {
-                Text(
-                    stringResource(R.string.specialist_setup_persisted_next_boundary),
-                    style = MaterialTheme.typography.bodySmall,
-                )
             }
-            if (snapshot.activation == "applied" && snapshot.applied_revision != null) {
-                Text(
-                    stringResource(R.string.specialist_chat_applied, snapshot.applied_revision),
-                    style = MaterialTheme.typography.bodySmall,
-                )
+            if (state.pendingApply && request == null && !state.editing && state.activeDraft?.kind != "edit") {
+                SpecialistAction(stringResource(R.string.specialist_chat_apply), canUseSession && state.canAct, onApply)
             }
-        }
-        if (waiting) {
-            Text(stringResource(R.string.specialist_chat_thinking), style = MaterialTheme.typography.bodySmall)
-        } else if (state.busy || (state.loading && snapshot == null)) {
-            Text(stringResource(R.string.specialist_chat_waiting), style = MaterialTheme.typography.bodySmall)
-        }
-        state.error?.let { error ->
-            Text(stringResource(specialistErrorResource(error)), style = MaterialTheme.typography.bodySmall)
-        }
-        if (!state.legacy && snapshot != null && state.sessionId == null) {
-            TextButton(onClick = onResolveSession, enabled = connected) {
-                Text(stringResource(R.string.specialist_chat_open_canonical))
+            val rejectedText = request?.turn?.text?.takeIf { request.rejected }
+            val recoverableText = rejectedText ?: pending?.message?.takeIf { request == null && !waiting }
+            if (recoverableText != null) {
+                TextButton(onClick = { onRecoverText(recoverableText) }, enabled = !state.loading && !state.busy) {
+                    Text(stringResource(R.string.specialist_chat_recover_text))
+                }
             }
-        }
-        if (state.pendingApply && request == null && !state.editing && state.activeDraft?.kind != "edit") {
-            SpecialistAction(stringResource(R.string.specialist_chat_apply), canUseSession && state.canAct, onApply)
-        }
-        val recoverableText =
-            request?.turn?.text?.takeIf { request.rejected } ?: pending?.message?.takeIf { request == null && !waiting }
-        if (recoverableText != null) {
-            TextButton(onClick = { onRecoverText(recoverableText) }, enabled = !state.loading && !state.busy) {
-                Text(stringResource(R.string.specialist_chat_recover_text))
+            if (request?.rejected != true && (request != null || pending != null || state.error != null) && !waiting) {
+                TextButton(
+                    onClick = onRetry,
+                    enabled =
+                        connected && !state.loading && !state.busy &&
+                            (request == null || state.sessionId != null),
+                ) {
+                    Text(stringResource(R.string.action_retry))
+                }
             }
-        }
-        if (request?.rejected != true && (request != null || pending != null || state.error != null) && !waiting) {
-            TextButton(
-                onClick = onRetry,
-                enabled = connected && !state.loading && !state.busy && (request == null || state.sessionId != null),
-            ) {
-                Text(stringResource(R.string.action_retry))
-            }
-        }
-        if (state.canEnterEdit && !state.legacy) {
-            TextButton(onClick = { onEdit(!state.editing) }, enabled = canUseSession && state.canAct) {
-                Text(
-                    stringResource(
-                        if (state.editing) R.string.specialist_chat_return_to_chat else R.string.specialist_chat_edit,
-                    ),
-                )
+            if (state.editing) {
+                TextButton(onClick = onReturnToChat, enabled = canUseSession && state.canAct) {
+                    Text(stringResource(R.string.specialist_chat_return_to_chat))
+                }
             }
         }
     }

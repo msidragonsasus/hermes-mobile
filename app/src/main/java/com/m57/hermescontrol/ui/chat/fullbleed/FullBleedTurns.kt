@@ -88,6 +88,7 @@ private fun groupIntoTurnsForPresentation(
             .flatMap { response ->
                 (response.messageIds + response.userIds).map { it to response.id }
             }.toMap()
+    val recoveredOwners = recoveredToolOwners(messages, ledger.toolAnswerIds, owners)
     var previousOwner: String? = null
 
     fun flushAgent() {
@@ -101,7 +102,7 @@ private fun groupIntoTurnsForPresentation(
         // A local configuration control has no response owner of its own.
         // Keep its row without treating the absent owner as a new response.
         val owner =
-            owners[message.id] ?: presentationOwners[message.id]
+            owners[message.id] ?: presentationOwners[message.id] ?: recoveredOwners[message.id]
                 ?: previousOwner.takeIf { message.isModelSwitchControl() }
         if (owner != previousOwner && (owner != null || previousOwner != null)) flushAgent()
         previousOwner = owner
@@ -142,6 +143,44 @@ private fun groupIntoTurnsForPresentation(
     }
     flushAgent()
     return turns
+}
+
+/**
+ * A cached answer can precede its tools after REST reconciliation. Use the server's
+ * tool-to-answer link only when both are still adjacent in the displayed turn.
+ */
+private fun recoveredToolOwners(
+    messages: List<ChatMessage>,
+    toolAnswerIds: Map<String, String>,
+    owners: Map<String, String>,
+): Map<String, String> {
+    if (toolAnswerIds.isEmpty()) return emptyMap()
+    return buildMap {
+        var start = 0
+        while (start < messages.size) {
+            if (messages[start].role != MessageRole.TOOL) {
+                start++
+                continue
+            }
+            var end = start + 1
+            while (end < messages.size && messages[end].role == MessageRole.TOOL) end++
+            val adjacentAnswers =
+                listOfNotNull(messages.getOrNull(start - 1), messages.getOrNull(end))
+                    .filter { it.role == MessageRole.ASSISTANT && it.displayKind == null }
+                    .mapTo(HashSet()) { it.id }
+            val toolRun = messages.subList(start, end)
+            val candidates =
+                toolRun.map { tool ->
+                    owners[tool.id] ?: toolAnswerIds[tool.id]?.takeIf { it in adjacentAnswers }?.let(owners::get)
+                }
+            // Keep separate responses and any uncorrelated tool rows as boundaries.
+            val owner = candidates.first()
+            if (owner != null && candidates.all { it == owner }) {
+                toolRun.forEach { put(it.id, owner) }
+            }
+            start = end
+        }
+    }
 }
 
 /**

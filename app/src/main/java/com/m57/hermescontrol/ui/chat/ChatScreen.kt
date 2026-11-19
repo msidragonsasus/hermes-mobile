@@ -120,6 +120,7 @@ import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.InlineNotice
 import com.m57.hermescontrol.ui.common.NavIcon
 import com.m57.hermescontrol.ui.common.NoticeTone
+import com.m57.hermescontrol.ui.common.SettingsMenuItem
 import com.m57.hermescontrol.ui.model.components.ModelPickerDialog
 import com.m57.hermescontrol.ui.settings.AppUpdateViewModel
 import kotlinx.coroutines.delay
@@ -655,6 +656,16 @@ fun ChatScreen(
                 },
                 // Topics change inside the one main conversation; past ones stay in the drawer.
                 showNew = false,
+                extraSettingsAction =
+                    if (specialist != null && !specialist.legacy && specialist.canEnterEdit && !specialist.editing) {
+                        SettingsMenuItem(
+                            label = stringResource(R.string.specialist_chat_edit),
+                            enabled = canChangeSetup && specialist.canAct,
+                            onClick = { setupController.setEditing(true) },
+                        )
+                    } else {
+                        null
+                    },
             )
         },
     ) { _ ->
@@ -1031,10 +1042,15 @@ fun ChatScreen(
                             }
                         },
                         specialistFooter =
-                            if (hasSetupFooter && specialist != null) {
+                            if (hasSetupFooter) {
                                 {
                                     if (specialist.activeDraft?.kind == "edit") {
-                                        SpecialistReviewCard(specialist, canChangeSetup, setupController::confirm)
+                                        SpecialistReviewCard(
+                                            specialist,
+                                            canChangeSetup,
+                                            setupController::confirm,
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                                        )
                                     }
                                     SpecialistChatActions(
                                         state = specialist,
@@ -1043,7 +1059,7 @@ fun ChatScreen(
                                         onRetry = setupController::retry,
                                         onResolveSession = viewModel::showMainConversation,
                                         onApply = setupController::apply,
-                                        onEdit = setupController::setEditing,
+                                        onReturnToChat = { setupController.setEditing(false) },
                                         onRecoverText = { text ->
                                             val field = specialDrafts[setupKey] ?: TextFieldValue()
                                             specialDrafts[setupKey] = ChatInputPolicy.restoreRejectedText(text, field)

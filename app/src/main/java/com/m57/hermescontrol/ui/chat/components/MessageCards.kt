@@ -87,6 +87,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.m57.hermescontrol.R
@@ -105,6 +106,20 @@ import com.m57.hermescontrol.ui.chat.ClarifyUi
 import com.m57.hermescontrol.ui.chat.SubagentIndicator
 import com.m57.hermescontrol.ui.common.HermesTextField
 import kotlinx.coroutines.delay
+
+@Composable
+internal fun ConversationActionCard(
+    modifier: Modifier = Modifier,
+    horizontalGutter: Dp = 16.dp,
+    content: @Composable () -> Unit,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth().padding(horizontal = horizontalGutter, vertical = 4.dp),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        content = content,
+    )
+}
 
 // ── ReasoningCard ─────────────────────────────────────────────────────────
 
@@ -480,14 +495,9 @@ fun ClarifyBubble(
     }
     val anyAnswerable = questions.any { clarifyRequest.canRespond(it.qid) }
 
-    Surface(
-        modifier =
-            modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp)
-                .testTag("clarify_bubble"),
-        shape = MaterialTheme.shapes.medium,
-        color = scheme.surfaceContainerLow,
+    ConversationActionCard(
+        modifier = modifier.testTag("clarify_bubble"),
+        horizontalGutter = 12.dp,
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(

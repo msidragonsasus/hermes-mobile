@@ -14,6 +14,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.ui.common.SettingsMenuItem
+import com.m57.hermescontrol.ui.common.SettingsOverflowMenu
 
 /** Existing conversation controls, shared by individual and group conversations. */
 @Composable
@@ -24,6 +26,7 @@ internal fun ConversationHeaderActions(
     settingsTag: String = "chat_settings_button",
     newEnabled: Boolean = true,
     showNew: Boolean = true,
+    extraSettingsAction: SettingsMenuItem? = null,
 ) {
     Surface(
         shape = CircleShape,
@@ -40,8 +43,17 @@ internal fun ConversationHeaderActions(
                     Icon(painterResource(R.drawable.edit_square_24), stringResource(R.string.content_desc_new_chat))
                 }
             }
-            IconButton(onClick = onSettings, enabled = settingsEnabled, modifier = Modifier.testTag(settingsTag)) {
-                Icon(painterResource(R.drawable.settings_24), stringResource(R.string.chat_settings_title))
+            val settingsLabel = stringResource(R.string.chat_settings_title)
+            if (extraSettingsAction != null) {
+                SettingsOverflowMenu(
+                    items = listOf(SettingsMenuItem(settingsLabel, settingsEnabled, onSettings), extraSettingsAction),
+                    contentDescription = stringResource(R.string.profiles_more_options),
+                    testTag = settingsTag,
+                )
+            } else {
+                IconButton(onClick = onSettings, enabled = settingsEnabled, modifier = Modifier.testTag(settingsTag)) {
+                    Icon(painterResource(R.drawable.settings_24), settingsLabel)
+                }
             }
         }
     }

@@ -13,7 +13,9 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.Density
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -25,7 +27,9 @@ import com.m57.hermescontrol.data.model.SpecialistSetupDraft
 import com.m57.hermescontrol.data.model.SpecialistSetupSnapshot
 import com.m57.hermescontrol.theme.HermesControlTheme
 import com.m57.hermescontrol.theme.ThemePreference
+import com.m57.hermescontrol.ui.chat.components.ConversationHeaderActions
 import com.m57.hermescontrol.ui.chat.fullbleed.FullBleedAgentMessage
+import com.m57.hermescontrol.ui.common.SettingsMenuItem
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -34,6 +38,56 @@ import org.junit.runner.RunWith
 class SpecialistChatUiTest {
     @get:Rule
     val rule = createComposeRule()
+
+    @Test
+    fun completedChatHasNoFooterAndCanReturnFromEditing() {
+        val resources = InstrumentationRegistry.getInstrumentation().targetContext.resources
+        var chat by mutableStateOf(
+            SpecialistChatState(
+                sessionId = "bot-chat",
+                capabilities =
+                    SpecialistCapabilitiesResponse(
+                        setup_conversation = true,
+                        setup_apply = true,
+                        edit_conversation = true,
+                    ),
+                snapshot = SpecialistSetupSnapshot("bot", setup_completed = true, activation = "applied"),
+            ),
+        )
+        val editLabel = resources.getString(R.string.specialist_chat_edit)
+        rule.setContent {
+            HermesControlTheme {
+                Column {
+                    ConversationHeaderActions(
+                        onNew = {},
+                        onSettings = {},
+                        showNew = false,
+                        extraSettingsAction =
+                            SettingsMenuItem(editLabel) { chat = chat.copy(editing = true) }
+                                .takeIf { chat.canEnterEdit && !chat.editing },
+                    )
+                    SpecialistChatActions(
+                        state = chat,
+                        connected = true,
+                        canUseSession = true,
+                        onRetry = {},
+                        onResolveSession = {},
+                        onApply = {},
+                        onReturnToChat = { chat = chat.copy(editing = false) },
+                        onRecoverText = {},
+                    )
+                }
+            }
+        }
+
+        rule.onNodeWithTag("specialist_chat_actions").assertDoesNotExist()
+        rule.onNodeWithText(editLabel).assertDoesNotExist()
+        rule.onNodeWithTag("chat_settings_button").performClick()
+        rule.onNodeWithText(editLabel).performClick()
+        rule.onNodeWithTag("specialist_chat_actions").assertIsDisplayed()
+        rule.onNodeWithText(resources.getString(R.string.specialist_chat_return_to_chat)).performClick()
+        rule.onNodeWithTag("specialist_chat_actions").assertDoesNotExist()
+    }
 
     @Test
     fun markdownReplyWrapsAndCurrentDraftCanBeConfirmedAfterTurnFailure() {
