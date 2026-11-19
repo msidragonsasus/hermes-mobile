@@ -39,8 +39,8 @@ import com.google.android.gms.auth.api.identity.Identity
 import com.google.android.gms.common.api.Scope
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.career.awaitCareerResult
-import com.m57.hermescontrol.career.careerScope
 import com.m57.hermescontrol.career.findActivity
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.HermesTextField
@@ -56,7 +56,7 @@ import com.m57.hermescontrol.ui.common.SettingsServiceMark
 /** Gmail management screen. Also opened from the external services list. */
 @Composable
 fun GoogleConnectionScreen() {
-    val scope = careerScope()
+    val scope = AppScope.connectionKey()
     val model: GoogleConnectionViewModel =
         viewModel(key = "google-connection:$scope") {
             GoogleConnectionViewModel(DashboardGoogleConnectionRepository(scope))

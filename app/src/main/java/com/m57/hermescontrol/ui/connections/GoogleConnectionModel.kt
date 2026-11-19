@@ -3,7 +3,7 @@ package com.m57.hermescontrol.ui.connections
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.m57.hermescontrol.career.careerErrorCode
-import com.m57.hermescontrol.career.careerScope
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.ApiClient
 import kotlinx.coroutines.CancellationException
@@ -59,12 +59,12 @@ internal interface GoogleConnectionRepository {
 }
 
 internal class DashboardGoogleConnectionRepository(
-    private val scope: String = careerScope(),
+    private val scope: String = AppScope.connectionKey(),
 ) : GoogleConnectionRepository {
     private val api = ApiClient.hermesApi
 
     private fun checkScope() {
-        check(scope == careerScope() && AuthManager.isGatedMode()) { "connection_changed" }
+        check(scope == AppScope.connectionKey() && AuthManager.isGatedMode()) { "connection_changed" }
     }
 
     override suspend fun status(): GoogleConnectionStatus {

@@ -19,6 +19,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.m57.hermescontrol.HermesControlApp
 import com.m57.hermescontrol.NavigationController
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.ApiClient
 import com.m57.hermescontrol.home.HomeDetailKey
@@ -38,8 +39,7 @@ fun CareerHomeDetailScreen(key: HomeDetailKey) {
     var retry by rememberSaveable(key) { mutableIntStateOf(0) }
     val target = key.item.target
     val context by AuthManager.contextFlow.collectAsState()
-    val profile by AuthManager.activeProfileId.collectAsState()
-    val currentScope = remember(context, profile) { AuthManager.uiPreferenceScope() }
+    val currentScope = remember(context) { AppScope.connectionKey() }
     if (currentScope != key.scope) {
         HermesScaffold(
             title = { Text("接続先が変わりました") },
@@ -69,11 +69,11 @@ fun CareerHomeDetailScreen(key: HomeDetailKey) {
         try {
             val value =
                 ApiClient.hermesApi.careerHomeContent(
-                    AuthManager.activeProfileId.value ?: "default",
+                    AppScope.PROFILE,
                     key.item.id,
                     key.item.version,
                 )
-            check(key.scope == AuthManager.uiPreferenceScope())
+            check(key.scope == AppScope.connectionKey())
             check(!value.text("body").isNullOrBlank())
             content = value
         } catch (failure: Exception) {

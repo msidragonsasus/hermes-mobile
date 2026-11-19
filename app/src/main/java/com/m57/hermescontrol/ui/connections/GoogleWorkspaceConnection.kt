@@ -14,8 +14,8 @@ import com.google.android.gms.auth.api.identity.Identity
 import com.google.android.gms.common.api.Scope
 import com.m57.hermescontrol.career.awaitCareerResult
 import com.m57.hermescontrol.career.careerErrorCode
-import com.m57.hermescontrol.career.careerScope
 import com.m57.hermescontrol.career.findActivity
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.ApiClient
 import kotlinx.coroutines.CancellationException
@@ -52,12 +52,12 @@ internal interface GoogleWorkspaceRepository {
 }
 
 internal class DashboardGoogleWorkspaceRepository(
-    private val scope: String = careerScope(),
+    private val scope: String = AppScope.connectionKey(),
 ) : GoogleWorkspaceRepository {
     private val api = ApiClient.hermesApi
 
     private fun checkScope() {
-        check(scope == careerScope() && AuthManager.isGatedMode()) { "connection_changed" }
+        check(scope == AppScope.connectionKey() && AuthManager.isGatedMode()) { "connection_changed" }
     }
 
     override suspend fun status(): GoogleConnectionStatus {
@@ -212,16 +212,29 @@ internal class GoogleWorkspaceViewModel(
 
 internal fun googleWorkspaceError(error: Exception): String =
     when (if (error is HttpException) careerErrorCode(error) else null) {
-        "workspace_mcp_missing", "workspace_credentials_dir_unknown", "google_client_missing", "google_client_invalid" ->
+        "workspace_mcp_missing",
+        "workspace_credentials_dir_unknown",
+        "google_client_missing",
+        "google_client_invalid",
+        -> {
             "Hermesサーバーのカレンダー・ドライブ接続の設定が必要です。"
+        }
 
-        "google_scope_missing" -> "カレンダー・ドライブ・ドキュメントのすべてを許可してください。"
+        "google_scope_missing" -> {
+            "カレンダー・ドライブ・ドキュメントのすべてを許可してください。"
+        }
 
-        "google_native_consent_required" -> "アプリから接続し直してください。"
+        "google_native_consent_required" -> {
+            "アプリから接続し直してください。"
+        }
 
-        "account_not_found" -> "アカウントの接続状態が変わりました。再読込してください。"
+        "account_not_found" -> {
+            "アカウントの接続状態が変わりました。再読込してください。"
+        }
 
-        else -> googleConnectionError(error)
+        else -> {
+            googleConnectionError(error)
+        }
     }
 
 /** Starts Google's own account choice and consent for Calendar/Drive. */

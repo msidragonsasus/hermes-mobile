@@ -46,8 +46,7 @@ import kotlinx.serialization.json.JsonPrimitive
 @Composable
 fun CareerMyPageWorkbenchScreen(key: CareerMyPageWorkbenchKey) {
     val context by AuthManager.contextFlow.collectAsState()
-    val profile by AuthManager.activeProfileId.collectAsState()
-    val currentScope = remember(context, profile) { careerScope() }
+    val currentScope = remember(context) { careerScope() }
     val entryScope = rememberSaveable(key) { careerScope() }
     val appContext = LocalContext.current.applicationContext
     val model: WorkbenchViewModel =

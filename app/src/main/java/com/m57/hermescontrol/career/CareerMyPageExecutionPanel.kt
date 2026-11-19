@@ -37,8 +37,7 @@ import com.m57.hermescontrol.ui.common.HermesTextField
 @Composable
 internal fun CareerMyPageExecutionPanel() {
     val context by AuthManager.contextFlow.collectAsState()
-    val profile by AuthManager.activeProfileId.collectAsState()
-    val scope = remember(context, profile) { careerScope() }
+    val scope = remember(context) { careerScope() }
     val model: CareerMyPageExecutionViewModel =
         viewModel(
             key = "career-mypage-execution:$scope",

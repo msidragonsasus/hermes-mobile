@@ -12,7 +12,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.m57.hermescontrol.HermesControlApp
-import com.m57.hermescontrol.data.local.AuthManager
+import com.m57.hermescontrol.data.local.AppScope
 
 /** Record only rendered content, also when the user opened it directly inside the App. */
 @Composable
@@ -22,7 +22,7 @@ internal fun CareerHomeReadEffect(
 ) {
     val app = LocalContext.current.applicationContext as HermesControlApp
     val lifecycle = LocalLifecycleOwner.current
-    val scope = AuthManager.uiPreferenceScope()
+    val scope = AppScope.connectionKey()
     LaunchedEffect(scope, id, content, lifecycle) {
         lifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             app.homeRepository.markContentRead(scope, id, content)

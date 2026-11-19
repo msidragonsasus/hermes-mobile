@@ -1,11 +1,18 @@
 package com.m57.hermescontrol.career
 
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.credentialTransportEndpoint
 import com.m57.hermescontrol.data.remote.SESSION_COOKIE_NAME
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
 import java.security.MessageDigest
+
+internal fun HttpUrl.credentialRequestUrl(path: String): HttpUrl =
+    newBuilder()
+        .addPathSegments("api/plugins/career/mypage/$path")
+        .addQueryParameter("profile", AppScope.PROFILE)
+        .build()
 
 /** Explicit operator declaration, never an IP-range or VPN-presence inference. In-memory only. */
 internal class CareerBrowserTailnetTrust(
@@ -22,7 +29,7 @@ internal class CareerBrowserTailnetTrust(
             "browser-access/revoke",
             "login-id",
             "browser-login-locate",
-        ).mapNotNull { endpoint?.newBuilder()?.addPathSegments("api/plugins/career/mypage/$it")?.build() }.toSet()
+        ).mapNotNull { endpoint?.credentialRequestUrl(it) }.toSet()
     val enabled: Boolean = endpoint != null && base == endpoint
     private val fingerprint = if (enabled) fingerprint(sessionCookie) else null
     val hasSession: Boolean get() = fingerprint != null

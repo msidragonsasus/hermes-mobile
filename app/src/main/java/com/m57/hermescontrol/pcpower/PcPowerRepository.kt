@@ -1,5 +1,6 @@
 package com.m57.hermescontrol.pcpower
 
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.ApiClient
 import kotlinx.serialization.json.JsonObject
@@ -51,7 +52,7 @@ class DashboardPcPowerRepository(
     }
 }
 
-fun pcPowerScope(): String = AuthManager.uiPreferenceScope()
+fun pcPowerScope(): String = AppScope.connectionKey()
 
 private fun powerErrorCode(error: HttpException): String? =
     runCatching {

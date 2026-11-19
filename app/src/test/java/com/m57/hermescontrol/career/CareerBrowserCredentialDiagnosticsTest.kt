@@ -90,7 +90,7 @@ class CareerBrowserCredentialDiagnosticsTest {
     }
 
     private fun target(extra: String) =
-        """{"company_id":"dummy-company","profile":"phone","connection_version":1,
+        """{"company_id":"dummy-company","profile":"default","connection_version":1,
             "url":"https://portal.example.test/company/login",$extra} """
 
     @Test
@@ -197,6 +197,7 @@ class CareerBrowserCredentialDiagnosticsTest {
             advanceUntilIdle()
             assertEquals("100.64.10.20", request.captured.url.host)
             assertEquals(9119, request.captured.url.port)
+            assertEquals(listOf("default"), request.captured.url.queryParameterValues("profile"))
             assertEquals(null, request.captured.header("Authorization"))
             respond(200, target(""""approval_id":"${"a".repeat(64)}","expires_in":60,"requires_confirmation":true"""))
             advanceUntilIdle()

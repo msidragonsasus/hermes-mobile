@@ -1,5 +1,6 @@
 package com.m57.hermescontrol.terminal
 
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.OkHttpProvider
 import kotlinx.serialization.Serializable
@@ -74,7 +75,6 @@ internal class TerminalApi(
     private val scope: String,
 ) {
     private val endpoint = AuthManager.endpointForBuild()
-    private val profile = AuthManager.activeProfileId.value
     val serverLabel: String = "${endpoint.baseUrl.host}:${endpoint.baseUrl.port}"
 
     // No logging, redirects, refresh/retry or application-level replay for shell input.
@@ -87,7 +87,7 @@ internal class TerminalApi(
             .build()
 
     fun checkScope() {
-        check(scope == AuthManager.uiPreferenceScope()) { "接続先が変わりました。開き直してください。" }
+        check(scope == AppScope.connectionKey()) { "接続先が変わりました。開き直してください。" }
         check(AuthManager.isGatedMode()) { "ターミナルにはDashboardへのログインが必要です。" }
         check(terminalTransportAllowed(endpoint.baseUrl.isHttps, endpoint.baseUrl.host)) {
             "暗号化されていない接続(http)ではターミナルを使えません。httpsかTailscale経由で接続してください。"
@@ -102,7 +102,7 @@ internal class TerminalApi(
     ): T {
         checkScope()
         val url = endpoint.baseUrl.newBuilder().addPathSegments("api/plugins/mobile-terminal/$path")
-        if (profile != null) url.addQueryParameter("profile", profile)
+        url.addQueryParameter("profile", AppScope.PROFILE)
         if (offset != null) url.addQueryParameter("offset", offset.toString())
         val request =
             Request

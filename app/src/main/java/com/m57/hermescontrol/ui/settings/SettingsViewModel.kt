@@ -131,9 +131,8 @@ class SettingsViewModel(
             combine(
                 AuthManager.baseUrlFlow,
                 AuthManager.selectedProfileFlow,
-                AuthManager.activeProfileId,
                 AuthManager.credentialTransportChanges,
-            ) { _, _, _, _ -> Unit }
+            ) { _, _, _ -> Unit }
                 .collect { refreshCredentialTransportState() }
         }
 

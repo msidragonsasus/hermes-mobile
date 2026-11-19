@@ -19,7 +19,7 @@ import com.m57.hermescontrol.McpServersScreen
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.SettingsGoogleConnection
-import com.m57.hermescontrol.career.careerScope
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.NavIcon
@@ -27,7 +27,7 @@ import com.m57.hermescontrol.ui.mcp.McpServersViewModel
 
 @Composable
 private fun servicesModel(): ExternalServicesViewModel {
-    val scope = careerScope()
+    val scope = AppScope.connectionKey()
     return viewModel(key = "external-services:$scope") {
         ExternalServicesViewModel(DashboardExternalServicesRepository(scope))
     }
@@ -81,7 +81,7 @@ private fun ExternalServiceManagementScreen(serviceId: String) {
     LaunchedEffect(model, serviceId) { model.refresh() }
     val service = externalService(serviceId)
     val context = LocalContext.current
-    val scope = careerScope()
+    val scope = AppScope.connectionKey()
     val slack =
         if (serviceId == "slack") {
             viewModel<SlackConnectionViewModel>(key = "slack-login:$scope") {
@@ -106,7 +106,8 @@ private fun ExternalServiceManagementScreen(serviceId: String) {
     DisposableEffect(slack) { onDispose { slack?.cancel() } }
 
     // Connect sheet: catalog install + provider sign-in run here, on this page.
-    val mcp: McpServersViewModel = viewModel(key = "service-connect:$scope:$serviceId") { McpServersViewModel() }
+    val mcp: McpServersViewModel =
+        viewModel(key = "service-connect:$scope:$serviceId") { McpServersViewModel(AppScope.PROFILE) }
     val mcpState by mcp.uiState.collectAsStateWithLifecycle()
     var sheetOpen by rememberSaveable(serviceId) { mutableStateOf(false) }
     var pendingSignIn by remember(serviceId) { mutableStateOf<String?>(null) }

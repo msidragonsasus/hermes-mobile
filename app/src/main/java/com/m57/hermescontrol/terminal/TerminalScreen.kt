@@ -70,6 +70,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.m57.hermescontrol.NavigationController
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.theme.LocalSpacing
@@ -87,8 +88,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun TerminalScreen() {
     val context by AuthManager.contextFlow.collectAsState()
-    val profile by AuthManager.activeProfileId.collectAsState()
-    val scope = remember(context, profile) { AuthManager.uiPreferenceScope() }
+    val scope = remember(context) { AppScope.connectionKey() }
     key(scope) {
         val model: TerminalViewModel =
             viewModel(
@@ -114,7 +114,7 @@ fun TerminalScreen() {
             remember(scope) {
                 TerminalSnippetsModel(
                     TerminalSnippetStore(EncryptedTerminalStorage(appContext), scope) {
-                        AuthManager.uiPreferenceScope() == scope
+                        AppScope.connectionKey() == scope
                     },
                 )
             }

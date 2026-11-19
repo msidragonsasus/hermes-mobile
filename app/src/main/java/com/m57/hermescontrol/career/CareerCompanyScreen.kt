@@ -84,8 +84,7 @@ fun CareerScreen(
     refreshKey: Int = 0,
 ) {
     val context by AuthManager.contextFlow.collectAsState()
-    val profile by AuthManager.activeProfileId.collectAsState()
-    val scope = remember(context, profile) { careerScope() }
+    val scope = remember(context) { careerScope() }
     val appContext = LocalContext.current.applicationContext
     key(scope) {
         val model: CareerCompanyViewModel =

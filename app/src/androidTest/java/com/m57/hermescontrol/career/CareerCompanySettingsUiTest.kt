@@ -24,7 +24,7 @@ import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.HermesControlApp
-import com.m57.hermescontrol.data.local.AuthManager
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.theme.HermesControlTheme
 import com.m57.hermescontrol.theme.ThemePreference
 import io.mockk.coEvery
@@ -290,7 +290,7 @@ class CareerCompanySettingsUiTest {
         val app = compose.activity.application as HermesControlApp
         compose.waitUntil {
             runBlocking {
-                app.homeRepository.dao.reads(AuthManager.uiPreferenceScope()).first().any {
+                app.homeRepository.dao.reads(AppScope.connectionKey()).first().any {
                     it.key ==
                         "career:${mail.readIdentity}"
                 }
@@ -300,7 +300,7 @@ class CareerCompanySettingsUiTest {
         val keys =
             runBlocking {
                 app.homeRepository.dao
-                    .reads(AuthManager.uiPreferenceScope())
+                    .reads(AppScope.connectionKey())
                     .first()
                     .map { it.key }
                     .toSet()

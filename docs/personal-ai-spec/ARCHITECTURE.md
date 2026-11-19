@@ -323,6 +323,12 @@ Agentハブ候補は静的なbro/Hermes一覧と接続詳細を追加する。�
 対象機能のSupportedを要求する。候補登録は全件Unverified/Unknownで、通信・購読・書込は実装しない。
 [候補の境界と検証](../agent/AGENT_HUB_CANDIDATE.md)に従い、実接続の実証後に対応アダプターを追加する。
 
+### Owner Apps
+
+Career, PC Power, Terminal, Today plans and the external services hub address the main Hermes
+profile (`default`) on the selected authenticated connection. Local App state shares that scope.
+Bot conversations and management resolve the profile belonging to their own requests.
+
 ### Home contributions (native)
 
 `HomeContributionProvider` supplies stable ID/version, category, display text, optional precise deadline,

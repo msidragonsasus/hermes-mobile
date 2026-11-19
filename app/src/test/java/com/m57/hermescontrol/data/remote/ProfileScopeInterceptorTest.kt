@@ -1,7 +1,11 @@
 package com.m57.hermescontrol.data.remote
 
 import com.m57.hermescontrol.data.local.AuthManager
+import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
 import okhttp3.HttpUrl
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.mockwebserver.MockResponse
@@ -11,6 +15,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
+import retrofit2.Retrofit
+import retrofit2.converter.kotlinx.serialization.asConverterFactory
 
 class ProfileScopeInterceptorTest {
     private lateinit var server: MockWebServer
@@ -42,9 +48,12 @@ class ProfileScopeInterceptorTest {
             .build()
     }
 
-    private fun lastRequestedPath(client: OkHttpClient): HttpUrl {
+    private fun lastRequestedPath(
+        client: OkHttpClient,
+        path: String = "api/config",
+    ): HttpUrl {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
-        val req = Request.Builder().url(server.url("api/config")).build()
+        val req = Request.Builder().url(server.url(path)).build()
         client.newCall(req).execute().close()
         return server.takeRequest().requestUrl!!
     }
@@ -98,7 +107,15 @@ class ProfileScopeInterceptorTest {
         // profile-scoped on the backend — switching profiles must switch
         // what these screens show, so the interceptor rewrites them too.
         val client = clientFor("work")
-        for (path in listOf("api/cron/jobs", "api/sessions", "api/plugins/hermes-achievements/achievements")) {
+        for (path in listOf(
+            "api/cron/jobs",
+            "api/sessions",
+            "api/plugins",
+            "api/plugins/toggle",
+            "api/dashboard/plugins",
+            "api/plugins/hermes-achievements/achievements",
+            "api/plugins/career-other/threads",
+        )) {
             server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
             val req = Request.Builder().url(server.url(path)).build()
             client.newCall(req).execute().close()
@@ -107,6 +124,48 @@ class ProfileScopeInterceptorTest {
             assertEquals("/$path", url.encodedPath)
         }
     }
+
+    @Test
+    fun ownerAppRoutesUseMainEvenWithExplicitOrDuplicateBotProfiles() {
+        val client = clientFor("specialist")
+        val paths =
+            listOf(
+                "api/plugins/career/home",
+                "api/plugins/pc-power/status",
+                "api/plugins/mobile-terminal/sessions",
+                "api/plugins/today_home/plan",
+                "api/connections/google-workspace",
+                "api/connections/slack/status",
+            )
+        for (path in paths) {
+            val url = lastRequestedPath(client, "$path?offset=7&profile=career-coach&profile=specialist")
+            assertEquals(listOf("default"), url.queryParameterValues("profile"))
+            assertEquals("7", url.queryParameter("offset"))
+        }
+        val unselected = lastRequestedPath(clientFor(null), "api/plugins/career/snapshot")
+        assertEquals("default", unselected.queryParameter("profile"))
+    }
+
+    @Test
+    fun careerThreadCreationUsesMainWhileSpecialistIsActive() =
+        runTest {
+            val api =
+                Retrofit
+                    .Builder()
+                    .baseUrl(server.url("/"))
+                    .client(clientFor("specialist"))
+                    .addConverterFactory(Json.asConverterFactory("application/json".toMediaType()))
+                    .build()
+                    .create(HermesApiService::class.java)
+
+            server.enqueue(MockResponse().setBody("""{"id":"thread:new","title":"面接対策"}"""))
+            val thread = api.careerCreateThread("specialist", buildJsonObject {})
+            assertEquals("thread:new", thread.id)
+            val request = server.takeRequest()
+            assertEquals("POST", request.method)
+            assertEquals("/api/plugins/career/coach/threads", request.requestUrl!!.encodedPath)
+            assertEquals(listOf("default"), request.requestUrl!!.queryParameterValues("profile"))
+        }
 
     @Test
     fun skillsEndpoint_isScoped() {

@@ -41,13 +41,14 @@ class CareerThreadsViewModelTest {
     private val api = mockk<HermesApiService>()
     private val storage = mutableMapOf<String, String?>()
     private val profile = MutableStateFlow<String?>("profile-a")
+    private val connection = MutableStateFlow<String?>("connection-a")
     private val created = CareerThread("thread:new", "面接対策", "company-a")
 
     @Before fun setup() {
         Dispatchers.setMain(dispatcher)
         mockkObject(AuthManager, ApiClient)
         every { AuthManager.baseUrlFlow } returns MutableStateFlow("https://synthetic.invalid")
-        every { AuthManager.selectedProfileFlow } returns MutableStateFlow<String?>("connection-a")
+        every { AuthManager.selectedProfileFlow } returns connection
         every { AuthManager.activeProfileId } returns profile
         every { AuthManager.isGatedMode() } returns true
         every { ApiClient.hermesApi } returns api
@@ -59,12 +60,12 @@ class CareerThreadsViewModelTest {
         coEvery { local.hasPendingThread(any()) } returns false
         coEvery { local.legacyDraftThreads() } returns emptyList()
         coEvery { local.cached() } returns null
-        coEvery { api.careerCoachCapabilities("profile-a") } returns
+        coEvery { api.careerCoachCapabilities("default") } returns
             CareerCapabilities(features = listOf("conversation_threads"))
-        coEvery { api.careerThreads("profile-a") } returns
-            CareerThreads(profile = "profile-a", threads = listOf(created))
-        coEvery { api.careerCreateThread("profile-a", any()) } returns created
-        coEvery { api.careerUpdateThread(any(), "profile-a", any()) } returns created
+        coEvery { api.careerThreads("default") } returns
+            CareerThreads(profile = "default", threads = listOf(created))
+        coEvery { api.careerCreateThread("default", any()) } returns created
+        coEvery { api.careerUpdateThread(any(), "default", any()) } returns created
     }
 
     @After fun cleanup() {
@@ -80,12 +81,12 @@ class CareerThreadsViewModelTest {
                     put("id", "old-run")
                     put("control", "stop")
                 }
-            coEvery { api.careerThreadMutation("control", "profile-a", any()) } returns JsonObject(emptyMap())
+            coEvery { api.careerThreadMutation("control", "default", any()) } returns JsonObject(emptyMap())
             DashboardCareerCoachRepository(careerScope(), "company:a").mutate("control", old)
-            coVerify(exactly = 1) { api.careerThreadMutation("control", "profile-a", old) }
+            coVerify(exactly = 1) { api.careerThreadMutation("control", "default", old) }
             val newer = old.with("thread_id" to kotlinx.serialization.json.JsonPrimitive("company:a"))
             DashboardCareerCoachRepository(careerScope(), "company:a").mutate("control", newer)
-            coVerify(exactly = 1) { api.careerThreadMutation("control", "profile-a", newer) }
+            coVerify(exactly = 1) { api.careerThreadMutation("control", "default", newer) }
         }
 
     @Test fun startingAndReturningToDraftSkipsServerCreationAndPreservesCompanyContext() =
@@ -142,10 +143,10 @@ class CareerThreadsViewModelTest {
             advanceUntilIdle()
             assertEquals(operation, restored.state.value.pending)
             coVerify(exactly = 1) { api.careerCreateThread(any(), any()) }
-            coEvery { api.careerCreateThread("profile-a", operation.payload) } returns created
+            coEvery { api.careerCreateThread("default", operation.payload) } returns created
             restored.retry()
             advanceUntilIdle()
-            coVerify(exactly = 2) { api.careerCreateThread("profile-a", operation.payload) }
+            coVerify(exactly = 2) { api.careerCreateThread("default", operation.payload) }
             assertNull(restored.state.value.pending)
             assertEquals(created, restored.state.value.created)
         }
@@ -184,7 +185,7 @@ class CareerThreadsViewModelTest {
             coVerify(exactly = 0) { api.careerUpdateThread(any(), any(), any()) }
             model.refresh()
             advanceUntilIdle()
-            profile.value = "profile-b"
+            connection.value = "connection-b"
             model.create("別の会話", null, null)
             advanceUntilIdle()
             coVerify(exactly = 0) { api.careerCreateThread(any(), any()) }

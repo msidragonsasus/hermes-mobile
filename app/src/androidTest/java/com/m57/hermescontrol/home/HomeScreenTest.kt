@@ -16,6 +16,7 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.test.platform.app.InstrumentationRegistry
 import com.m57.hermescontrol.HermesControlApp
 import com.m57.hermescontrol.career.CareerLocalStore
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.local.ProfileContext
 import com.m57.hermescontrol.data.remote.ApiClient
@@ -96,6 +97,8 @@ class HomeScreenTest {
 
     @Before fun prepare() {
         mockkObject(AuthManager)
+        mockkObject(AppScope)
+        every { AppScope.connectionKey() } returns scope
         every { AuthManager.uiPreferenceScope() } returns scope
         every { AuthManager.contextFlow } returns MutableStateFlow<ProfileContext?>(null)
         every { AuthManager.activeProfileId } returns MutableStateFlow<String?>(null)
@@ -106,7 +109,7 @@ class HomeScreenTest {
 
     @After fun cleanup() {
         unmockkConstructor(CareerLocalStore::class)
-        unmockkObject(AuthManager, ApiClient)
+        unmockkObject(AppScope, AuthManager, ApiClient)
     }
 
     private fun seedResults(count: Int) =

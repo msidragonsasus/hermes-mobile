@@ -22,7 +22,7 @@ import kotlinx.coroutines.withContext
  * Order matters:
  *  1. Flip the server's sticky active profile (REST).
  *  2. Persist the LOCAL selection — the REST interceptor (``?profile=``) and
- *     the WS params injector (``params.profile``) now scope everything to the
+ *     the WS params injector (``params.profile``) now scope bot requests to the
  *     new profile. The per-server token fallback (phase 1) keeps auth intact:
  *     no re-login, restart-safe.
  *  3. Emit [switched] BEFORE the socket re-dial, so chat wipes its stale

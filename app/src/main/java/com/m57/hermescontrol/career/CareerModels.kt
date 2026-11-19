@@ -1,5 +1,6 @@
 package com.m57.hermescontrol.career
 
+import com.m57.hermescontrol.data.local.AppScope
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -59,11 +60,4 @@ fun JsonObject.text(vararg keys: String): String? =
 
 fun JsonObject.with(vararg fields: Pair<String, JsonElement>): JsonObject = JsonObject(this + fields)
 
-fun careerScope(): String =
-    listOf(
-        com.m57.hermescontrol.data.local.AuthManager.baseUrlFlow.value,
-        com.m57.hermescontrol.data.local.AuthManager.selectedProfileFlow.value
-            .orEmpty(),
-        com.m57.hermescontrol.data.local.AuthManager.activeProfileId.value
-            .orEmpty(),
-    ).joinToString("\n")
+fun careerScope(): String = AppScope.connectionKey()

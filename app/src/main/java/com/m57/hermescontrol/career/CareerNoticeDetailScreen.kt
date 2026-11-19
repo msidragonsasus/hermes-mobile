@@ -41,9 +41,8 @@ fun CareerNoticeDetailScreen(key: CareerNoticeDetailKey) {
     var error by remember(key, selected) { mutableStateOf<String?>(null) }
     var retry by rememberSaveable(key, selected) { mutableIntStateOf(0) }
     val context by AuthManager.contextFlow.collectAsState()
-    val profile by AuthManager.activeProfileId.collectAsState()
     val scope = careerScope()
-    LaunchedEffect(key, scope, context, profile, selected, retry) {
+    LaunchedEffect(key, scope, context, selected, retry) {
         content = null
         error = null
         if (scope != key.scope) {

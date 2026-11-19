@@ -10,6 +10,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.ApiClient
 import kotlinx.coroutines.CancellationException
@@ -26,7 +27,7 @@ internal class TodayPlanState(
     private val scope: String,
     private val repository: HomeRepository,
 ) {
-    private val profile = AuthManager.activeProfileId.value ?: "default"
+    private val profile = AppScope.PROFILE
     private val api = ApiClient.hermesApi
     private val mutex = Mutex()
     private var refreshId: String? = null
@@ -39,7 +40,7 @@ internal class TodayPlanState(
     var busy by mutableStateOf(false)
         private set
 
-    private fun current() = scope == AuthManager.uiPreferenceScope()
+    private fun current() = scope == AppScope.connectionKey()
 
     suspend fun restore() {
         try {
@@ -145,7 +146,7 @@ internal class TodayPlanState(
      * The one write path for a task. The row shows the request at once, but the plan changes
      * only from the server's snapshot, so a failed or unsupported write never reads as saved.
      * Shares [mutex] with polling, so an earlier poll cannot overwrite a later change, and drops
-     * responses that arrive after the connection or profile changed.
+     * responses that arrive after the connection changed.
      */
     suspend fun write(
         task: TodayTask,

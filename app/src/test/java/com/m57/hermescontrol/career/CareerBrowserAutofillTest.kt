@@ -70,7 +70,7 @@ class CareerBrowserAutofillTest {
     private fun documentCurrent() = gate.isCurrent(initialEpoch)
 
     private fun target(extra: String) =
-        """{"company_id":"dummy-company","profile":"phone","connection_version":1,
+        """{"company_id":"dummy-company","profile":"default","connection_version":1,
             "url":"https://portal.example.test/company/login",$extra} """
 
     private fun prepared(requiresConfirmation: Boolean) =
@@ -259,7 +259,7 @@ class CareerBrowserAutofillTest {
     private fun foreignTargets(body: String) =
         listOf(
             body.replace("dummy-company", "another-company"),
-            body.replace("phone", "another-profile"),
+            body.replace("default", "another-profile"),
             body.replace("\"connection_version\":1", "\"connection_version\":2"),
             body.replace("/company/login", "/other/login"),
         )
@@ -305,7 +305,7 @@ class CareerBrowserAutofillTest {
         }
 
     @Test
-    fun profileSwitchAfterPrepareReplyStillRejectsBeforeCredentialFetch() =
+    fun connectionSwitchAfterPrepareReplyStillRejectsBeforeCredentialFetch() =
         runTest(dispatcher) {
             val source = source()
             val operation =
@@ -314,7 +314,7 @@ class CareerBrowserAutofillTest {
                 }
             runCurrent()
             respond(prepared(true))
-            profile.value = "another-profile"
+            base.value = "https://other-gateway.example.test/"
             runCurrent()
             assertFalse(operation.await())
             assertEquals(1, requests.size)

@@ -41,6 +41,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.m57.hermescontrol.NavigationController
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.home.HomeDetailKey
 import com.m57.hermescontrol.theme.LocalSpacing
@@ -74,8 +75,7 @@ internal fun careerDataModel(scope: String): CareerViewModel {
 @Composable
 fun CareerAppScreen() {
     val context by AuthManager.contextFlow.collectAsState()
-    val profile by AuthManager.activeProfileId.collectAsState()
-    val scope = remember(context, profile) { careerScope() }
+    val scope = remember(context) { careerScope() }
     key(scope) {
         val model = careerDataModel(scope)
         val state by model.state.collectAsState()
@@ -238,7 +238,7 @@ internal fun CareerDashboard(
             }
         },
         onAttention = { NavigationController.navigateTo(CareerConversationKey(it.target.thread_id ?: "global")) },
-        onResult = { NavigationController.navigateTo(HomeDetailKey(AuthManager.uiPreferenceScope(), it)) },
+        onResult = { NavigationController.navigateTo(HomeDetailKey(AppScope.connectionKey(), it)) },
         onSettings = { NavigationController.navigateTo(CareerSettingsKey) },
         onRefresh = refresh,
     )
@@ -440,8 +440,7 @@ internal fun CareerEntityPresentation(
 fun CareerEntityScreen(entityId: String) {
     val origin = remember { NavigationController.backStack?.last() }
     val connection by AuthManager.contextFlow.collectAsState()
-    val profile by AuthManager.activeProfileId.collectAsState()
-    val scope = remember(connection, profile) { careerScope() }
+    val scope = remember(connection) { careerScope() }
     val model = careerDataModel(scope)
     val state by model.state.collectAsState()
     HermesScaffold(title = {

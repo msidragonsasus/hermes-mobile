@@ -2,7 +2,7 @@ package com.m57.hermescontrol.ui.connections
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.m57.hermescontrol.career.careerScope
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.model.McpOAuthFlowResponse
 import com.m57.hermescontrol.data.remote.ApiClient
@@ -46,12 +46,12 @@ internal class SlackConnectionFailure(
 ) : Exception()
 
 internal class DashboardSlackConnectionRepository(
-    private val scope: String = careerScope(),
+    private val scope: String = AppScope.connectionKey(),
 ) : SlackConnectionRepository {
     private val api = ApiClient.hermesApi
 
     private fun checkScope() {
-        check(scope == careerScope() && AuthManager.isGatedMode())
+        check(scope == AppScope.connectionKey() && AuthManager.isGatedMode())
     }
 
     private suspend fun <T> call(block: suspend () -> retrofit2.Response<T>): T {

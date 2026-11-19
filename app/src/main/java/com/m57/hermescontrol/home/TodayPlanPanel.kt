@@ -29,7 +29,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -51,7 +50,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.SettingsGoogleConnection
-import com.m57.hermescontrol.data.local.AuthManager
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.HermesTextField
@@ -77,7 +76,6 @@ internal fun TodayPlanPanel(
     val spacing = LocalSpacing.current
     var configure by rememberSaveable(scope) { mutableStateOf(false) }
     val settings = state.settings
-    val profile by AuthManager.activeProfileId.collectAsState()
     // Deadlines expire while Home stays open; re-evaluate labels each minute.
     val now by produceState(Instant.now()) {
         while (true) {
@@ -94,7 +92,7 @@ internal fun TodayPlanPanel(
             onRefresh = { coroutine.launch { state.refresh() } },
             onConfigure = { configure = !configure },
             onChange = { task, change -> coroutine.launch { state.write(task, change) } },
-            profile = profile ?: "default",
+            profile = AppScope.PROFILE,
             pending = state.pending,
             failures = state.failures,
             recent = state.recent,

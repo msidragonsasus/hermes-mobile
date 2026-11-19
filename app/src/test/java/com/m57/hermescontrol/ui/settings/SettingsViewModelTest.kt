@@ -117,34 +117,34 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun returningToSettingsShowsAndGrantsOnlyTheCurrentTypedProfileWithoutChangingDrafts() =
+    fun settingsGrantsMainWhileSpecialistIsSelectedWithoutChangingDrafts() =
         runTest {
             val fixture = configureCredentialTransport()
             val viewModel = createViewModel()
-            assertEquals("profile-a", viewModel.uiState.value.credentialTransportProfile)
+            assertEquals("default", viewModel.uiState.value.credentialTransportProfile)
             viewModel.onDialogProfileNameChange("unsaved name")
             viewModel.onDialogProfileBaseUrlChange("https://draft.example.test/")
             fixture.profile.value = "profile-b"
             val observer = launch { viewModel.observeCredentialTransport() }
             advanceUntilIdle()
-            assertEquals("profile-b", viewModel.uiState.value.credentialTransportProfile)
+            assertEquals("default", viewModel.uiState.value.credentialTransportProfile)
             assertEquals("unsaved name", viewModel.uiState.value.dialogProfileName)
             assertEquals("https://draft.example.test/", viewModel.uiState.value.dialogProfileBaseUrl)
             viewModel.onCredentialTransportChange(true)
             advanceUntilIdle()
             assertEquals(fixture.endpoint, viewModel.uiState.value.credentialTransportConfirmEndpoint)
-            assertEquals("profile-b", viewModel.uiState.value.credentialTransportConfirmProfile)
+            assertEquals("default", viewModel.uiState.value.credentialTransportConfirmProfile)
             viewModel.confirmCredentialTransport()
             advanceUntilIdle()
             assertTrue(viewModel.uiState.value.credentialTransportAllowed)
-            verify(exactly = 1) { AuthManager.enableCredentialTransport(match { it.serverProfile == "profile-b" }) }
-            verify(exactly = 0) { AuthManager.enableCredentialTransport(match { it.serverProfile == "profile-a" }) }
+            verify(exactly = 1) { AuthManager.enableCredentialTransport(match { it.serverProfile == "default" }) }
+            verify(exactly = 0) { AuthManager.enableCredentialTransport(match { it.serverProfile == "profile-b" }) }
             assertEquals("unsaved name", viewModel.uiState.value.dialogProfileName)
             observer.cancel()
         }
 
     @Test
-    fun contextChangeAfterPromptDismissesItAndCannotGrantTheReplacementProfile() =
+    fun connectionChangeAfterPromptDismissesItAndCannotGrantTheReplacementConnection() =
         runTest {
             val fixture = configureCredentialTransport()
             val viewModel = createViewModel()
@@ -152,12 +152,12 @@ class SettingsViewModelTest {
             advanceUntilIdle()
             viewModel.onCredentialTransportChange(true)
             advanceUntilIdle()
-            assertEquals("profile-a", viewModel.uiState.value.credentialTransportConfirmProfile)
-            fixture.profile.value = "profile-b"
+            assertEquals("default", viewModel.uiState.value.credentialTransportConfirmProfile)
+            fixture.base.value = "http://100.64.10.21:9119/"
             advanceUntilIdle()
             assertNull(viewModel.uiState.value.credentialTransportConfirmEndpoint)
             assertNull(viewModel.uiState.value.credentialTransportConfirmProfile)
-            assertEquals("profile-b", viewModel.uiState.value.credentialTransportProfile)
+            assertEquals("default", viewModel.uiState.value.credentialTransportProfile)
             viewModel.confirmCredentialTransport()
             advanceUntilIdle()
             assertFalse(viewModel.uiState.value.credentialTransportAllowed)
@@ -226,7 +226,7 @@ class SettingsViewModelTest {
         val base = MutableStateFlow("http://100.64.10.20:9119/")
         val profile = MutableStateFlow("profile-a")
         val endpoint: String get() = base.value
-        val scope: String get() = "$endpoint\nconnection-a\n${profile.value}"
+        val scope: String get() = "$endpoint\nconnection-a\ndefault"
         var saved: String? = null
         var failWrite = false
         val consent =
@@ -247,9 +247,9 @@ class SettingsViewModelTest {
         every { AuthManager.activeProfileId } returns fixture.profile
         every { AuthManager.credentialTransportChanges } returns fixture.consent.changes
         every { AuthManager.credentialTransportState() } answers
-            { fixture.consent.state(fixture.scope, fixture.endpoint, fixture.profile.value) }
+            { fixture.consent.state(fixture.scope, fixture.endpoint) }
         every { AuthManager.enableCredentialTransport(any()) } answers {
-            fixture.consent.enable(firstArg(), fixture.scope, fixture.endpoint, fixture.profile.value)
+            fixture.consent.enable(firstArg(), fixture.scope, fixture.endpoint)
         }
         every { AuthManager.disableCredentialTransport() } answers { fixture.consent.invalidateContext() }
         return fixture

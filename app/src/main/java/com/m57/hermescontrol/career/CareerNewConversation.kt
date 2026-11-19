@@ -1,6 +1,7 @@
 package com.m57.hermescontrol.career
 
 import android.content.Context
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.ApiClient
 import kotlinx.coroutines.sync.Mutex
@@ -265,7 +266,7 @@ internal fun careerNewConversationRepository(
     context: Context,
     scope: String,
 ): CareerNewConversationRepository {
-    val profile = AuthManager.activeProfileId.value ?: "default"
+    val profile = AppScope.PROFILE
     val api = ApiClient.hermesApi
     return CareerNewConversationRepository(
         entry,

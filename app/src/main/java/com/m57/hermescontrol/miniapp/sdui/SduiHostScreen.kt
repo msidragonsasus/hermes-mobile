@@ -47,8 +47,7 @@ import com.m57.hermescontrol.ui.common.NavIcon
 @Composable
 fun CareerMyPageSduiScreen(key: CareerMyPageSduiKey) {
     val context by AuthManager.contextFlow.collectAsState()
-    val profile by AuthManager.activeProfileId.collectAsState()
-    val currentScope = remember(context, profile) { careerScope() }
+    val currentScope = remember(context) { careerScope() }
 
     // The connection this route was opened on. Kept across rotation so a switch while away is seen.
     val entryScope = rememberSaveable(key) { careerScope() }

@@ -68,12 +68,10 @@ object AuthManager {
     internal fun credentialTransportState(): CredentialTransportState {
         requirePrefs()
         val endpoint = getBaseUrl()
-        val connection = getSelectedProfileId().orEmpty()
-        val profile = activeProfileId.value
         return credentialTransportConsent.state(
-            listOf(endpoint, connection, profile.orEmpty()).joinToString("\n"),
+            AppScope.connectionKey(endpoint, getSelectedProfileId()),
             endpoint,
-            profile ?: "default",
+            AppScope.PROFILE,
         )
     }
 
@@ -556,13 +554,6 @@ object AuthManager {
 
     private fun setActiveProfileIdNow(id: String?) {
         val normalized = id?.takeIf { it.isNotBlank() }
-        if (_activeProfileId.value != normalized) {
-            if (prefsDeferred?.isCompleted == true) {
-                credentialTransportConsent.invalidateContext()
-            } else {
-                credentialTransportConsent.reset()
-            }
-        }
         _activeProfileId.value = normalized
         runCatching {
             requirePrefs().edit().putString(KEY_ACTIVE_PROFILE_ID, normalized).apply()

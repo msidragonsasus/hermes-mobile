@@ -52,9 +52,9 @@ class CareerInitializationScopeTest {
     }
 
     @Test
-    fun urlConnectionIdAndActiveProfileRemainDistinctScopeComponents() {
+    fun urlAndConnectionIdScopeAppDataWhileActiveBotDoesNot() {
         val first = careerScope()
-        assertEquals("https://first.invalid\nlocal-first\nprofile-first", first)
+        assertEquals("https://first.invalid\nlocal-first\ndefault", first)
         baseUrl.value = "https://second.invalid"
         val secondUrl = careerScope()
         baseUrl.value = "https://first.invalid"
@@ -63,7 +63,8 @@ class CareerInitializationScopeTest {
         connection.value = "local-first"
         profile.value = "profile-second"
         val secondProfile = careerScope()
-        assertEquals(4, setOf(first, secondUrl, secondConnection, secondProfile).size)
+        assertEquals(first, secondProfile)
+        assertEquals(3, setOf(first, secondUrl, secondConnection).size)
     }
 
     @Test
@@ -77,7 +78,7 @@ class CareerInitializationScopeTest {
             coEvery { firstLocal.cache(any()) } returns Unit
             val first = CareerViewModel(DashboardCareerRepository(firstScope), firstLocal)
             advanceUntilIdle()
-            profile.value = "profile-second"
+            connection.value = "local-second"
             assertNotEquals(firstScope, careerScope())
             val secondLocal = mockk<CareerLocalStore>()
             coEvery { secondLocal.enabled() } returns false

@@ -2,7 +2,7 @@ package com.m57.hermescontrol.ui.connections
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.m57.hermescontrol.career.careerScope
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.model.McpCatalogEntry
 import com.m57.hermescontrol.data.model.McpServer
 import com.m57.hermescontrol.data.remote.ApiClient
@@ -111,9 +111,9 @@ internal class DashboardExternalServicesRepository(
     private val google = DashboardGoogleConnectionRepository(scope)
 
     override suspend fun servers(): List<McpServer> {
-        check(scope == careerScope())
-        val response = api.getMcpServers()
-        check(scope == careerScope())
+        check(scope == AppScope.connectionKey())
+        val response = api.getMcpServers(AppScope.PROFILE)
+        check(scope == AppScope.connectionKey())
         check(response.isSuccessful)
         return requireNotNull(response.body()).servers
     }

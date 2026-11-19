@@ -99,9 +99,8 @@ private fun CareerWorkspaceScreen(
     legacyEsQuestionId: String? = null,
 ) {
     val context by AuthManager.contextFlow.collectAsState()
-    val profile by AuthManager.activeProfileId.collectAsState()
     val appContext = LocalContext.current.applicationContext
-    val scope = remember(context, profile) { careerScope() }
+    val scope = remember(context) { careerScope() }
     val newConversation = remember(threadId) { CareerNewConversation.fromThreadId(threadId) }
     if (threadId.startsWith("draft:") && newConversation == null) {
         HermesScaffold(title = {

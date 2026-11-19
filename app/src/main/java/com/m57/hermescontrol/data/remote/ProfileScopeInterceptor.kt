@@ -1,5 +1,6 @@
 package com.m57.hermescontrol.data.remote
 
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import okhttp3.Interceptor
 import okhttp3.Response
@@ -14,18 +15,20 @@ import okhttp3.Response
  * multi-profile setups silently corrupted config/skills/toolsets/mcp/model/env
  * (issue #528).
  *
- * Rules (copied from the desktop contract):
- *  - If no profile is active, pass through unchanged (legacy "default" behavior).
- *  - If the URL already carries an explicit `profile=` query, leave it
- *    untouched — explicit beats global.
- *  - Only the endpoint families below honor `?profile=` on the backend;
- *    everything else (ops, pairing, profiles themselves) is machine-global
- *    or self-scoped and must NOT be rewritten. Cron, sessions and plugins
- *    are profile-scoped on the backend (`/api/cron/jobs?profile=`,
- *    `/api/sessions?profile=`, plugin REST) and ARE rewritten here so
- *    switching profiles actually switches what the app shows.
+ * Built-in owner App routes always select Hermes Main. Other management and
+ * plugin routes use their explicit profile, or the current bot when omitted.
  */
 object ProfileScopeInterceptor : Interceptor {
+    private val OWNER_APP_PREFIXES =
+        listOf(
+            "/api/plugins/career",
+            "/api/plugins/pc-power",
+            "/api/plugins/mobile-terminal",
+            "/api/plugins/today_home",
+            "/api/connections/google-workspace",
+            "/api/connections/slack",
+        )
+
     private val PROFILE_SCOPED_PREFIXES =
         listOf(
             "/api/analytics",
@@ -43,6 +46,7 @@ object ProfileScopeInterceptor : Interceptor {
             "/api/model/auxiliary",
             "/api/model/moa",
             "/api/model/options",
+            "/api/dashboard/plugins",
             "/api/plugins",
             "/api/sessions",
             "/api/skills",
@@ -60,14 +64,7 @@ object ProfileScopeInterceptor : Interceptor {
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
-        val profile =
-            AuthManager.activeProfileId.value
-                ?: return chain.proceed(request)
-
         val url = request.url
-        if (url.queryParameter("profile") != null) {
-            return chain.proceed(request) // explicit param wins
-        }
 
         // Derive the path relative to the endpoint's proxy prefix so profile
         // scoping works when the dashboard is served behind a reverse proxy
@@ -77,14 +74,20 @@ object ProfileScopeInterceptor : Interceptor {
             runCatching { AuthManager.endpoint().relativeRequestPath(url) }
                 .getOrDefault(url.encodedPath)
 
-        if (!isProfileScopedPath(relativePath)) {
-            return chain.proceed(request)
-        }
+        val profile =
+            if (OWNER_APP_PREFIXES.any { prefix -> relativePath == prefix || relativePath.startsWith("$prefix/") }) {
+                AppScope.PROFILE
+            } else {
+                if ("profile" in url.queryParameterNames || !isProfileScopedPath(relativePath)) {
+                    return chain.proceed(request)
+                }
+                AuthManager.activeProfileId.value ?: return chain.proceed(request)
+            }
 
         val scopedUrl =
             url
                 .newBuilder()
-                .addQueryParameter("profile", profile)
+                .setQueryParameter("profile", profile)
                 .build()
 
         return chain.proceed(request.newBuilder().url(scopedUrl).build())

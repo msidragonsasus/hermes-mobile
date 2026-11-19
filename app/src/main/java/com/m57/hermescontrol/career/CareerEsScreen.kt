@@ -69,8 +69,7 @@ fun CareerEsScreen(
     initialQuestionId: String? = null,
 ) {
     val context by AuthManager.contextFlow.collectAsState()
-    val profile by AuthManager.activeProfileId.collectAsState()
-    val scope = remember(context, profile) { careerScope() }
+    val scope = remember(context) { careerScope() }
     val app = LocalContext.current.applicationContext
     key(scope) {
         val model: CareerEsViewModel =

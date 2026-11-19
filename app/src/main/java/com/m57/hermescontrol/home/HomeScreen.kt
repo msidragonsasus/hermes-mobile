@@ -46,6 +46,7 @@ import com.m57.hermescontrol.R
 import com.m57.hermescontrol.career.CareerHomeProvider
 import com.m57.hermescontrol.career.CareerLocalStore
 import com.m57.hermescontrol.career.careerScope
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.ApiClient
 import com.m57.hermescontrol.domain.hermes.AttentionItem
@@ -80,11 +81,15 @@ fun HomeScreen() {
     val repository = app.homeRepository
     val auth by AuthManager.contextFlow.collectAsState()
     val profile by AuthManager.activeProfileId.collectAsState()
-    val scope = remember(auth, profile) { AuthManager.uiPreferenceScope() }
+    val scope = remember(auth) { AppScope.connectionKey() }
+    val chatScope = remember(auth, profile) { AuthManager.uiPreferenceScope() }
     val today = rememberTodayPlanState(scope, repository)
     val rows by remember(scope) { repository.dao.observe(scope) }.collectAsState(emptyList())
     val reads by remember(scope) { repository.dao.reads(scope) }.collectAsState(emptyList())
     val providers by remember(scope) { repository.dao.providers(scope) }.collectAsState(emptyList())
+    val chatRows by remember(chatScope) { repository.dao.observe(chatScope) }.collectAsState(emptyList())
+    val chatReads by remember(chatScope) { repository.dao.reads(chatScope) }.collectAsState(emptyList())
+    val chatProviders by remember(chatScope) { repository.dao.providers(chatScope) }.collectAsState(emptyList())
     val attention by app.attentionRepository.items.collectAsState()
     val connection by app.runRepository.snapshot.collectAsState()
     val storageError by repository.error.collectAsState()
@@ -109,7 +114,7 @@ fun HomeScreen() {
     var careerEnabled by remember(scope) { mutableStateOf(false) }
     var now by remember(scope) { mutableStateOf(Instant.now()) }
     val careerVisible = providers.firstOrNull { it.scope == scope && it.provider == "career" }?.enabled != false
-    val chatVisible = providers.firstOrNull { it.scope == scope && it.provider == "chat" }?.enabled != false
+    val chatVisible = chatProviders.firstOrNull { it.scope == chatScope && it.provider == "chat" }?.enabled != false
     LaunchedEffect(scope, refresh, careerVisible, lifecycle) {
         lifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             do {
@@ -120,7 +125,7 @@ fun HomeScreen() {
                     if (careerEnabled && careerVisible) {
                         loading = true
                         val page = CareerHomeProvider().read()
-                        if (scope != AuthManager.uiPreferenceScope()) return@repeatOnLifecycle
+                        if (scope != AppScope.connectionKey()) return@repeatOnLifecycle
                         repository.dao.replace(
                             scope,
                             page.items.map { HomeRow(scope, "career", it.id, repository.json.encodeToString(it)) },
@@ -158,15 +163,14 @@ fun HomeScreen() {
             ?.let { repository.json.decodeFromString<HomePage>(it) }
     val items =
         homeItems(
-            rows
-                .filter {
-                    it.scope == scope &&
-                        (
-                            (it.provider == "chat" && chatVisible) ||
-                                (it.provider == "career" && careerVisible && careerEnabled)
-                        )
-                }.map { repository.json.decodeFromString<HomeItem>(it.payload) },
-            reads.filter { it.scope == scope }.associate { it.key to it.version },
+            (
+                rows.filter { it.scope == scope && it.provider == "career" && careerVisible && careerEnabled } +
+                    chatRows.filter { it.scope == chatScope && it.provider == "chat" && chatVisible }
+            ).map { repository.json.decodeFromString<HomeItem>(it.payload) },
+            (
+                reads.filter { it.scope == scope && it.key.startsWith("career:") } +
+                    chatReads.filter { it.scope == chatScope && it.key.startsWith("chat:") }
+            ).associate { it.key to it.version },
             now,
         )
     val pending =
@@ -181,8 +185,8 @@ fun HomeScreen() {
     LaunchedEffect(scope, threadIds) {
         if (threadIds.isEmpty() || threadIds.all { it in threadTitles }) return@LaunchedEffect
         try {
-            val list = ApiClient.hermesApi.careerThreads(AuthManager.activeProfileId.value ?: "default")
-            if (scope == AuthManager.uiPreferenceScope()) {
+            val list = ApiClient.hermesApi.careerThreads(AppScope.PROFILE)
+            if (scope == AppScope.connectionKey()) {
                 threadTitles = list.threads.filter { it.title.isNotBlank() }.associate { it.id to it.title }
             }
         } catch (failure: Exception) {
@@ -216,7 +220,7 @@ fun HomeScreen() {
             onProviderChange = { id, enabled ->
                 coroutine.launch {
                     try {
-                        repository.dao.setEnabled(scope, id, enabled)
+                        repository.dao.setEnabled(if (id == "chat") chatScope else scope, id, enabled)
                     } catch (failure: Exception) {
                         if (failure is CancellationException) throw failure
                         error = "表示設定を保存できませんでした。"

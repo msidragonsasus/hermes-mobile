@@ -18,6 +18,7 @@ import com.m57.hermescontrol.LandingScreen
 import com.m57.hermescontrol.ScreenRegistry
 import com.m57.hermescontrol.agents.AgentDetailKey
 import com.m57.hermescontrol.career.CareerScreenKey
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.pcpower.PcPowerScreenKey
 import kotlinx.serialization.Serializable
@@ -143,6 +144,8 @@ internal fun rememberShellNavigation(authenticated: Boolean): ShellNavigation? {
     val context by AuthManager.contextFlow.collectAsState()
     val profile by AuthManager.activeProfileId.collectAsState()
     val preferenceScope = remember(context, profile) { AuthManager.uiPreferenceScope() }
+    val appScope = remember(context) { AppScope.connectionKey() }
+    val apps = if (authenticated) key(appScope) { rememberNavBackStack(AppsScreen) } else null
     return key(authenticated, preferenceScope) {
         if (!authenticated) {
             null
@@ -156,7 +159,6 @@ internal fun rememberShellNavigation(authenticated: Boolean): ShellNavigation? {
             selected.value = canonicalTab(selected.value)
             val today = rememberNavBackStack(TodayScreen)
             val chat = rememberNavBackStack(ChatScreen)
-            val apps = rememberNavBackStack(AppsScreen)
             // Keep these saved-state call positions compatible with the four-tab version.
             val legacyAgent = rememberNavBackStack(AgentScreen)
             var migrated by rememberSaveable { mutableStateOf(false) }
@@ -170,7 +172,7 @@ internal fun rememberShellNavigation(authenticated: Boolean): ShellNavigation? {
             val stacks =
                 mapOf(
                     ShellTab.TODAY to today,
-                    ShellTab.APPS to apps,
+                    ShellTab.APPS to requireNotNull(apps),
                     ShellTab.AGENT to chat,
                 )
             stacks.forEach { (tab, stack) ->

@@ -2,7 +2,8 @@ package com.m57.hermescontrol.ui.mcp
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.m57.hermescontrol.career.careerScope
+import com.m57.hermescontrol.data.local.AppScope
+import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.model.AddMcpServerRequest
 import com.m57.hermescontrol.data.model.McpCatalogEntry
 import com.m57.hermescontrol.data.model.McpCatalogInstallRequest
@@ -75,19 +76,23 @@ data class McpServersUiState(
     val activeOAuthFlow: McpOAuthFlowResponse? = null,
 )
 
-class McpServersViewModel :
-    ViewModel(),
+class McpServersViewModel(
+    private val profile: String? = null,
+) : ViewModel(),
     ToastHost {
     private val _uiState = MutableStateFlow(McpServersUiState())
     val uiState: StateFlow<McpServersUiState> = _uiState.asStateFlow()
     private var preparedConnection = false
     private var catalogInstallJob: Job? = null
 
+    private fun requestScope(): String =
+        if (profile == AppScope.PROFILE) AppScope.connectionKey() else AuthManager.uiPreferenceScope()
+
     // ── Data loading ──────────────────────────────────────────
 
     fun loadServers() {
         safeLaunchLoad(
-            apiCall = { safeApiCall { ApiClient.hermesApi.getMcpServers() } },
+            apiCall = { safeApiCall { ApiClient.hermesApi.getMcpServers(profile) } },
             onStart = { _uiState.update { it.copy(isLoading = true, errorMessage = null) } },
             onSuccess = { data ->
                 _uiState.update {
@@ -134,6 +139,7 @@ class McpServersViewModel :
                         ApiClient.hermesApi.toggleMcpServer(
                             server.name,
                             McpServerToggleRequest(targetEnabled),
+                            profile,
                         )
                     }
                 }
@@ -163,7 +169,7 @@ class McpServersViewModel :
             }
             val result =
                 withContext(Dispatchers.IO) {
-                    safeApiCall { ApiClient.hermesApi.testMcpServer(name) }
+                    safeApiCall { ApiClient.hermesApi.testMcpServer(name, profile) }
                 }
             when (result) {
                 is NetworkResult.Success -> {
@@ -219,7 +225,7 @@ class McpServersViewModel :
             val testJobs =
                 enabledServers.map { server ->
                     async(Dispatchers.IO) {
-                        val res = safeApiCall { ApiClient.hermesApi.testMcpServer(server.name) }
+                        val res = safeApiCall { ApiClient.hermesApi.testMcpServer(server.name, profile) }
                         server.name to res
                     }
                 }
@@ -258,7 +264,7 @@ class McpServersViewModel :
         viewModelScope.launch {
             val result =
                 withContext(Dispatchers.IO) {
-                    safeApiCall { ApiClient.hermesApi.deleteMcpServer(name) }
+                    safeApiCall { ApiClient.hermesApi.deleteMcpServer(name, profile) }
                 }
             when (result) {
                 is NetworkResult.Success -> {
@@ -296,7 +302,7 @@ class McpServersViewModel :
             val importJobs =
                 requests.map { req ->
                     async(Dispatchers.IO) {
-                        val result = safeApiCall { ApiClient.hermesApi.addMcpServer(req) }
+                        val result = safeApiCall { ApiClient.hermesApi.addMcpServer(req, profile) }
                         req to result
                     }
                 }
@@ -436,7 +442,7 @@ class McpServersViewModel :
                 )
             val result =
                 withContext(Dispatchers.IO) {
-                    safeApiCall { ApiClient.hermesApi.addMcpServer(request) }
+                    safeApiCall { ApiClient.hermesApi.addMcpServer(request, profile) }
                 }
             when (result) {
                 is NetworkResult.Success -> {
@@ -500,7 +506,7 @@ class McpServersViewModel :
             val updatedEnv = existingEnv + (key to value)
             val result =
                 withContext(Dispatchers.IO) {
-                    safeApiCall { ApiClient.hermesApi.updateMcpServer(serverName, mapOf("env" to updatedEnv)) }
+                    safeApiCall { ApiClient.hermesApi.updateMcpServer(serverName, mapOf("env" to updatedEnv), profile) }
                 }
             when (result) {
                 is NetworkResult.Success -> {
@@ -531,7 +537,7 @@ class McpServersViewModel :
             val updatedEnv = existingEnv - key
             val result =
                 withContext(Dispatchers.IO) {
-                    safeApiCall { ApiClient.hermesApi.updateMcpServer(serverName, mapOf("env" to updatedEnv)) }
+                    safeApiCall { ApiClient.hermesApi.updateMcpServer(serverName, mapOf("env" to updatedEnv), profile) }
                 }
             when (result) {
                 is NetworkResult.Success -> {
@@ -551,11 +557,11 @@ class McpServersViewModel :
     fun loadCatalog() {
         if (_uiState.value.catalogLoading) return
         val api = ApiClient.hermesApi
-        val scope = careerScope()
+        val scope = requestScope()
         _uiState.update { it.copy(catalogLoading = true, catalogError = null) }
         viewModelScope.launch {
-            val result = safeApiCall { api.getMcpCatalog() }
-            if (scope != careerScope()) {
+            val result = safeApiCall { api.getMcpCatalog(profile) }
+            if (scope != requestScope()) {
                 _uiState.update { it.copy(catalogLoading = false, catalogEntries = emptyList()) }
                 return@launch
             }
@@ -601,7 +607,7 @@ class McpServersViewModel :
         }
         val request = McpCatalogInstallRequest(entry.name, values.filterKeys { key -> declared.any { it.key == key } })
         val api = ApiClient.hermesApi
-        val scope = careerScope()
+        val scope = requestScope()
         _uiState.update {
             it.copy(
                 installingCatalogEntry = entry.name,
@@ -613,9 +619,9 @@ class McpServersViewModel :
             viewModelScope.launch {
                 try {
                     // Do not overwrite a connection installed since the catalog was loaded.
-                    val inventory = safeApiCall { api.getMcpServers() }
+                    val inventory = safeApiCall { api.getMcpServers(profile) }
                     currentCoroutineContext().ensureActive()
-                    if (scope != careerScope()) return@launch
+                    if (scope != requestScope()) return@launch
                     if (inventory !is NetworkResult.Success) {
                         _uiState.update { it.copy(toastMessage = "既存の接続先を確認できません。再読込してください。") }
                         return@launch
@@ -632,9 +638,9 @@ class McpServersViewModel :
                     }
                     _uiState.update { it.copy(unconfirmedCatalogEntries = it.unconfirmedCatalogEntries + entry.name) }
                     // Installation can write credentials and start a process. Never replay an uncertain POST.
-                    val result = safeApiCall(retries = 0) { api.installMcpCatalogEntry(request) }
+                    val result = safeApiCall(retries = 0) { api.installMcpCatalogEntry(request, profile) }
                     currentCoroutineContext().ensureActive()
-                    if (scope != careerScope()) return@launch
+                    if (scope != requestScope()) return@launch
                     if (result !is NetworkResult.Success || !result.data.ok) {
                         if (result is NetworkResult.Failure && result.error is NetworkError.Http &&
                             result.error.code in 400..499
@@ -654,7 +660,7 @@ class McpServersViewModel :
                             ActionProgressController(
                                 scope = viewModelScope,
                                 statusRequest = { name ->
-                                    if (scope == careerScope()) {
+                                    if (scope == requestScope()) {
                                         safeApiCall { api.getActionStatus(name) }
                                     } else {
                                         NetworkResult.Failure(
@@ -676,7 +682,7 @@ class McpServersViewModel :
                             } finally {
                                 tracker.dismiss()
                             }
-                        if (scope != careerScope()) return@launch
+                        if (scope != requestScope()) return@launch
                         if (outcome.phase != ActionProgressPhase.SUCCEEDED) {
                             if (outcome.exitCode != null) {
                                 _uiState.update {
@@ -706,7 +712,7 @@ class McpServersViewModel :
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } finally {
-                    if (scope == careerScope()) {
+                    if (scope == requestScope()) {
                         _uiState.update {
                             it.copy(installingCatalogEntry = null)
                         }
@@ -747,7 +753,7 @@ class McpServersViewModel :
         viewModelScope.launch {
             val result =
                 withContext(Dispatchers.IO) {
-                    safeApiCall { ApiClient.hermesApi.authMcpServer(server.name) }
+                    safeApiCall { ApiClient.hermesApi.authMcpServer(server.name, profile) }
                 }
             when (result) {
                 is NetworkResult.Success -> {
@@ -781,7 +787,7 @@ class McpServersViewModel :
                     kotlinx.coroutines.delay(2000)
                     val result =
                         withContext(Dispatchers.IO) {
-                            safeApiCall { ApiClient.hermesApi.getMcpOAuthFlowStatus(flowId) }
+                            safeApiCall { ApiClient.hermesApi.getMcpOAuthFlowStatus(flowId, profile) }
                         }
                     when (result) {
                         is NetworkResult.Success -> {

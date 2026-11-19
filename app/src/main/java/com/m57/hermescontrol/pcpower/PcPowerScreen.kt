@@ -61,8 +61,7 @@ import kotlinx.coroutines.awaitCancellation
 @Composable
 fun PcPowerScreen() {
     val context by AuthManager.contextFlow.collectAsState()
-    val profile by AuthManager.activeProfileId.collectAsState()
-    val scope = remember(context, profile) { pcPowerScope() }
+    val scope = remember(context) { pcPowerScope() }
     key(scope) {
         val model: PcPowerViewModel =
             viewModel(

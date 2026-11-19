@@ -40,7 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.HermesControlApp
-import com.m57.hermescontrol.data.local.AuthManager
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.theme.LocalSpacing
 import kotlinx.coroutines.launch
 import java.net.URI
@@ -53,7 +53,7 @@ internal fun CareerMailItem.isUnread(readKeys: Set<String>): Boolean =
 @Composable
 internal fun rememberCareerMailReadKeys(): Set<String> {
     val app = LocalContext.current.applicationContext as HermesControlApp
-    val scope = AuthManager.uiPreferenceScope()
+    val scope = AppScope.connectionKey()
     val reads by remember(scope) { app.homeRepository.dao.reads(scope) }.collectAsState(emptyList())
     return reads.map { it.key }.toSet()
 }

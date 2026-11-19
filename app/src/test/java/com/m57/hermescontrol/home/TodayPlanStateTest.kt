@@ -1,5 +1,6 @@
 package com.m57.hermescontrol.home
 
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.ApiClient
 import com.m57.hermescontrol.data.remote.HermesApiService
@@ -40,8 +41,9 @@ class TodayPlanStateTest {
     @Before
     fun setup() {
         mockkObject(AuthManager, ApiClient)
-        every { AuthManager.uiPreferenceScope() } answers { scope }
-        every { AuthManager.activeProfileId } returns MutableStateFlow("default")
+        mockkObject(AppScope)
+        every { AppScope.connectionKey() } answers { scope }
+        every { AuthManager.activeProfileId } returns MutableStateFlow("specialist")
         every { AuthManager.isGatedMode() } returns true
         every { ApiClient.hermesApi } returns api
         every { repository.dao } returns dao

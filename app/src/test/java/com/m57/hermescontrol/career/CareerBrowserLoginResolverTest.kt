@@ -82,7 +82,7 @@ class CareerBrowserLoginResolverTest {
         val response =
             buildJsonObject {
                 put("company_id", "dummy-company")
-                put("profile", "phone")
+                put("profile", "default")
                 put("connection_version", 1)
                 put("url", policy.loginUrl.toString())
                 put("request_id", if (wrongRequest) JsonPrimitive("wrong") else body.getValue("request_id"))

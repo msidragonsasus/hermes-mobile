@@ -70,6 +70,7 @@ import com.m57.hermescontrol.agents.AgentDetailScreen
 import com.m57.hermescontrol.agents.AgentHubScreen
 import com.m57.hermescontrol.agents.BotSettingsKey
 import com.m57.hermescontrol.career.text
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.model.ProfileInfo
 import com.m57.hermescontrol.data.remote.NetworkResult
@@ -319,16 +320,14 @@ private fun appEntryProvider(
             .ExternalServiceDetailScreen(it.serviceId)
     }
     entry<McpConnectionSettingsKey> { key ->
-        val scope =
-            com.m57.hermescontrol.career
-                .careerScope()
+        val scope = AppScope.connectionKey()
         com.m57.hermescontrol.ui.mcp.McpServersScreen(
             focusedServerName = key.serverName,
             focusedServiceId = key.serviceId,
             viewModel =
                 viewModel(key = "mcp-settings:$scope:${key.serverName}:${key.serviceId}") {
                     com.m57.hermescontrol.ui.mcp
-                        .McpServersViewModel()
+                        .McpServersViewModel(AppScope.PROFILE)
                 },
         )
     }
@@ -405,10 +404,10 @@ fun MainNavigation(sessionId: String? = null) {
     }
     val pendingAttention = NavigationController.pendingAttentionNavigation
     val careerNotice = NavigationController.pendingCareerNotice
-    val careerProfile by AuthManager.activeProfileId.collectAsState()
+    val currentBotProfile by AuthManager.activeProfileId.collectAsState()
     val careerContext by AuthManager.contextFlow.collectAsState()
     val careerAppContext = LocalContext.current
-    LaunchedEffect(hasToken, careerNotice, careerProfile, careerContext) {
+    LaunchedEffect(hasToken, careerNotice, careerContext) {
         if (hasToken && careerNotice != null) {
             val expectedScope =
                 com.m57.hermescontrol.career
@@ -559,7 +558,7 @@ fun MainNavigation(sessionId: String? = null) {
                                 unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                 unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                        val activeProfile = careerProfile ?: botsState?.activeProfileName
+                        val activeProfile = currentBotProfile ?: botsState?.activeProfileName
                         val switchFailedFallback = stringResource(R.string.drawer_switch_profile_failed)
 
                         Row(

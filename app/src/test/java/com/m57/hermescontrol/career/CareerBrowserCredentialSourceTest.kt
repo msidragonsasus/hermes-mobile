@@ -70,7 +70,7 @@ class CareerBrowserCredentialSourceTest {
         CareerBrowserApproval(
             "a".repeat(64),
             "dummy-company",
-            "phone",
+            "default",
             1,
             policy.loginUrl.toString(),
             careerScope(),
@@ -84,7 +84,7 @@ class CareerBrowserCredentialSourceTest {
         versionJson: String = "1",
     ) {
         val id = login?.let { "\"$it\"" } ?: "null"
-        val json = """{"company_id":"$company","profile":"phone","connection_version":$versionJson,
+        val json = """{"company_id":"$company","profile":"default","connection_version":$versionJson,
             "url":"https://portal.example.test/company/login","login_id":$id,"password":"dummy-password"$extra} """
         callback.captured.onResponse(
             call,
@@ -101,7 +101,7 @@ class CareerBrowserCredentialSourceTest {
 
     private fun respondLogin(
         company: String = "dummy-company",
-        returnedProfile: String = "phone",
+        returnedProfile: String = "default",
         version: String = "1",
         extra: String = "",
         url: String = "https://portal.example.test/company/login",
@@ -111,8 +111,14 @@ class CareerBrowserCredentialSourceTest {
             "url":"$url","login_id":"dummy-readable-id"$extra}"""
         callback.captured.onResponse(
             call,
-            Response.Builder().request(request.captured).protocol(Protocol.HTTP_1_1)
-                .code(status).message("fixture").body(body.toResponseBody()).build(),
+            Response
+                .Builder()
+                .request(request.captured)
+                .protocol(Protocol.HTTP_1_1)
+                .code(status)
+                .message("fixture")
+                .body(body.toResponseBody())
+                .build(),
         )
     }
 
@@ -131,16 +137,17 @@ class CareerBrowserCredentialSourceTest {
     @Test
     fun savedLoginRejectsWrongCompanyProfileVersionAndPasswordBearingReply() =
         runTest(dispatcher) {
-            val replies: List<() -> Unit> = listOf(
-                { respondLogin(company = "other") },
-                { respondLogin(returnedProfile = "other") },
-                { respondLogin(version = "2") },
-                { respondLogin(url = "https://other.example.test/login") },
-                { respondLogin(version = "\"1\"") },
-                { respondLogin(extra = ",\"password\":\"must-not-display\"") },
-                { respondLogin(status = 404) },
-                { respondLogin(status = 503) },
-            )
+            val replies: List<() -> Unit> =
+                listOf(
+                    { respondLogin(company = "other") },
+                    { respondLogin(returnedProfile = "other") },
+                    { respondLogin(version = "2") },
+                    { respondLogin(url = "https://other.example.test/login") },
+                    { respondLogin(version = "\"1\"") },
+                    { respondLogin(extra = ",\"password\":\"must-not-display\"") },
+                    { respondLogin(status = 404) },
+                    { respondLogin(status = 503) },
+                )
             for (reply in replies) {
                 val operation = async { source().savedLoginId("dummy-company", 1, policy) }
                 advanceUntilIdle()
@@ -151,11 +158,11 @@ class CareerBrowserCredentialSourceTest {
         }
 
     @Test
-    fun savedLoginRejectsProfileSwitchBeforeReply() =
+    fun savedLoginRejectsConnectionSwitchBeforeReply() =
         runTest(dispatcher) {
             val operation = async { source().savedLoginId("dummy-company", 1, policy) }
             advanceUntilIdle()
-            profile.value = "other-profile"
+            base.value = "https://other-gateway.example.test/"
             respondLogin()
             advanceUntilIdle()
             assertEquals(null, operation.await())
@@ -324,7 +331,7 @@ class CareerBrowserCredentialSourceTest {
         runTest(dispatcher) {
             val consent = approval()
             assertFalse(source().use("other-company", 1, policy, consent) { error("foreign company") })
-            profile.value = "another-profile"
+            base.value = "https://other-gateway.example.test/"
             assertFalse(source().use("dummy-company", 1, policy, consent) { error("foreign scope") })
             verify(exactly = 0) { client.newCall(any()) }
         }
@@ -408,7 +415,7 @@ class CareerBrowserCredentialSourceTest {
     }
 
     @Test
-    fun profileChangeAndCleartextGatewayFailClosed() =
+    fun connectionChangeAndCleartextGatewayFailClosed() =
         runTest(dispatcher) {
             var invoked = false
             val operation =
@@ -419,7 +426,7 @@ class CareerBrowserCredentialSourceTest {
                     }
                 }
             advanceUntilIdle()
-            profile.value = "other-profile"
+            base.value = "https://other-gateway.example.test/"
             respond()
             advanceUntilIdle()
             assertFalse(operation.await())

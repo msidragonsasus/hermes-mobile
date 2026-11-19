@@ -1,5 +1,6 @@
 package com.m57.hermescontrol.career
 
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.ApiClient
 import kotlinx.serialization.json.JsonObject
@@ -26,7 +27,7 @@ class DashboardCareerCoachRepository(
     private val threadId: String = "global",
 ) : CareerCoachRepository {
     private val api = ApiClient.hermesApi
-    private val profile = AuthManager.activeProfileId.value ?: "default"
+    private val profile = AppScope.PROFILE
 
     private fun checkScope() {
         check(scope == careerScope()) { "接続先が変わりました。就活Appを開き直してください。" }

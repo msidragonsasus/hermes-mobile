@@ -1,6 +1,7 @@
 package com.m57.hermescontrol.home
 
 import android.content.Context
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.local.HermesDatabase
 import com.m57.hermescontrol.data.ws.HermesWsClient
@@ -35,7 +36,8 @@ class HomeRepository(
         scope: String,
         item: HomeItem,
     ) {
-        if (scope != AuthManager.uiPreferenceScope() || item.category != "result") return
+        val currentScope = if (item.provider == "career") AppScope.connectionKey() else AuthManager.uiPreferenceScope()
+        if (scope != currentScope || item.category != "result") return
         try {
             dao.saveRead(HomeRead(scope, item.provider + ":" + item.id, item.version))
             mutableError.value = null
@@ -50,7 +52,7 @@ class HomeRepository(
         id: String,
         content: String,
     ) {
-        if (scope != AuthManager.uiPreferenceScope() || content.isBlank()) return
+        if (scope != AppScope.connectionKey() || content.isBlank()) return
         try {
             dao.saveRead(HomeRead(scope, "career:$id", "content:" + homeVersion(content)))
             mutableError.value = null

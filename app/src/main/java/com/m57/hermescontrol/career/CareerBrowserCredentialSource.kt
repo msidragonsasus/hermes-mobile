@@ -1,5 +1,6 @@
 package com.m57.hermescontrol.career
 
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.CookieManager
 import kotlinx.coroutines.Dispatchers
@@ -83,7 +84,7 @@ internal class CareerBrowserCredentialSource(
     }
 
     private val base = AuthManager.getBaseUrl().toHttpUrlOrNull()
-    private val profile = AuthManager.activeProfileId.value ?: "default"
+    private val profile = AppScope.PROFILE
     private val transportConsent =
         if (base?.isHttps == false && trustedTailnetEndpoint == null) {
             runCatching { AuthManager.credentialTransportState() }.getOrNull()
@@ -350,7 +351,7 @@ internal class CareerBrowserCredentialSource(
         body: JsonObject,
         decode: (Response) -> T?,
     ): T? {
-        val url = base?.newBuilder()?.addPathSegments("api/plugins/career/mypage/$path")?.build() ?: return null
+        val url = base?.credentialRequestUrl(path) ?: return null
         if (!validScope()) return fail(CareerBrowserCredentialFailure.SCOPE_CHANGED)
         if (tailnetTrust.enabled && !tailnetTrust.allowsRequest(url)) {
             return fail(CareerBrowserCredentialFailure.TRUSTED_TRANSPORT_REJECTED)
@@ -567,8 +568,7 @@ internal class CareerBrowserCredentialSource(
                     tailnetTrust.isCurrent(currentBase, currentScope, gated, AuthManager.getSessionCookie()) &&
                         (transportConsent == null || AuthManager.isCredentialTransportCurrent(transportConsent))
                 )
-        return scope == currentScope && gated &&
-            profile == (AuthManager.activeProfileId.value ?: "default") && base == currentBase && trustedSessionCurrent
+        return scope == currentScope && gated && base == currentBase && trustedSessionCurrent
     }
 
     private fun JsonObject.string(name: String): String? =

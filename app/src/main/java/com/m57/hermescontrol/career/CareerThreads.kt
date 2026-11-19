@@ -42,6 +42,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.m57.hermescontrol.NavigationController
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.ApiClient
 import com.m57.hermescontrol.theme.LocalSpacing
@@ -108,7 +109,7 @@ class CareerThreadsViewModel(
     private val threadLocal: ((String) -> CareerLocalStore)? = null,
 ) : ViewModel() {
     private val api = ApiClient.hermesApi
-    private val profile = AuthManager.activeProfileId.value ?: "default"
+    private val profile = AppScope.PROFILE
     private val json = Json { ignoreUnknownKeys = true }
     private val mutableState = MutableStateFlow(CareerThreadsState())
     val state = mutableState.asStateFlow()
@@ -405,8 +406,7 @@ internal fun careerThreadsModel(scope: String): CareerThreadsViewModel {
 @Composable
 fun CareerThreadsScreen(key: CareerThreadsKey) {
     val context by AuthManager.contextFlow.collectAsState()
-    val profile by AuthManager.activeProfileId.collectAsState()
-    val scope = remember(context, profile) { careerScope() }
+    val scope = remember(context) { careerScope() }
     val model = careerThreadsModel(scope)
     val state by model.state.collectAsState()
     LaunchedEffect(model) { model.refresh() }

@@ -1,5 +1,6 @@
 package com.m57.hermescontrol.career
 
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.ApiClient
 import kotlinx.serialization.json.Json
@@ -14,7 +15,7 @@ class CareerCompanyRepository(
 ) {
     private val api = ApiClient.hermesApi
     private val json = Json { ignoreUnknownKeys = true }
-    private val profile = AuthManager.activeProfileId.value ?: "default"
+    private val profile = AppScope.PROFILE
 
     private fun checkScope() {
         check(scope == careerScope() && AuthManager.isGatedMode()) { "接続先が変わりました。就活Appを開き直してください。" }

@@ -1,5 +1,6 @@
 package com.m57.hermescontrol.career
 
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.ApiClient
 import com.m57.hermescontrol.home.HomeContributionProvider
@@ -8,8 +9,8 @@ import retrofit2.HttpException
 
 class CareerHomeProvider : HomeContributionProvider {
     override val id = "career"
-    private val scope = AuthManager.uiPreferenceScope()
-    private val profile = AuthManager.activeProfileId.value ?: "default"
+    private val scope = AppScope.connectionKey()
+    private val profile = AppScope.PROFILE
     private val api = ApiClient.hermesApi
 
     override suspend fun read(): HomePage {
@@ -21,9 +22,9 @@ class CareerHomeProvider : HomeContributionProvider {
                 var cursor: String? = null
                 val visited = mutableSetOf<String>()
                 do {
-                    check(scope == AuthManager.uiPreferenceScope())
+                    check(scope == AppScope.connectionKey())
                     val page = api.careerHome(profile, cursor)
-                    check(scope == AuthManager.uiPreferenceScope() && page.api_version == 1)
+                    check(scope == AppScope.connectionKey() && page.api_version == 1)
                     check(page.items.all { it.provider == id })
                     result = page.copy(items = result.items + page.items)
                     cursor = page.next_cursor

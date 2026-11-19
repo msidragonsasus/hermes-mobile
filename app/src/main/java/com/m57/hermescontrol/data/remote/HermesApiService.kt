@@ -960,51 +960,63 @@ interface HermesApiService {
     ): Response<Unit>
 
     @GET("api/mcp/servers")
-    suspend fun getMcpServers(): Response<McpServersResponse>
+    suspend fun getMcpServers(
+        @Query("profile") profile: String? = null,
+    ): Response<McpServersResponse>
 
     @PUT("api/mcp/servers/{name}/enabled")
     suspend fun toggleMcpServer(
         @Path("name") name: String,
         @Body body: McpServerToggleRequest,
+        @Query("profile") profile: String? = null,
     ): Response<Unit>
 
     @POST("api/mcp/servers/{name}/test")
     suspend fun testMcpServer(
         @Path("name") name: String,
+        @Query("profile") profile: String? = null,
     ): Response<McpServerTestResponse>
 
     @DELETE("api/mcp/servers/{name}")
     suspend fun deleteMcpServer(
         @Path("name") name: String,
+        @Query("profile") profile: String? = null,
     ): Response<Unit>
 
     @POST("api/mcp/servers")
     suspend fun addMcpServer(
         @Body body: AddMcpServerRequest,
+        @Query("profile") profile: String? = null,
     ): Response<McpServer>
 
     @PUT("api/mcp/servers/{name}")
     suspend fun updateMcpServer(
         @Path("name") name: String,
         @Body body: Map<String, Any>,
+        @Query("profile") profile: String? = null,
     ): Response<McpServer>
 
     @POST("api/mcp/servers/{name}/auth")
     suspend fun authMcpServer(
         @Path("name") name: String,
+        @Query("profile") profile: String? = null,
     ): Response<McpOAuthFlowResponse>
 
     @GET("api/mcp/oauth/flows/{flow_id}")
     suspend fun getMcpOAuthFlowStatus(
         @Path("flow_id") flowId: String,
+        @Query("profile") profile: String? = null,
     ): Response<McpOAuthFlowResponse>
 
     @GET("api/mcp/catalog")
-    suspend fun getMcpCatalog(): Response<McpCatalogResponse>
+    suspend fun getMcpCatalog(
+        @Query("profile") profile: String? = null,
+    ): Response<McpCatalogResponse>
 
     @POST("api/mcp/catalog/install")
     suspend fun installMcpCatalogEntry(
         @Body body: McpCatalogInstallRequest,
+        @Query("profile") profile: String? = null,
     ): Response<McpCatalogInstallResponse>
 
     @GET("api/webhooks")

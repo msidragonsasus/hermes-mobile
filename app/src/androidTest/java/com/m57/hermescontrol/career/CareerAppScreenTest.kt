@@ -127,7 +127,7 @@ class CareerAppScreenTest {
         }
     }
 
-    @Test fun lastAreaIsScopedToTheConnectionAndProfile() {
+    @Test fun lastAreaStaysTheSameWhenSwitchingBots() {
         runBlocking {
             CareerLocalStore(compose.activity, careerScope()).saveUiValue("area", "資料")
             val secondScope = careerScope().substringBeforeLast('\n') + "\nb"
@@ -136,7 +136,6 @@ class CareerAppScreenTest {
         compose.setContent { HermesControlTheme { CareerAppScreen() } }
         compose.waitUntil(10000) { compose.onAllNodes(hasText("自己分析")).fetchSemanticsNodes().isNotEmpty() }
         compose.runOnIdle { profile.value = "b" }
-        compose.waitUntil(10000) { compose.onAllNodes(hasText("回答・判断待ち")).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("自己分析").assertDoesNotExist()
+        compose.onNodeWithText("自己分析").assertExists()
     }
 }

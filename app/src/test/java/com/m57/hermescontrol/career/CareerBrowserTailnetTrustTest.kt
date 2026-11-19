@@ -13,7 +13,8 @@ import org.junit.Test
 class CareerBrowserTailnetTrustTest {
     private val endpoint = "http://100.64.10.20:9119/"
     private val base = endpoint.toHttpUrl()
-    private val request = "${endpoint}api/plugins/career/mypage/browser-credentials".toHttpUrl()
+    private val credentialsUrl = "${endpoint}api/plugins/career/mypage/browser-credentials"
+    private val request = "$credentialsUrl?profile=default".toHttpUrl()
     private val scope = "$endpoint\nlocal-connection-a\nprofile-a"
 
     private fun trust(
@@ -30,7 +31,7 @@ class CareerBrowserTailnetTrustTest {
         assertFalse(trust(declaration = other).enabled)
         assertTrue(
             trust(endpoint = other, declaration = other)
-                .allowsRequest("${other}api/plugins/career/mypage/browser-credentials".toHttpUrl()),
+                .allowsRequest("${other}api/plugins/career/mypage/browser-credentials?profile=default".toHttpUrl()),
         )
     }
 
@@ -99,7 +100,7 @@ class CareerBrowserTailnetTrustTest {
     }
 
     @Test
-    fun onlyFiveExactCredentialUrlsAreAllowed() {
+    fun onlyFiveExactMainProfileCredentialUrlsAreAllowed() {
         val trust = trust()
         for (path in listOf(
             "browser-access/prepare",
@@ -108,11 +109,14 @@ class CareerBrowserTailnetTrustTest {
             "login-id",
             "browser-login-locate",
         )) {
-            assertTrue(trust.allowsRequest("${endpoint}api/plugins/career/mypage/$path".toHttpUrl()))
+            assertTrue(trust.allowsRequest("${endpoint}api/plugins/career/mypage/$path?profile=default".toHttpUrl()))
         }
         for (value in listOf(
-            "$request?x=1",
-            "$request/",
+            credentialsUrl,
+            "$credentialsUrl?profile=specialist",
+            "$request&profile=specialist",
+            "$request&x=1",
+            "$credentialsUrl/?profile=default",
             "$request#fragment",
             request.toString().replace("100.64.10.20", "100.64.10.21"),
             request.toString().replace(":9119", ":9120"),
