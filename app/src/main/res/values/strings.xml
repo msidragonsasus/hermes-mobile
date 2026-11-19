@@ -1484,6 +1484,12 @@
   <string name="specialist_chat_edit_draft">Proposed settings changes</string>
   <string name="specialist_chat_none">None</string>
   <string name="specialist_chat_sources">Information sources</string>
+  <string name="specialist_apps_label">Connected Apps</string>
+  <string name="specialist_app_access_read">Read</string>
+  <string name="specialist_app_access_write">Read and propose changes</string>
+  <string name="specialist_app_access_unknown">Unknown access</string>
+  <string name="specialist_app_access_format">%1$s (%2$s)</string>
+  <string name="specialist_apps_changed">Available Apps changed. Reload the settings and ask for an updated proposal.</string>
   <string name="specialist_chat_routines">Routines (inactive proposals)</string>
   <string name="specialist_chat_show_soul">Show full SOUL</string>
   <string name="specialist_chat_hide_soul">Hide SOUL</string>

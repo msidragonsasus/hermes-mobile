@@ -50,6 +50,13 @@ data class CreateSpecialistResponse(
 )
 
 @Serializable
+data class SpecialistAppConnection(
+    val id: String,
+    val title: String,
+    val access: String,
+)
+
+@Serializable
 data class SpecialistSetupDraft(
     val id: String,
     val description: String = "",
@@ -61,6 +68,7 @@ data class SpecialistSetupDraft(
     val kind: String = "setup",
     val before: SpecialistSettingsPreview? = null,
     val after: SpecialistSettingsPreview? = null,
+    val apps: List<SpecialistAppConnection> = emptyList(),
 )
 
 @Serializable
@@ -71,6 +79,7 @@ data class SpecialistSettingsPreview(
     val autonomy: String = "",
     val routines: List<String> = emptyList(),
     val soul: String = "",
+    val apps: List<SpecialistAppConnection> = emptyList(),
 )
 
 @Serializable
@@ -140,6 +149,7 @@ data class SpecialistSetupSnapshot(
     val greeting: SpecialistSetupMessage? = null,
     val conversation_turns: List<SpecialistSetupTurn> = emptyList(),
     val pending_turn: SpecialistPendingTurn? = null,
+    val apps: List<SpecialistAppConnection>? = null,
 ) {
     val isNextSessionBoundaryActivation: Boolean
         get() = activation == "next_session_boundary"

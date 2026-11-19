@@ -78,6 +78,7 @@ import com.m57.hermescontrol.data.remote.SpecialistsRepository
 import com.m57.hermescontrol.data.remote.safeApiCall
 import com.m57.hermescontrol.ui.bots.BotsViewModel
 import com.m57.hermescontrol.ui.bots.EditBotBottomSheet
+import com.m57.hermescontrol.ui.chat.specialistAppsSummary
 import com.m57.hermescontrol.ui.common.BotAvatar
 import com.m57.hermescontrol.ui.common.CompactListRow
 import com.m57.hermescontrol.ui.common.ErrorState
@@ -971,6 +972,24 @@ internal fun BotDetailScreen(
                                     style = MaterialTheme.typography.bodyLarge,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+
+                    state.setupSnapshot?.apps?.let { apps ->
+                        item("apps") {
+                            CompactListRow(modifier = Modifier.testTag("detail_row_apps")) {
+                                Text(
+                                    stringResource(R.string.specialist_apps_label),
+                                    style = MaterialTheme.typography.bodyLarge,
+                                )
+                                Text(
+                                    specialistAppsSummary(
+                                        apps,
+                                    ).ifBlank { stringResource(R.string.specialist_chat_none) },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         }

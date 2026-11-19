@@ -1318,6 +1318,12 @@
   <string name="specialist_chat_edit_draft">設定の変更案</string>
   <string name="specialist_chat_none">なし</string>
   <string name="specialist_chat_sources">情報源</string>
+  <string name="specialist_apps_label">連携するApp</string>
+  <string name="specialist_app_access_read">読み取り</string>
+  <string name="specialist_app_access_write">読み取り・保存案の作成</string>
+  <string name="specialist_app_access_unknown">権限不明</string>
+  <string name="specialist_app_access_format">%1$s（%2$s）</string>
+  <string name="specialist_apps_changed">連携できるAppが変わりました。設定を読み直して、もう一度提案してください。</string>
   <string name="specialist_chat_routines">定例（未稼働の提案）</string>
   <string name="specialist_chat_show_soul">SOUL全文を表示</string>
   <string name="specialist_chat_hide_soul">SOULを閉じる</string>

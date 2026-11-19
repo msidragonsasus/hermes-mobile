@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.data.model.SpecialistAppConnection
 import com.m57.hermescontrol.data.model.SpecialistSettingsPreview
 import com.m57.hermescontrol.data.model.SpecialistSetupMessage
 import com.m57.hermescontrol.theme.LocalSpacing
@@ -92,6 +93,7 @@ internal fun SpecialistReviewCard(
                 draft.autonomy,
                 draft.routines,
                 draft.soul,
+                draft.apps,
             )
     val before = draft.before
     val none = stringResource(R.string.specialist_chat_none)
@@ -127,6 +129,12 @@ internal fun SpecialistReviewCard(
                 none,
             )
             ReviewField(
+                stringResource(R.string.specialist_apps_label),
+                before?.let { specialistAppsSummary(it.apps) },
+                specialistAppsSummary(after.apps),
+                none,
+            )
+            ReviewField(
                 stringResource(R.string.specialist_setup_autonomy_label),
                 before?.autonomy,
                 after.autonomy,
@@ -154,6 +162,23 @@ internal fun SpecialistReviewCard(
                 onClick = { onConfirm(draft.id, revision) },
             )
         }
+    }
+}
+
+@Composable
+internal fun specialistAppsSummary(apps: List<SpecialistAppConnection>): String {
+    val read = stringResource(R.string.specialist_app_access_read)
+    val write = stringResource(R.string.specialist_app_access_write)
+    val unknown = stringResource(R.string.specialist_app_access_unknown)
+    val format = stringResource(R.string.specialist_app_access_format)
+    return apps.joinToString("\n") { app ->
+        val access =
+            when (app.access) {
+                "read" -> read
+                "write" -> write
+                else -> unknown
+            }
+        format.format(app.title, access)
     }
 }
 
@@ -300,6 +325,10 @@ private fun specialistErrorResource(code: String): Int =
         "turn_request_conflict", "confirmation_request_conflict", "apply_request_conflict",
         -> {
             R.string.specialist_setup_stale_notice
+        }
+
+        "stale_specialist_apps" -> {
+            R.string.specialist_apps_changed
         }
 
         "stale_settings_files" -> {
