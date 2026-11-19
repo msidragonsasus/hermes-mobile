@@ -1,8 +1,8 @@
 package com.m57.hermescontrol.agents
 
 import com.m57.hermescontrol.data.model.ConfigUpdateRequest
-import com.m57.hermescontrol.data.model.UpdateProfileModelRequest
 import com.m57.hermescontrol.data.remote.HermesApiService
+import com.m57.hermescontrol.data.remote.saveProfileModel
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -12,6 +12,8 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
@@ -56,8 +58,10 @@ class BotDefaultsApiTest {
             server.start()
             try {
                 val api = api(server)
-                server.enqueue(MockResponse().setResponseCode(204))
-                api.updateProfileModel("selected-bot", UpdateProfileModelRequest("connected", "selected-model"))
+                server.enqueue(
+                    MockResponse().setBody("""{"ok":true,"provider":"connected","model":"selected-model"}"""),
+                )
+                assertNull(api.saveProfileModel("selected-bot", "connected", "selected-model"))
                 val model = server.takeRequest()
                 assertEquals("/hermes/api/profiles/selected-bot/model", model.path)
                 assertEquals("""{"provider":"connected","model":"selected-model"}""", model.body.readUtf8())
@@ -77,6 +81,21 @@ class BotDefaultsApiTest {
                 assertFalse(effort.containsKey("model"))
             } finally {
                 server.shutdown()
+            }
+        }
+
+    @Test
+    fun emptySuccessAndRejectedWriteUseHttpStatusWithoutExposingDetails() =
+        runBlocking {
+            MockWebServer().use { server ->
+                val api = api(server)
+                server.enqueue(MockResponse().setResponseCode(204))
+                assertNull(api.saveProfileModel("selected-bot", "openrouter", "anthropic/claude-fable-5.2"))
+                server.enqueue(MockResponse().setResponseCode(403).setBody("""{"detail":"private server value"}"""))
+                val error = api.saveProfileModel("selected-bot", "openrouter", "anthropic/claude-fable-5.2").orEmpty()
+                assertTrue(error.contains("HTTP 403"))
+                assertFalse(error.contains("private server value"))
+                assertEquals(2, server.requestCount)
             }
         }
 }

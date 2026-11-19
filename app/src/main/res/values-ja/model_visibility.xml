@@ -7,4 +7,14 @@
     <string name="model_visibility_empty">すべてのモデルが非表示です。「表示するモデルを編集」から戻せます。</string>
     <string name="model_visibility_load_error">表示設定を読み込めませんでした。この画面を開き直してください。</string>
     <string name="model_visibility_save_error">表示設定を保存できませんでした。前の設定を保持しています。もう一度お試しください。</string>
+    <string name="model_visibility_provider_show_all">すべて表示</string>
+    <string name="model_visibility_provider_hide_all">すべて非表示</string>
+    <string name="model_picker_no_matches">検索条件に一致するモデルはありません。</string>
+    <string name="model_picker_current">現在のモデル</string>
+    <string name="model_picker_current_outside_results">現在の表示条件の対象外</string>
+    <string name="model_picker_current_unavailable">選択候補に含まれていません</string>
+    <string name="model_picker_reasoning_required">推論は常に有効</string>
+    <string name="model_picker_reasoning_unsupported">推論に非対応</string>
+    <string name="model_picker_pin">モデルをピン留め</string>
+    <string name="model_picker_unpin">モデルのピン留めを外す</string>
 </resources>

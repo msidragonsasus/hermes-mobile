@@ -131,19 +131,21 @@ class ModelVisibilityUiTest {
         compose.onNodeWithTag("model_visibility:openai::one").assertIsOff()
         compose.onNodeWithText(closeLabel).performClick()
         compose.onAllNodesWithText("one").assertCountEquals(0)
+        compose.onAllNodesWithText("OpenAI · one").assertCountEquals(0)
         compose.onNodeWithText("two").assertIsDisplayed()
         compose.onNodeWithText(editLabel).performClick()
         compose.onNodeWithTag("model_visibility:openai::one").assertIsOff().performClick()
         waitForVisibility("one", true)
         compose.onNodeWithText(closeLabel).performClick()
-        compose.onAllNodesWithText("one").assertCountEquals(2)
+        compose.onNodeWithText("one").assertIsDisplayed()
+        compose.onNodeWithText("OpenAI · one").assertIsDisplayed()
     }
 
     @Test
     fun allHiddenStillOffersEditorAndReEnablingOneKeepsOtherHidden() {
         showPicker()
         compose.onNodeWithText(editLabel).performClick()
-        compose.onNodeWithText("OpenAI").performClick()
+        compose.onNodeWithText(context.getString(R.string.model_visibility_provider_hide_all)).performClick()
         waitForVisibility("one", false)
         compose.onNodeWithText(closeLabel).performClick()
         compose.onNodeWithText(context.getString(R.string.model_visibility_empty)).assertIsDisplayed()

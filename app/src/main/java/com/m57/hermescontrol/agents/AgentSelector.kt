@@ -43,14 +43,7 @@ import com.m57.hermescontrol.ui.common.BotAvatar
 import kotlinx.coroutines.launch
 
 /** The default Hermes profile is shown as "Hermes"; bots (other profiles) by their own title. */
-internal fun ProfileInfo.agentLabel(): String =
-    if (is_default == true ||
-        name == "default"
-    ) {
-        "Hermes"
-    } else {
-        effectiveTitle
-    }
+internal fun ProfileInfo.agentLabel(): String = BotConversations.label(name, this) ?: name
 
 /**
  * Who you are talking to. Each bot is a Hermes profile with its own memory, skills and

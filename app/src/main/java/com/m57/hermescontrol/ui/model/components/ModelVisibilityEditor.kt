@@ -1,18 +1,14 @@
 package com.m57.hermescontrol.ui.model.components
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ListItem
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -20,18 +16,22 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.model.ModelProvider
 import com.m57.hermescontrol.theme.LocalSpacing
+import com.m57.hermescontrol.ui.common.InListSectionHeaderPadding
+import com.m57.hermescontrol.ui.common.InlineNotice
+import com.m57.hermescontrol.ui.common.NoticeTone
 import com.m57.hermescontrol.ui.common.SearchBar
+import com.m57.hermescontrol.ui.common.SectionHeader
 import com.m57.hermescontrol.ui.model.ModelVisibility
 import com.m57.hermescontrol.ui.model.ModelVisibilityStore
 import kotlinx.coroutines.CancellationException
@@ -93,106 +93,84 @@ fun ModelVisibilityEditor(
     controller: ModelVisibilityController,
     onDismiss: () -> Unit,
 ) {
+    ModelCatalogSheet(
+        title = stringResource(R.string.model_visibility_title),
+        onDismiss = onDismiss,
+        onBack = onDismiss,
+    ) {
+        ModelVisibilityContent(providers, controller, onClose = onDismiss)
+    }
+}
+
+@Composable
+internal fun ColumnScope.ModelVisibilityContent(
+    providers: List<ModelProvider>,
+    controller: ModelVisibilityController,
+    onClose: () -> Unit,
+) {
     val spacing = LocalSpacing.current
-    var query by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.model_visibility_title)) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
-                Text(stringResource(R.string.model_visibility_description), style = MaterialTheme.typography.bodyMedium)
-                controller.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                SearchBar(query, { query = it }, placeholder = stringResource(R.string.model_picker_search))
-                LazyColumn(
-                    Modifier
-                        .fillMaxWidth()
-                        .weight(
-                            1f,
-                            fill = false,
-                        ).heightIn(max = 420.dp)
-                        .testTag("model_visibility_list"),
-                ) {
-                    providers.forEach { provider ->
-                        val allModels = provider.models.orEmpty().distinct()
-                        val models =
-                            allModels.filter {
-                                query.isBlank() || it.contains(query, true) ||
-                                    provider.name.contains(query, true) || provider.slug.contains(query, true)
-                            }
-                        if (models.isNotEmpty()) {
-                            item("provider:${provider.slug}") {
-                                val visibleCount = allModels.count { controller.value.isVisible(provider.slug, it) }
-                                val allVisible = visibleCount == allModels.size
-                                ListItem(
-                                    headlineContent = { Text(provider.name) },
-                                    supportingContent = {
-                                        Text(
-                                            stringResource(
-                                                R.string.model_visibility_count,
-                                                visibleCount,
-                                                allModels.size,
-                                            ),
-                                        )
-                                    },
-                                    trailingContent = {
-                                        Switch(
-                                            allVisible,
-                                            onCheckedChange = null,
-                                            enabled = !controller.busy,
-                                        )
-                                    },
-                                    modifier =
-                                        Modifier.toggleable(
-                                            allVisible,
-                                            enabled = !controller.busy,
-                                            role = Role.Switch,
-                                        ) {
-                                            controller.update { state -> state.setProviderVisible(provider.slug, it) }
-                                        },
-                                )
-                            }
-                            items(models, key = { "${provider.slug}::$it" }) { model ->
-                                val visible = controller.value.isVisible(provider.slug, model)
-                                ListItem(
-                                    headlineContent = { Text(model) },
-                                    trailingContent = {
-                                        Switch(
-                                            visible,
-                                            onCheckedChange = null,
-                                            enabled = !controller.busy,
-                                        )
-                                    },
-                                    modifier =
-                                        Modifier
-                                            .testTag("model_visibility:${provider.slug}::$model")
-                                            .toggleable(
-                                                visible,
-                                                enabled = !controller.busy,
-                                                role = Role.Switch,
-                                            ) { next ->
-                                                controller.update { it.setModelVisible(provider, model, next) }
-                                            },
-                                )
-                            }
-                        }
-                    }
-                    if (providers.all { it.models.isNullOrEmpty() }) {
-                        item { Text(stringResource(R.string.model_picker_no_models), Modifier.padding(spacing.md)) }
-                    }
+    var query by rememberSaveable { mutableStateOf("") }
+    val groups = remember(providers, query) { matchingModelGroups(providers, query) }
+    Text(
+        stringResource(R.string.model_visibility_description),
+        Modifier.padding(bottom = spacing.sm),
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    controller.error?.let { InlineNotice(it, tone = NoticeTone.Error) }
+    SearchBar(query, { query = it }, placeholder = stringResource(R.string.model_picker_search))
+    LazyColumn(Modifier.fillMaxWidth().weight(1f).testTag("model_visibility_list")) {
+        groups.forEach { (provider, models) ->
+            item("provider:${provider.slug}") {
+                val allModels = provider.models.orEmpty().distinct()
+                val visibleCount = allModels.count { controller.value.isVisible(provider.slug, it) }
+                SectionHeader(provider.name, contentPadding = InListSectionHeaderPadding)
+                Text(
+                    stringResource(R.string.model_visibility_count, visibleCount, allModels.size),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                FlowRow {
+                    TextButton(
+                        onClick = { controller.update { it.setProviderVisible(provider.slug, true) } },
+                        enabled = !controller.busy && visibleCount < allModels.size,
+                    ) { Text(stringResource(R.string.model_visibility_provider_show_all)) }
+                    TextButton(
+                        onClick = { controller.update { it.setProviderVisible(provider.slug, false) } },
+                        enabled = !controller.busy && visibleCount > 0,
+                    ) { Text(stringResource(R.string.model_visibility_provider_hide_all)) }
                 }
             }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = { controller.update { ModelVisibility() } },
-                enabled = !controller.busy,
-                shapes = ButtonDefaults.shapes(),
-            ) { Text(stringResource(R.string.model_visibility_show_all)) }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss, shapes = ButtonDefaults.shapes()) {
-                Text(stringResource(R.string.action_close))
+            items(models, key = { "${provider.slug}::$it" }) { model ->
+                val visible = controller.value.isVisible(provider.slug, model)
+                ModelCatalogRow(
+                    model = model,
+                    modifier =
+                        Modifier
+                            .testTag("model_visibility:${provider.slug}::$model")
+                            .toggleable(visible, enabled = !controller.busy, role = Role.Checkbox) { next ->
+                                controller.update { it.setModelVisible(provider, model, next) }
+                            },
+                    trailing = { Checkbox(visible, onCheckedChange = null, enabled = !controller.busy) },
+                )
             }
-        },
-    )
+        }
+        if (groups.isEmpty()) {
+            item {
+                Text(
+                    stringResource(
+                        if (query.isBlank()) R.string.model_picker_no_models else R.string.model_picker_no_matches,
+                    ),
+                    Modifier.padding(vertical = spacing.md),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+    FlowRow {
+        TextButton(onClick = { controller.update { ModelVisibility() } }, enabled = !controller.busy) {
+            Text(stringResource(R.string.model_visibility_show_all))
+        }
+        TextButton(onClick = onClose) { Text(stringResource(R.string.action_close)) }
+    }
 }

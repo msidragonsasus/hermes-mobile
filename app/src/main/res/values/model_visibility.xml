@@ -7,4 +7,14 @@
     <string name="model_visibility_empty">All models are hidden. Use Edit visible models to show them again.</string>
     <string name="model_visibility_load_error">Could not load display settings. Reopen this screen to retry.</string>
     <string name="model_visibility_save_error">Could not save display settings. Your previous choices were kept. Try again.</string>
+    <string name="model_visibility_provider_show_all">Show all</string>
+    <string name="model_visibility_provider_hide_all">Hide all</string>
+    <string name="model_picker_no_matches">No matching models.</string>
+    <string name="model_picker_current">Current model</string>
+    <string name="model_picker_current_outside_results">Outside the current results</string>
+    <string name="model_picker_current_unavailable">Unavailable in this model catalog</string>
+    <string name="model_picker_reasoning_required">Reasoning always on</string>
+    <string name="model_picker_reasoning_unsupported">Reasoning unavailable</string>
+    <string name="model_picker_pin">Pin model</string>
+    <string name="model_picker_unpin">Unpin model</string>
 </resources>

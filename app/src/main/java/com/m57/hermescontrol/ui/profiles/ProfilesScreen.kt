@@ -62,6 +62,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.agents.BotConversations
+import com.m57.hermescontrol.data.model.MainModelAssignment
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesScaffold
@@ -221,7 +223,10 @@ fun ProfilesScreen(
                                 modifier = Modifier.padding(16.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
-                                Text(text = localizedMessage(state.errorMessage ?: ""), color = MaterialTheme.colorScheme.error)
+                                Text(
+                                    text = localizedMessage(state.errorMessage ?: ""),
+                                    color = MaterialTheme.colorScheme.error,
+                                )
                                 Spacer(modifier = Modifier.height(16.dp))
                                 Button(onClick = { viewModel.loadProfiles() }, shapes = ButtonDefaults.shapes()) {
                                     Text(stringResource(R.string.action_retry))
@@ -662,9 +667,15 @@ fun ProfilesScreen(
     }
 
     if (modelEditProfileName != null) {
+        val profile = state.profiles.firstOrNull { it.name == modelEditProfileName }
         ModelPickerDialog(
             providers = state.modelProviders,
-            title = stringResource(R.string.profiles_title_set_model, modelEditProfileName.orEmpty()),
+            title =
+                stringResource(
+                    R.string.profiles_title_set_model,
+                    BotConversations.label(modelEditProfileName, profile).orEmpty(),
+                ),
+            currentModel = profile?.let { MainModelAssignment(it.provider.orEmpty(), it.model.orEmpty()) },
             isLoading = state.isLoadingBuilderData && state.modelProviders.isEmpty(),
             pinnedModels = state.modelPickerPinned,
             onPinToggle = viewModel::togglePinModel,

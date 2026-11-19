@@ -81,10 +81,10 @@ import com.m57.hermescontrol.agents.BotConversations
 import com.m57.hermescontrol.agents.BotSettingsKey
 import com.m57.hermescontrol.agents.ChatSettingsKey
 import com.m57.hermescontrol.agents.SpecialistSetupSheet
-import com.m57.hermescontrol.agents.agentLabel
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.model.Attachment
 import com.m57.hermescontrol.data.model.AttachmentSource
+import com.m57.hermescontrol.data.model.MainModelAssignment
 import com.m57.hermescontrol.data.update.AppUpdateCache
 import com.m57.hermescontrol.data.update.AppUpdateState
 import com.m57.hermescontrol.data.update.UpdateNoticeManager
@@ -462,11 +462,16 @@ fun ChatScreen(
         activeProfileId?.takeIf { it.isNotBlank() }
             ?: botsState.activeProfileName?.takeIf { it.isNotBlank() }
             ?: "default"
-    LaunchedEffect(activeProfileName) {
+    val rosterScope = BotConversations.serverScope()
+    LaunchedEffect(activeProfileName, rosterScope) {
         botsViewModel.loadBots(isRefresh = true)
     }
-    val activeAgent = botsState.profiles.firstOrNull { it.name == activeProfileName }
-    val activeTitle = activeAgent?.agentLabel() ?: BotConversations.label(activeProfileName) ?: "Hermes"
+    val activeAgent =
+        botsState.profiles.firstOrNull {
+            botsState.rosterScope == rosterScope &&
+                it.name == activeProfileName
+        }
+    val activeTitle = BotConversations.label(activeProfileName, activeAgent) ?: "Hermes"
     var setupSheetProfile by rememberSaveable { mutableStateOf<String?>(null) }
     val epoch by AuthManager.connectionEpoch.collectAsStateWithLifecycle()
     val verifiedBotChat = state.canonicalBotChatId.takeIf { state.canonicalBotChatEpoch == epoch }
@@ -1130,6 +1135,11 @@ fun ChatScreen(
                 errorMessage = state.modelPickerError,
                 onRefresh = viewModel::refreshModelOptions,
                 pinnedModels = state.modelPickerPinned,
+                currentModel =
+                    state.currentSessionModel?.let { label ->
+                        val parts = label.split('/', limit = 2)
+                        if (parts.size == 2) MainModelAssignment(parts[0], parts[1]) else null
+                    },
                 onPinToggle = { provider, model -> viewModel.togglePinModel(provider, model) },
                 onSelect = { provider, model ->
                     viewModel.sendSlashModel(provider, model)
@@ -1192,8 +1202,10 @@ fun ChatScreen(
 
         setupSheetProfile?.takeIf { setupUnsupported && it == activeProfileName }?.let { targetProfile ->
             val targetTitle =
-                botsState.profiles.firstOrNull { it.name == targetProfile }?.agentLabel()
-                    ?: BotConversations.label(targetProfile)
+                BotConversations.label(
+                    targetProfile,
+                    botsState.profiles.firstOrNull { botsState.rosterScope == rosterScope && it.name == targetProfile },
+                )
                     ?: targetProfile
             SpecialistSetupSheet(
                 profileName = targetProfile,

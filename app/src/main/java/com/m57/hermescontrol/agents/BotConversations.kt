@@ -3,6 +3,7 @@ package com.m57.hermescontrol.agents
 import com.m57.hermescontrol.ChatScreen
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.data.local.AuthManager
+import com.m57.hermescontrol.data.model.ProfileInfo
 import com.m57.hermescontrol.data.model.SpecialistSetupSnapshot
 import com.m57.hermescontrol.data.remote.NetworkResult
 import com.m57.hermescontrol.data.session.ProfileSwitchCoordinator
@@ -34,12 +35,33 @@ object BotConversations {
         return seed.second
     }
 
-    /** Display name of a bot: the default profile is "Hermes". */
-    fun label(profileName: String?): String? =
+    /** Use roster and profile metadata for display while keeping the profile ID for routing. */
+    fun label(
+        profileName: String?,
+        vararg knownProfiles: ProfileInfo?,
+    ): String? =
         when {
-            profileName.isNullOrBlank() -> null
-            profileName == "default" -> "Hermes"
-            else -> profileName
+            profileName.isNullOrBlank() -> {
+                null
+            }
+
+            profileName == "default" -> {
+                "Hermes"
+            }
+
+            else -> {
+                knownProfiles.firstNotNullOfOrNull { profile ->
+                    profile?.takeIf { it.name == profileName }?.let {
+                        if (it.is_default ==
+                            true
+                        ) {
+                            "Hermes"
+                        } else {
+                            it.effectiveTitle.takeUnless { title -> title == profileName }
+                        }
+                    }
+                } ?: profileName
+            }
         }
 
     /** Normalized active profile id, defaulting to `"default"`. */

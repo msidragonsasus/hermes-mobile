@@ -14,17 +14,21 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.m57.hermescontrol.ChatScreen
 import com.m57.hermescontrol.HermesControlApp
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.agents.BotConversations
+import com.m57.hermescontrol.data.model.ProfileInfo
 import com.m57.hermescontrol.domain.hermes.AttentionItem
 import com.m57.hermescontrol.domain.hermes.AttentionStatus
 import com.m57.hermescontrol.domain.hermes.ExecutionState
@@ -34,6 +38,7 @@ import com.m57.hermescontrol.domain.hermes.ObservedRun
 import com.m57.hermescontrol.domain.hermes.RunSnapshot
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.attention.AttentionSummaryCard
+import com.m57.hermescontrol.ui.bots.BotsViewModel
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
@@ -43,7 +48,14 @@ fun ObservedActivityScreen(today: Boolean) {
     val app = LocalContext.current.applicationContext as HermesControlApp
     val snapshot by app.runRepository.snapshot.collectAsState()
     val attention by app.attentionRepository.items.collectAsState()
-    ObservedActivityContent(snapshot, today, attention)
+    val roster: BotsViewModel = viewModel { BotsViewModel() }
+    val bots by roster.uiState.collectAsStateWithLifecycle()
+    val rosterScope = BotConversations.serverScope()
+    LaunchedEffect(rosterScope) {
+        if (bots.rosterScope != rosterScope) roster.loadBots(isRefresh = true)
+    }
+    val profiles = bots.profiles.takeIf { bots.rosterScope == rosterScope }.orEmpty()
+    ObservedActivityContent(snapshot, today, attention, profiles)
 }
 
 @Composable
@@ -51,8 +63,10 @@ internal fun ObservedActivityContent(
     snapshot: RunSnapshot,
     today: Boolean,
     attention: List<AttentionItem> = emptyList(),
+    profiles: List<ProfileInfo> = emptyList(),
 ) {
     val spacing = LocalSpacing.current
+    val profilesByName = profiles.associateBy { it.name }
     val resolvedRuns =
         snapshot.runs.filter { run ->
             val ref = run.request
@@ -135,7 +149,7 @@ internal fun ObservedActivityContent(
             }
             items(requests) { AttentionSummaryCard(it, ready = snapshot.connection.state == LinkState.CONNECTED) }
             items(needsYou.filterNot { run -> requests.any { it.ref.session.runtimeId == run.session.runtimeId } }) {
-                ObservedRunCard(it, snapshot)
+                ObservedRunCard(it, snapshot, profilesByName[it.scope.serverProfileId])
             }
             item {
                 SectionHeader(
@@ -144,7 +158,9 @@ internal fun ObservedActivityContent(
                 )
             }
             if (otherRuns.isEmpty()) item { EmptyNote(stringResource(R.string.activity_no_observations)) }
-            items(if (today) otherRuns.take(3) else otherRuns) { ObservedRunCard(it, snapshot) }
+            items(if (today) otherRuns.take(3) else otherRuns) {
+                ObservedRunCard(it, snapshot, profilesByName[it.scope.serverProfileId])
+            }
             if (!today) {
                 item {
                     SectionHeader(
@@ -197,12 +213,13 @@ internal fun ObservedActivityContent(
 private fun ObservedRunCard(
     run: ObservedRun,
     snapshot: RunSnapshot,
+    profile: ProfileInfo?,
 ) {
     val spacing = LocalSpacing.current
     val title = snapshot.sessions.firstOrNull { it.savedId == run.session.savedId }?.title
     // Which bot (Hermes profile) did this work; its session only opens inside that bot.
     val owner = run.scope.serverProfileId
-    val ownerLabel = BotConversations.label(owner)
+    val ownerLabel = BotConversations.label(owner, profile)
     val otherBot = BotConversations.isOtherBot(owner)
     val scope = rememberCoroutineScope()
     val context = LocalContext.current

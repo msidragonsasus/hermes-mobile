@@ -59,6 +59,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.SettingsConnection
+import com.m57.hermescontrol.data.model.MainModelAssignment
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesScaffold
@@ -255,6 +256,7 @@ fun ModelScreen(
         ModelPickerDialog(
             providers = state.providers,
             title = stringResource(R.string.model_set_main),
+            currentModel = MainModelAssignment(state.mainModelProvider, state.mainModelModel),
             isLoading = state.isLoading,
             errorMessage = state.modelOptionsError,
             onRefresh = viewModel::refreshModelOptions,
@@ -283,6 +285,10 @@ fun ModelScreen(
         ModelPickerDialog(
             providers = state.providers,
             title = stringResource(R.string.model_set_aux, state.auxPickerTask),
+            currentModel =
+                state.auxTasks.find { it.task == state.auxPickerTask && it.provider != "auto" }?.let {
+                    MainModelAssignment(it.provider, it.model)
+                },
             isLoading = state.isLoading,
             errorMessage = state.modelOptionsError,
             onRefresh = viewModel::refreshModelOptions,

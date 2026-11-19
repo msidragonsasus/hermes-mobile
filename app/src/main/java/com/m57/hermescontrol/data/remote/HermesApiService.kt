@@ -785,6 +785,7 @@ interface HermesApiService {
     suspend fun updateProfileModel(
         @Path("name") name: String,
         @Body body: UpdateProfileModelRequest,
+        @Tag scope: SpecialistRequestScope? = null,
     ): Response<Unit>
 
     @PUT("api/profiles/{name}/description")
@@ -955,6 +956,7 @@ interface HermesApiService {
     @PUT("api/config")
     suspend fun updateConfig(
         @Body body: ConfigUpdateRequest,
+        @Tag scope: SpecialistRequestScope? = null,
     ): Response<Unit>
 
     @GET("api/mcp/servers")

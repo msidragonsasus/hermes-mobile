@@ -2,6 +2,7 @@ package com.m57.hermescontrol.ui.bots
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.m57.hermescontrol.agents.BotConversations
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.model.BotAvatarMeta
 import com.m57.hermescontrol.data.model.BotRosterMeta
@@ -34,6 +35,7 @@ data class BotsUiState(
     val isLoading: Boolean = false,
     val isRefreshing: Boolean = false,
     val profiles: List<ProfileInfo> = emptyList(),
+    val rosterScope: String? = null,
     val activeProfileName: String? = null,
     val searchQuery: String = "",
     val showHidden: Boolean = false,
@@ -95,6 +97,7 @@ class BotsViewModel(
     }
 
     fun loadBots(isRefresh: Boolean = false) {
+        val rosterScope = BotConversations.serverScope()
         _uiState.update {
             if (isRefresh) {
                 it.copy(isRefreshing = true, errorMessage = null)
@@ -131,6 +134,7 @@ class BotsViewModel(
                 }
             val activeResult = safeApiCall { ApiClient.hermesApi.getActiveProfile() }
             val capabilities = specialistsRepository.fetchCapabilities()
+            if (BotConversations.serverScope() != rosterScope) return@launch
 
             if (profilesWithMeta != null) {
                 val activeName = (activeResult as? NetworkResult.Success)?.data?.active
@@ -139,6 +143,7 @@ class BotsViewModel(
                         isLoading = false,
                         isRefreshing = false,
                         profiles = profilesWithMeta,
+                        rosterScope = rosterScope,
                         activeProfileName = activeName ?: it.activeProfileName,
                         hiddenProfiles = AuthManager.getHiddenProfiles().toSet(),
                         capabilitiesState = capabilities,
@@ -152,6 +157,7 @@ class BotsViewModel(
                         isLoading = false,
                         isRefreshing = false,
                         profiles = profilesResult.data.profiles.orEmpty(),
+                        rosterScope = rosterScope,
                         activeProfileName = activeName ?: it.activeProfileName,
                         hiddenProfiles = AuthManager.getHiddenProfiles().toSet(),
                         capabilitiesState = capabilities,

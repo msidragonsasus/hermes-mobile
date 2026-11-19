@@ -11,10 +11,10 @@ import com.m57.hermescontrol.data.model.ModelAssignmentRequest
 import com.m57.hermescontrol.data.model.ModelProvider
 import com.m57.hermescontrol.data.model.PinnedModel
 import com.m57.hermescontrol.data.model.ProfileInfo
-import com.m57.hermescontrol.data.model.UpdateProfileModelRequest
 import com.m57.hermescontrol.data.remote.ApiClient
 import com.m57.hermescontrol.data.remote.NetworkResult
 import com.m57.hermescontrol.data.remote.safeApiCall
+import com.m57.hermescontrol.data.remote.saveProfileModel
 import com.m57.hermescontrol.ui.common.ToastHost
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -580,28 +580,15 @@ class ModelViewModel(
                     }
                 }
 
-            val updateResResult =
-                withContext(Dispatchers.IO) {
-                    safeApiCall {
-                        ApiClient.hermesApi.updateProfileModel(
-                            activeProfileName,
-                            UpdateProfileModelRequest(providerSlug, modelName),
-                        )
-                    }
+            val error =
+                withContext(ioDispatcher) {
+                    ApiClient.hermesApi.saveProfileModel(activeProfileName, providerSlug, modelName)
                 }
-            when (updateResResult) {
-                is NetworkResult.Success -> {
-                    _uiState.update { it.copy(toastMessage = "Successfully set profile model to $modelName") }
-                    loadQuick()
-                }
-
-                is NetworkResult.Failure -> {
-                    _uiState.update {
-                        it.copy(
-                            toastMessage = "Failed to set profile model: ${updateResResult.error.message}",
-                        )
-                    }
-                }
+            if (error == null) {
+                _uiState.update { it.copy(toastMessage = "Successfully set profile model to $modelName") }
+                loadQuick()
+            } else {
+                _uiState.update { it.copy(toastMessage = error) }
             }
         }
     }
