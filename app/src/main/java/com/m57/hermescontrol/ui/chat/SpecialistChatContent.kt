@@ -150,7 +150,7 @@ internal fun SpecialistReviewCard(
             }
             SpecialistAction(
                 label = stringResource(R.string.specialist_chat_confirm),
-                enabled = canUseSession && state.canAct,
+                enabled = canUseSession && state.canConfirm(),
                 onClick = { onConfirm(draft.id, revision) },
             )
         }
@@ -201,7 +201,7 @@ internal fun SpecialistChatActions(
     val snapshot = state.snapshot
     val pending = state.pendingTurn
     val request = state.request
-    val waiting = pending != null && pending.expires_at > System.currentTimeMillis() / 1000.0
+    val waiting = state.hasInFlightTurn()
     Column(
         modifier = Modifier.padding(vertical = LocalSpacing.current.sm).testTag("specialist_chat_actions"),
         verticalArrangement = Arrangement.spacedBy(LocalSpacing.current.xs),
@@ -230,7 +230,9 @@ internal fun SpecialistChatActions(
                 )
             }
         }
-        if (state.busy || waiting || (state.loading && snapshot == null)) {
+        if (waiting) {
+            Text(stringResource(R.string.specialist_chat_thinking), style = MaterialTheme.typography.bodySmall)
+        } else if (state.busy || (state.loading && snapshot == null)) {
             Text(stringResource(R.string.specialist_chat_waiting), style = MaterialTheme.typography.bodySmall)
         }
         state.error?.let { error ->
@@ -314,6 +316,10 @@ private fun specialistErrorResource(code: String): Int =
 
         "settings_apply_incomplete", "uncertain" -> {
             R.string.specialist_chat_retry_saved
+        }
+
+        "specialist_model_unavailable", "invalid_specialist_model_output" -> {
+            R.string.specialist_chat_model_retry
         }
 
         "specialist_state_missing", "profile_missing", "HTTP 400" -> {

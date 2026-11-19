@@ -2,13 +2,16 @@ package com.m57.hermescontrol.data.remote
 
 import com.m57.hermescontrol.BuildConfig
 import com.m57.hermescontrol.data.local.AuthManager
+import com.m57.hermescontrol.data.model.SpecialistSetupTurnRequest
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.logging.HttpLoggingInterceptor
+import retrofit2.Invocation
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 internal fun Request.isCurrentSpecialistRequest(): Boolean {
     val scope = tag(SpecialistRequestScope::class.java) ?: return true
@@ -142,7 +145,17 @@ object ApiClient {
                 .newBuilder()
                 .addInterceptor(authInterceptor)
                 .addInterceptor(ProfileScopeInterceptor)
-                .addInterceptor(logging)
+                .addInterceptor { chain ->
+                    val invocation = chain.request().tag(Invocation::class.java)
+                    val timedChain =
+                        if (invocation?.arguments()?.any { it is SpecialistSetupTurnRequest } == true) {
+                            // This endpoint waits for a model response before writing HTTP headers.
+                            chain.withReadTimeout(75, TimeUnit.SECONDS)
+                        } else {
+                            chain
+                        }
+                    timedChain.proceed(chain.request())
+                }.addInterceptor(logging)
                 .addNetworkInterceptor { chain ->
                     chain.request().requireCurrentSpecialistRequest()
                     chain.proceed(chain.request())

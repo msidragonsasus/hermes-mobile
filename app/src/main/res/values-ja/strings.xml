@@ -1331,6 +1331,8 @@
   <string name="specialist_chat_routing_pending">振り分け公開前</string>
   <string name="specialist_chat_applied">Bot Chatに反映済み（版 %1$d）</string>
   <string name="specialist_chat_waiting">botの設定を確認中…</string>
+  <string name="specialist_chat_thinking">返信を考え中…</string>
+  <string name="specialist_chat_model_retry">botが返信できませんでした。保存済みのメッセージで再試行できます。</string>
   <string name="specialist_chat_open_canonical">Bot Chatを開く</string>
   <string name="specialist_chat_setup_required">Bot Chatで初期設定を続けてください。</string>
   <string name="specialist_chat_edit">会話で設定を変更</string>

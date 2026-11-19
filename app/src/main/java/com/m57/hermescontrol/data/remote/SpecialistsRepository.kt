@@ -47,6 +47,7 @@ sealed interface SpecialistApiOutcome<out T> {
 
     data class UncertainTransport(
         val message: String,
+        val code: String? = null,
     ) : SpecialistApiOutcome<Nothing>
 }
 
@@ -192,7 +193,7 @@ class SpecialistsRepository(
                     404 -> SpecialistApiOutcome.Unsupported(code)
                     409 -> SpecialistApiOutcome.Conflict(code, fallbackMsg)
                     400, 401, 403, 413, 422 -> SpecialistApiOutcome.Validation(code, fallbackMsg, response.code())
-                    else -> SpecialistApiOutcome.UncertainTransport(fallbackMsg)
+                    else -> SpecialistApiOutcome.UncertainTransport(fallbackMsg, code)
                 }
             }
         } catch (e: CancellationException) {

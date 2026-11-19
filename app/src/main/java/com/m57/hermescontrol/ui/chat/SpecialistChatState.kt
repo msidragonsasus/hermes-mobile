@@ -95,8 +95,7 @@ internal data class SpecialistChatState(
                             }
 
                             "setup" -> {
-                                !current.setup_completed &&
-                                    current.conversation_turns.any { it.card?.id == draft.id }
+                                !current.setup_completed
                             }
 
                             else -> {
@@ -106,6 +105,13 @@ internal data class SpecialistChatState(
                 }
             }
     val canAct: Boolean get() = ready && !loading && !busy && request == null && pendingTurn == null
+
+    fun hasInFlightTurn(nowSeconds: Double = System.currentTimeMillis() / 1000.0): Boolean =
+        (busy && request?.turn != null) || (pendingTurn?.expires_at ?: 0.0) > nowSeconds
+
+    fun canConfirm(nowSeconds: Double = System.currentTimeMillis() / 1000.0): Boolean =
+        ready && activeDraft != null && !loading && !busy && !hasInFlightTurn(nowSeconds) &&
+            request?.confirm == null && request?.apply == null
 }
 
 @Serializable
@@ -201,7 +207,7 @@ internal class SpecialistChatController(
     ) {
         val current = state.value
         val draft = current.activeDraft ?: return
-        if (!current.canAct || draft.id != draftId || current.snapshot?.revision != revision) return
+        if (!current.canConfirm(nowSeconds()) || draft.id != draftId || current.snapshot?.revision != revision) return
         send(
             SpecialistChatRequest(
                 confirm = SpecialistSetupConfirmRequest(revision, draftId, newId()),
@@ -384,7 +390,12 @@ internal class SpecialistChatController(
                     }
 
                     is SpecialistApiOutcome.UncertainTransport -> {
-                        update(target) { it.copy(error = "uncertain") }
+                        val code =
+                            outcome.code?.takeIf {
+                                request.turn != null &&
+                                    (it == "specialist_model_unavailable" || it == "invalid_specialist_model_output")
+                            }
+                        update(target) { it.copy(error = code ?: "uncertain") }
                     }
                 }
                 load(target, discover = false)
@@ -427,6 +438,7 @@ internal class SpecialistChatController(
                             ),
                         editing = false,
                         invalidDraftId = null,
+                        dismissedPendingId = current.pendingTurn?.request_id ?: current.dismissedPendingId,
                     )
                 }
 

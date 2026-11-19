@@ -370,6 +370,101 @@ class SpecialistChatControllerTest {
         }
 
     @Test
+    fun questionFailureKeepsDraftConfirmableAndRetriesTheSameRequest() =
+        runTest {
+            setUpApi()
+            val draftTurn = SpecialistSetupTurnRequest("draft-turn", "bot-chat", 0, 0, "技術調査を担当して", "setup")
+            snapshot =
+                initial.copy(
+                    revision = 1,
+                    draft = setupDraft,
+                    conversation_revision = 1,
+                    conversation_turns = listOf(draftTurn.result(setupDraft, 1, 1)),
+                )
+            val requests = mutableListOf<SpecialistSetupTurnRequest>()
+            val model = CompletableDeferred<Unit>()
+            val reply = "投稿検索に対応しています。\n\n**X APIの認証**と検索権限が必要です。"
+            coEvery { api.sendSpecialistSetupTurn("bot", capture(requests), any()) } coAnswers {
+                val request = requests.last()
+                if (requests.size == 1) {
+                    model.await()
+                    snapshot =
+                        snapshot.copy(pending_turn = SpecialistPendingTurn(request.request_id, request.text, 0.0))
+                    failure(502, "invalid_specialist_model_output")
+                } else {
+                    val turn =
+                        request.result(null, 1, 2).let {
+                            it.copy(assistant = it.assistant.copy(content = reply))
+                        }
+                    snapshot =
+                        snapshot.copy(
+                            conversation_revision = 2,
+                            conversation_turns = snapshot.conversation_turns + turn,
+                            pending_turn = null,
+                        )
+                    Response.success(turn)
+                }
+            }
+            val chat = controller()
+            chat.bind(target, "bot-chat")
+            runCurrent()
+            assertTrue(chat.submit("xurlで本当に取れる？"))
+            runCurrent()
+            assertTrue(chat.state.value.hasInFlightTurn())
+            assertFalse(chat.state.value.canConfirm())
+            chat.confirm(setupDraft.id, 1)
+            coVerify(exactly = 0) { api.confirmSpecialistSetup(any(), any(), any()) }
+
+            model.complete(Unit)
+            runCurrent()
+            assertFalse(chat.state.value.hasInFlightTurn())
+            assertTrue(chat.state.value.canConfirm())
+            assertEquals("invalid_specialist_model_output", chat.state.value.error)
+            assertEquals(setupDraft, chat.state.value.activeDraft)
+            chat.retry()
+            runCurrent()
+            assertEquals(listOf(requests.first(), requests.first()), requests)
+            assertTrue(chat.state.value.canAct)
+            assertEquals(setupDraft, chat.state.value.activeDraft)
+            assertTrue(
+                chat.state.value
+                    .projectMessages(emptyList())
+                    .any { it.content == reply },
+            )
+        }
+
+    @Test
+    fun confirmingCurrentDraftDismissesFailedTurnAndAllowsApply() =
+        runTest {
+            setUpApi()
+            snapshot =
+                initial.copy(
+                    revision = 1,
+                    draft = setupDraft,
+                    pending_turn = SpecialistPendingTurn("failed-turn", "確認したいこと", 0.0),
+                )
+            coEvery { api.confirmSpecialistSetup("bot", any(), any()) } answers {
+                snapshot =
+                    snapshot.copy(
+                        setup_completed = true,
+                        activation = "pending_apply",
+                        revision = 2,
+                        settings_revision = 2,
+                    )
+                Response.success(snapshot.copy(conversation_turns = emptyList(), pending_turn = null))
+            }
+            val chat = controller()
+            chat.bind(target, "bot-chat")
+            runCurrent()
+            assertTrue(chat.state.value.canConfirm())
+            chat.confirm(setupDraft.id, 1)
+            runCurrent()
+            coVerify(exactly = 1) { api.confirmSpecialistSetup("bot", any(), any()) }
+            assertTrue(chat.state.value.pendingApply)
+            assertTrue(chat.state.value.canAct)
+        }
+
+    @Test
     fun staleApplyResolvesCanonicalTipBeforeSendingNewRequest() =
         runTest {
             setUpApi()
@@ -468,7 +563,7 @@ class SpecialistChatControllerTest {
         }
 
     private fun SpecialistSetupTurnRequest.result(
-        card: SpecialistSetupDraft,
+        card: SpecialistSetupDraft?,
         revision: Int,
         conversationRevision: Int,
     ): SpecialistSetupTurn =
