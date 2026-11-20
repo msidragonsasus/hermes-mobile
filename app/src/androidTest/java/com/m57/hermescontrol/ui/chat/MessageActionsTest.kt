@@ -3,6 +3,8 @@ package com.m57.hermescontrol.ui.chat
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.SystemClock
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -39,7 +41,6 @@ import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
-import androidx.test.espresso.Espresso.pressBack
 import androidx.test.platform.app.InstrumentationRegistry
 import com.m57.hermescontrol.data.model.Attachment
 import com.m57.hermescontrol.data.ws.CommandCatalog
@@ -91,7 +92,7 @@ class MessageActionsTest {
         }
         touchLink("公式", hold = true)
         compose.onNodeWithTag("message_action_menu").assertIsDisplayed()
-        pressBack()
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         compose.runOnIdle { assertEquals(null, external) }
         tapLink("公式")
         compose.runOnIdle { assertEquals("https://example.com", external) }
@@ -218,7 +219,7 @@ class MessageActionsTest {
         screenshot("dark")
         compose.runOnIdle { theme.value = ThemePreference.LIGHT }
         screenshot("light")
-        pressBack()
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         compose.runOnIdle { scale.value = 2f }
         open()
         compose.onNodeWithTag("message_action_copy").assertIsDisplayed()
@@ -297,6 +298,8 @@ class MessageActionsTest {
             open("chat_bubble_user")
             compose.onNodeWithTag("message_action_select").performTouchInput { click() }
             compose.onAllNodes(handles, useUnmergedTree = true).assertCountEquals(2)
+            // Let Android's floating selection toolbar finish its entrance animation before capture.
+            SystemClock.sleep(300)
             screenshot("user-selection-$name")
             compose.onNodeWithTag("transcript_space").performTouchInput { click() }
             compose.onNodeWithTag("message_selection_text").assertDoesNotExist()

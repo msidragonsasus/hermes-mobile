@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imeAnimationTarget
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -53,6 +54,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusRequester
@@ -60,7 +62,9 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -90,6 +94,7 @@ import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.chat.ChatInputPolicy
 import com.m57.hermescontrol.ui.common.BotAvatar
 import com.m57.hermescontrol.util.BidiUtils
+import kotlinx.coroutines.flow.first
 
 @Composable
 fun ChatComposer(
@@ -141,8 +146,14 @@ fun ChatComposer(
     )
 }
 
+private enum class AttachmentPickerState {
+    CLOSED,
+    WAITING_FOR_IME,
+    OPEN,
+}
+
 /**
- * The conversation input is a slim pill until the keyboard opens. The expanded panel
+ * The conversation input is a slim pill until the keyboard or attachment picker opens. The expanded panel
  * has room for the reply preview and the model and thinking-depth controls.
  */
 @OptIn(ExperimentalLayoutApi::class)
@@ -204,13 +215,25 @@ fun ChatInputBar(
     val canSend = ChatInputPolicy.canSend(inputFieldValue.text, pendingAttachments, isConnected || allowOfflineQueue)
 
     // Attachment menu state
-    var showAttachmentMenu by remember { mutableStateOf(false) }
+    var attachmentPicker by remember { mutableStateOf(AttachmentPickerState.CLOSED) }
     var isFocused by remember { mutableStateOf(false) }
-    // Collapse as soon as the IME starts closing. The text field keeps its focus and draft.
-    val imeVisible = WindowInsets.imeAnimationTarget.getBottom(LocalDensity.current) > 0
+    val density = LocalDensity.current
+    val ime = WindowInsets.ime
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    val imeVisible = WindowInsets.imeAnimationTarget.getBottom(density) > 0
     val expanded =
-        (isFocused && imeVisible) ||
+        attachmentPicker != AttachmentPickerState.CLOSED ||
+            (isFocused && imeVisible) ||
             (!collapseDraftWhenImeCloses && (inputFieldValue.text.isNotEmpty() || pendingAttachments.isNotEmpty()))
+
+    LaunchedEffect(attachmentPicker, ime, density) {
+        if (attachmentPicker == AttachmentPickerState.WAITING_FOR_IME) {
+            // Keep the expanded toolbar and anchor in place until the IME finishes leaving.
+            snapshotFlow { ime.getBottom(density) == 0 }.first { it }
+            attachmentPicker = AttachmentPickerState.OPEN
+        }
+    }
 
     var showReasoning by remember { mutableStateOf(false) }
     var reasoningDismissedAt by remember { mutableStateOf(0L) }
@@ -327,7 +350,16 @@ fun ChatInputBar(
                 if (showAttachmentButton) {
                     Box {
                         IconButton(
-                            onClick = { showAttachmentMenu = true },
+                            onClick = {
+                                attachmentPicker =
+                                    if (imeVisible || ime.getBottom(density) > 0) {
+                                        AttachmentPickerState.WAITING_FOR_IME
+                                    } else {
+                                        AttachmentPickerState.OPEN
+                                    }
+                                if (imeVisible) keyboard?.hide()
+                                focusManager.clearFocus()
+                            },
                             enabled = isConnected && attachmentsEnabled,
                             modifier =
                                 Modifier
@@ -343,18 +375,18 @@ fun ChatInputBar(
                             )
                         }
                         AttachmentPickerMenu(
-                            expanded = showAttachmentMenu,
-                            onDismiss = { showAttachmentMenu = false },
+                            expanded = attachmentPicker == AttachmentPickerState.OPEN,
+                            onDismiss = { attachmentPicker = AttachmentPickerState.CLOSED },
                             onPhoto = {
-                                showAttachmentMenu = false
+                                attachmentPicker = AttachmentPickerState.CLOSED
                                 onImageTap()
                             },
                             onCamera = {
-                                showAttachmentMenu = false
+                                attachmentPicker = AttachmentPickerState.CLOSED
                                 onCameraTap()
                             },
                             onFile = {
-                                showAttachmentMenu = false
+                                attachmentPicker = AttachmentPickerState.CLOSED
                                 onFileTap()
                             },
                         )

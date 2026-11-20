@@ -305,8 +305,9 @@ user sends. Sent replies display a right-aligned reply label and a two-line
 neutral quote above the user's own bubble. The quote navigates to an earlier
 loaded message when its source can be resolved, and disclosure measures only
 the user's own text. With the keyboard closed, the composer shows its
-one-line draft preview and hides the reply preview and model controls. All
-surfaces use host theme tokens.
+one-line draft preview and hides the reply preview and model controls. Opening
+the attachment picker keeps the composer expanded and opens the picker once
+the keyboard has finished hiding. All surfaces use host theme tokens.
 
 Pending photos use an 88dp image strip above the composer, with a small circular
 remove affordance inside a 48dp target. Photos have no visible filename chip.

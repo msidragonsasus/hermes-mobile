@@ -49,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -134,6 +135,14 @@ fun ChatBubble(
         val colors = MaterialTheme.colorScheme
         val bubbleColor = if (personalStyle) colors.primary else colors.secondaryContainer
         val textColor = if (personalStyle) colors.onPrimary else colors.onSecondaryContainer
+        val selectionColor =
+            remember(personalStyle, bubbleColor, textColor, colors.inversePrimary) {
+                val fill = bubbleColor.luminance()
+                val accent = colors.inversePrimary.luminance()
+                val contrast = (maxOf(fill, accent) + 0.05f) / (minOf(fill, accent) + 0.05f)
+                // Prefer an accent that's visible past the rounded edge, with a fallback for shared palette roles.
+                if (personalStyle && contrast >= 3f) colors.inversePrimary else textColor
+            }
         val bodyStyle =
             if (personalStyle) {
                 MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 26.sp)
@@ -151,8 +160,8 @@ fun ChatBubble(
                 message = message,
                 selectionColors =
                     TextSelectionColors(
-                        handleColor = textColor,
-                        backgroundColor = textColor.copy(alpha = 0.35f),
+                        handleColor = selectionColor,
+                        backgroundColor = selectionColor.copy(alpha = 0.35f),
                     ),
             ) {
                 CompositionLocalProvider(LocalLayoutDirection provides direction) {
