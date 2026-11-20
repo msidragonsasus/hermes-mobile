@@ -46,7 +46,10 @@ class ChatSearchDelegate(
         }
     }
 
-    fun setSearchQuery(query: String) {
+    fun setSearchQuery(
+        query: String,
+        mainChatOnly: Boolean = false,
+    ) {
         searchJob?.cancel()
         searchState.query = query
 
@@ -61,13 +64,16 @@ class ChatSearchDelegate(
         searchJob =
             scope.launch(dispatcher) {
                 delay(debounceMs)
-                runSearch(query)
+                runSearch(query, mainChatOnly)
             }
     }
 
-    private fun runSearch(query: String) {
+    private fun runSearch(
+        query: String,
+        mainChatOnly: Boolean,
+    ) {
         val messages = uiState.value.messages
-        val result = searchController.findMatches(messages, query)
+        val result = searchController.findMatches(messages, query, mainChatOnly)
 
         // Only update matches if the search query hasn't changed in the meantime.
         if (searchState.query != query) return

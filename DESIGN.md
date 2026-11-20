@@ -252,6 +252,13 @@ existing code. A Material import or a rounded rectangle does not prove complianc
   Rejected: a stack of identical 「不明（サーバーから未提供）」 rows, unlabeled ID dumps,
   disabled buttons on an expired request, and a permanently disabled 「修正」 button.
 
+- 2026-11-20: the default-profile chat uses a left menu and a centered avatar and
+  status pill that opens the status sheet. The right side stays empty. Its
+  timeline shows waiting dots before the first reply text and hides thinking
+  and tool execution rows. Approvals, clarifications and brainstorm cards
+  remain inline. The shared Composer opens its controls while typing and
+  collapses to one pill for an empty draft when the keyboard closes.
+
 When the user rejects a design, record it here in the same change.
 
 ### Inputs

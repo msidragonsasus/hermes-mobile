@@ -790,7 +790,18 @@ fun MainNavigation(sessionId: String? = null) {
                     if (!imeVisible && !managementScope &&
                         currentScreen !is com.m57.hermescontrol.career.CareerMyPageBrowserKey
                     ) {
-                        shell?.let { ShellBottomBar(it.selectedTab) }
+                        shell?.let {
+                            ShellBottomBar(
+                                selected = it.selectedTab,
+                                museMinimal =
+                                    currentScreen == ChatScreen &&
+                                        (
+                                            currentBotProfile?.takeIf { it.isNotBlank() }
+                                                ?: botsState?.activeProfileName?.takeIf { it.isNotBlank() }
+                                                ?: "default"
+                                        ) == "default",
+                            )
+                        }
                     }
                 },
             ) { paddingValues ->

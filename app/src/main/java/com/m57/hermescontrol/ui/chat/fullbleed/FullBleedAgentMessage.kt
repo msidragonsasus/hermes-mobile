@@ -1,6 +1,7 @@
 package com.m57.hermescontrol.ui.chat.fullbleed
 
 import android.text.format.DateFormat
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -20,10 +22,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.model.Attachment
 import com.m57.hermescontrol.data.model.BotAvatarMeta
@@ -66,6 +70,7 @@ internal fun FullBleedAgentMessage(
     showFooter: Boolean = true,
     actionMessage: ChatMessage = message,
     allowInteractiveContent: Boolean = true,
+    personalStyle: Boolean = false,
 ) {
     val textColor = MaterialTheme.colorScheme.onSurface
     var localImage by remember { mutableStateOf<ImageViewerModel?>(null) }
@@ -75,13 +80,19 @@ internal fun FullBleedAgentMessage(
             .ImageViewerDialog(image, onDismiss = { localImage = null })
     }
 
-    MessageActionHost(message = actionMessage, modifier = modifier) {
+    val bodyModifier =
+        if (personalStyle) {
+            Modifier
+                .clip(RoundedCornerShape(26.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .padding(horizontal = 20.dp, vertical = 12.dp)
+        } else {
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+        }
+    MessageActionHost(message = actionMessage, modifier = modifier, useDialog = personalStyle) {
         Column(
             modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .testTag("fullbleed_agent_message"),
+                bodyModifier.testTag(if (personalStyle) "chat_assistant_bubble" else "fullbleed_agent_message"),
         ) {
             if (showTurnHeader) {
                 DisableSelection {
@@ -110,6 +121,13 @@ internal fun FullBleedAgentMessage(
                     onImageClick = openImage,
                     onOpenAttachment = onOpenAttachment,
                     allowInteractiveContent = allowInteractiveContent,
+                    bodyStyle =
+                        if (personalStyle) {
+                            MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 26.sp)
+                        } else {
+                            MaterialTheme.typography.bodyMedium
+                        },
+                    fillWidth = !personalStyle,
                 )
             }
 

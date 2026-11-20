@@ -3,6 +3,7 @@ package com.m57.hermescontrol.ui.chat.fullbleed
 import com.m57.hermescontrol.ui.chat.ApprovalPlacement
 import com.m57.hermescontrol.ui.chat.ChatMessage
 import com.m57.hermescontrol.ui.chat.MessageRole
+import com.m57.hermescontrol.ui.chat.ResponseLedger
 import com.m57.hermescontrol.ui.chat.brainstorm.BrainstormParser
 import com.m57.hermescontrol.ui.chat.isApprovalTimelineRow
 import com.m57.hermescontrol.ui.chat.isLivePreviewOf
@@ -60,7 +61,7 @@ private const val MAX_ITERATIONS_SYSTEM_MARKER =
 private fun ChatMessage.isModelSwitchControl(): Boolean =
     role == MessageRole.USER && (displayKind == "model_switch" || displayKind == "model_switch_request")
 
-private fun ChatMessage.isSyntheticSystemRow(): Boolean =
+internal fun ChatMessage.isSyntheticSystemRow(): Boolean =
     role == MessageRole.USER &&
         displayKind == null &&
         content.startsWith(MAX_ITERATIONS_SYSTEM_MARKER)
@@ -74,16 +75,147 @@ private fun ChatMessage.isSyntheticSystemRow(): Boolean =
  */
 fun groupIntoTurns(
     messages: List<ChatMessage>,
-    ledger: com.m57.hermescontrol.ui.chat.ResponseLedger =
-        com.m57.hermescontrol.ui.chat
-            .ResponseLedger(),
+    ledger: ResponseLedger = ResponseLedger(),
 ): List<ChatTurn> = groupIntoTurnsForPresentation(messages, ledger)
+
+private fun ChatMessage.isPlainUserTurn(): Boolean =
+    role == MessageRole.USER && displayKind == null && !isSyntheticSystemRow()
+
+private fun ResponseLedger.followUpUserIds(): Set<String> =
+    responses.filter { it.serverFollowUp }.flatMapTo(mutableSetOf()) { it.userIds }
+
+/**
+ * Keep every response's assistant/tool entries directly under its own user message
+ * even when a newer user message B was appended while response A was still running.
+ * Preserve the original list when every owned entry is already in its turn.
+ */
+private fun alignOwnedEntriesToUserAnchors(
+    messages: List<ChatMessage>,
+    ledger: ResponseLedger,
+    presentationOwners: Map<String, String>,
+): List<ChatMessage> {
+    if (messages.size < 2 || ledger.responses.isEmpty()) return messages
+    val followUpUsers = ledger.followUpUserIds()
+    if (followUpUsers.isEmpty()) return messages
+    val ownerCounts = HashMap<String, Int>(messages.size)
+    val uniqueOwners = HashMap<String, String>(messages.size)
+    for (response in ledger.responses) {
+        for (id in response.messageIds) {
+            ownerCounts[id] = (ownerCounts[id] ?: 0) + 1
+            uniqueOwners[id] = response.id
+        }
+        for (id in response.userIds) {
+            ownerCounts[id] = (ownerCounts[id] ?: 0) + 1
+            uniqueOwners[id] = response.id
+        }
+    }
+    for ((id, owner) in ledger.pendingInputs) {
+        if (id !in ownerCounts) {
+            ownerCounts[id] = 1
+            uniqueOwners[id] = owner
+        }
+    }
+    for ((id, placement) in ledger.approvalPlacements) {
+        if (id !in ownerCounts) {
+            ownerCounts[id] = 1
+            uniqueOwners[id] = placement.responseId
+        }
+    }
+    for ((id, owner) in presentationOwners) {
+        if (id !in ownerCounts) {
+            ownerCounts[id] = 1
+            uniqueOwners[id] = owner
+        }
+    }
+
+    fun uniqueOwnerOf(messageId: String): String? = if (ownerCounts[messageId] == 1) uniqueOwners[messageId] else null
+
+    val anchorIndexByOwner = HashMap<String, Int>()
+    val nextUserIndex = HashMap<Int, Int>()
+    var previousUser = -1
+    messages.forEachIndexed { index, message ->
+        if (message.isPlainUserTurn()) {
+            uniqueOwnerOf(message.id)?.let { anchorIndexByOwner[it] = index }
+            if (previousUser >= 0) nextUserIndex[previousUser] = index
+            previousUser = index
+        }
+    }
+    if (anchorIndexByOwner.isEmpty() || nextUserIndex.isEmpty()) return messages
+
+    val deferredIndices = HashSet<Int>()
+    val insertAfterIndex = HashMap<Int, MutableList<ChatMessage>>()
+    messages.forEachIndexed { index, message ->
+        if (message.isPlainUserTurn()) return@forEachIndexed
+        val owner = uniqueOwnerOf(message.id) ?: return@forEachIndexed
+        val anchorIdx = anchorIndexByOwner[owner] ?: return@forEachIndexed
+        val boundary = nextUserIndex[anchorIdx] ?: return@forEachIndexed
+        if (index > boundary && messages[boundary].id in followUpUsers) {
+            deferredIndices += index
+            insertAfterIndex.getOrPut(boundary - 1) { mutableListOf() }.add(message)
+        }
+    }
+    if (deferredIndices.isEmpty()) return messages
+
+    val aligned = ArrayList<ChatMessage>(messages.size)
+    messages.forEachIndexed { index, message ->
+        if (index !in deferredIndices) {
+            aligned += message
+        }
+        insertAfterIndex[index]?.let { aligned.addAll(it) }
+    }
+    return aligned
+}
+
+/**
+ * Returns the turn index that owns the currently active response when another user
+ * turn already sits below it, so the thinking indicator stays attached to the active
+ * turn instead of appearing under the newer user message.
+ */
+internal fun activeTurnIndexForThinking(
+    turns: List<ChatTurn>,
+    ledger: ResponseLedger,
+): Int? {
+    val activeId = ledger.activeId ?: return null
+    val active = ledger.responses.singleOrNull { it.id == activeId } ?: return null
+    if (active.finishedAt != null) return null
+    val ownedMessageIds = active.messageIds.toHashSet()
+    val ownedUserIds = active.userIds.toHashSet() + ledger.pendingInputs.filterValues { it == active.id }.keys
+    if (ownedMessageIds.isEmpty() && ownedUserIds.isEmpty()) return null
+    val matchIndex =
+        turns.indexOfLast { turn ->
+            when (turn) {
+                is ChatTurn.User -> {
+                    turn.message.id in ownedUserIds
+                }
+
+                is ChatTurn.Agent -> {
+                    turn.entries.any { entry ->
+                        when (entry) {
+                            is AgentEntry.Prose -> entry.message.id in ownedMessageIds
+                            is AgentEntry.ToolRow -> entry.message.id in ownedMessageIds
+                            is AgentEntry.SystemEvent -> entry.message.id in ownedMessageIds
+                            is AgentEntry.ConnectionEvents -> entry.messages.any { it.id in ownedMessageIds }
+                        }
+                    }
+                }
+            }
+        }
+    if (matchIndex !in 0 until turns.lastIndex) return null
+    val followUpUsers = ledger.followUpUserIds()
+    return matchIndex.takeIf {
+        turns.subList(matchIndex + 1, turns.size).any { turn ->
+            turn is ChatTurn.User &&
+                turn.message.id in followUpUsers
+        }
+    }
+}
 
 private fun groupIntoTurnsForPresentation(
     messages: List<ChatMessage>,
-    ledger: com.m57.hermescontrol.ui.chat.ResponseLedger,
+    ledger: ResponseLedger,
     presentationOwners: Map<String, String> = emptyMap(),
 ): List<ChatTurn> {
+    val orderedMessages = alignOwnedEntriesToUserAnchors(messages, ledger, presentationOwners)
     val turns = mutableListOf<ChatTurn>()
     val agentEntries = mutableListOf<AgentEntry>()
     val owners =
@@ -91,7 +223,7 @@ private fun groupIntoTurnsForPresentation(
             .flatMap { response ->
                 (response.messageIds + response.userIds).map { it to response.id }
             }.toMap() + ledger.approvalPlacements.mapValues { it.value.responseId } + presentationOwners
-    val (ordered, recoveredOwners) = recoverActivityOrder(messages, ledger.toolAnswerIds, owners)
+    val (ordered, recoveredOwners) = recoverActivityOrder(orderedMessages, ledger.toolAnswerIds, owners)
     var previousOwner: String? = null
 
     fun flushAgent() {
@@ -248,13 +380,14 @@ private fun placeApprovals(
 fun groupIntoTurnsWithStreaming(
     messages: List<ChatMessage>,
     streamingMessage: ChatMessage?,
-    ledger: com.m57.hermescontrol.ui.chat.ResponseLedger =
-        com.m57.hermescontrol.ui.chat
-            .ResponseLedger(),
+    ledger: ResponseLedger = ResponseLedger(),
+    showsLivePreview: Boolean? = null,
 ): List<ChatTurn> {
     val historyAnswer = messages.firstOrNull { it.id == ledger.activeHistoryAnswerId }
-    val showsLivePreview = historyAnswer != null && streamingMessage?.isLivePreviewOf(historyAnswer) == true
-    val visible = if (showsLivePreview) messages.filterNot { it.id == historyAnswer.id } else messages
+    val hasLivePreview =
+        historyAnswer != null && streamingMessage != null &&
+            (showsLivePreview ?: streamingMessage.isLivePreviewOf(historyAnswer))
+    val visible = if (hasLivePreview) messages.filterNot { it.id == historyAnswer.id } else messages
     val rows =
         if (streamingMessage == null || visible.any { it.id == streamingMessage.id }) {
             visible
@@ -276,6 +409,15 @@ fun groupIntoTurnsWithStreaming(
         }
     val liveOwner =
         active?.takeIf {
+            val tailMatches =
+                tail != null && tail.role != MessageRole.USER && tailOwners.singleOrNull()?.id == it.id
+            val anchor =
+                messages.indexOfLast { row ->
+                    row.isPlainUserTurn() && (row.id in it.userIds || ledger.pendingInputs[row.id] == it.id)
+                }
+            val lastUser = messages.indexOfLast(ChatMessage::isPlainUserTurn)
+            val hasLaterFollowUp =
+                anchor in 0 until lastUser && messages[lastUser].id in ledger.followUpUserIds()
             streamingMessage != null &&
                 streamingMessage.isStreaming && streamingMessage.role == MessageRole.ASSISTANT &&
                 messages.none { row -> row.id == streamingMessage.id } &&
@@ -283,12 +425,12 @@ fun groupIntoTurnsWithStreaming(
                     streamingMessage.id in response.messageIds || streamingMessage.id in response.userIds
                 } &&
                 it.finishedAt == null && it.authority.terminals.isEmpty() &&
-                tail != null && tail.role != MessageRole.USER && tailOwners.singleOrNull()?.id == it.id
+                (tailMatches || hasLaterFollowUp)
         }
     val presentationOwners =
         buildMap {
             if (active != null && historyAnswer != null) put(historyAnswer.id, active.id)
-            if (streamingMessage != null && (showsLivePreview || liveOwner != null)) {
+            if (streamingMessage != null && (hasLivePreview || liveOwner != null)) {
                 (liveOwner ?: active)?.let { put(streamingMessage.id, it.id) }
             }
         }

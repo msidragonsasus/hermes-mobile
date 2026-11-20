@@ -8,7 +8,9 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ShortNavigationBar
+import androidx.compose.material3.ShortNavigationBarDefaults
 import androidx.compose.material3.ShortNavigationBarItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -38,8 +40,14 @@ fun ShellMenu() {
 }
 
 @Composable
-fun ShellBottomBar(selected: ShellTab) {
-    ShortNavigationBar {
+fun ShellBottomBar(
+    selected: ShellTab,
+    museMinimal: Boolean = false,
+) {
+    ShortNavigationBar(
+        containerColor =
+            if (museMinimal) MaterialTheme.colorScheme.background else ShortNavigationBarDefaults.containerColor,
+    ) {
         ShellTab.primary.forEach { tab ->
             val label =
                 when (tab) {

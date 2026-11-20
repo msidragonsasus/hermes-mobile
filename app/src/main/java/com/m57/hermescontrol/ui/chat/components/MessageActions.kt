@@ -4,9 +4,11 @@ import android.content.ClipData
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -19,6 +21,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -44,6 +47,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.chat.ChatMessage
@@ -82,8 +86,13 @@ private fun messageActionText(message: ChatMessage): String =
 internal fun MessageActionHost(
     message: ChatMessage,
     modifier: Modifier = Modifier,
+    useDialog: Boolean = false,
     content: @Composable () -> Unit,
 ) {
+    if (useDialog && (message.isStreaming || message.content.isBlank())) {
+        Box(modifier) { content() }
+        return
+    }
     var expanded by remember(message.id) { mutableStateOf(false) }
     var selecting by remember(message.id) { mutableStateOf(false) }
     val selectionState = rememberSelectionState()
@@ -100,7 +109,7 @@ internal fun MessageActionHost(
             Modifier
                 .pointerInput(message.id) {
                     detectTapGestures(onLongPress = {
-                        press = it
+                        if (!useDialog) press = it
                         expanded = true
                     })
                 }.semantics {
@@ -133,48 +142,64 @@ internal fun MessageActionHost(
         } else {
             content()
         }
-        // The anchor follows the pressed point, including a tall message scrolled partway offscreen.
-        Box(Modifier.absoluteOffset { IntOffset(press.x.roundToInt(), press.y.roundToInt()) }.size(0.dp)) {
-            DropdownMenu(
-                expanded = expanded && available,
-                onDismissRequest = { expanded = false },
-                modifier = Modifier.widthIn(min = 192.dp, max = 280.dp).testTag("message_action_menu"),
-                shape = MaterialTheme.shapes.extraLarge,
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                shadowElevation = 0.dp,
-            ) {
-                if (reply != null) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.action_reply)) },
-                        leadingIcon = { Icon(Icons.AutoMirrored.Outlined.Reply, contentDescription = null) },
-                        contentPadding = PaddingValues(horizontal = spacing.xl, vertical = spacing.xs),
-                        onClick = {
-                            expanded = false
-                            reply(message)
-                        },
-                        modifier = Modifier.heightIn(min = 48.dp).testTag("message_action_reply"),
-                    )
+        val menuModifier = Modifier.widthIn(min = 192.dp, max = 280.dp).testTag("message_action_menu")
+        val items: @Composable () -> Unit = {
+            if (reply != null) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.action_reply)) },
+                    leadingIcon = { Icon(Icons.AutoMirrored.Outlined.Reply, contentDescription = null) },
+                    contentPadding = PaddingValues(horizontal = spacing.xl, vertical = spacing.xs),
+                    onClick = {
+                        expanded = false
+                        reply(message)
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp).testTag("message_action_reply"),
+                )
+            }
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.content_desc_copy)) },
+                leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                contentPadding = PaddingValues(horizontal = spacing.xl, vertical = spacing.xs),
+                onClick = {
+                    expanded = false
+                    scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(null, text))) }
+                },
+                modifier = Modifier.heightIn(min = 48.dp).testTag("message_action_copy"),
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.chat_message_select)) },
+                leadingIcon = { Icon(Icons.Outlined.SelectAll, contentDescription = null) },
+                contentPadding = PaddingValues(horizontal = spacing.xl, vertical = spacing.xs),
+                onClick = {
+                    expanded = false
+                    selecting = true
+                },
+                modifier = Modifier.heightIn(min = 48.dp).testTag("message_action_select"),
+            )
+        }
+        if (useDialog) {
+            if (expanded && available) {
+                Dialog(onDismissRequest = { expanded = false }) {
+                    Surface(
+                        modifier = menuModifier,
+                        shape = MaterialTheme.shapes.extraLarge,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ) {
+                        Column(Modifier.padding(vertical = spacing.xs)) { items() }
+                    }
                 }
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.content_desc_copy)) },
-                    leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
-                    contentPadding = PaddingValues(horizontal = spacing.xl, vertical = spacing.xs),
-                    onClick = {
-                        expanded = false
-                        scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(null, text))) }
-                    },
-                    modifier = Modifier.heightIn(min = 48.dp).testTag("message_action_copy"),
-                )
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.chat_message_select)) },
-                    leadingIcon = { Icon(Icons.Outlined.SelectAll, contentDescription = null) },
-                    contentPadding = PaddingValues(horizontal = spacing.xl, vertical = spacing.xs),
-                    onClick = {
-                        expanded = false
-                        selecting = true
-                    },
-                    modifier = Modifier.heightIn(min = 48.dp).testTag("message_action_select"),
-                )
+            }
+        } else {
+            // Anchor the specialist menu to the pressed point on the message.
+            Box(Modifier.absoluteOffset { IntOffset(press.x.roundToInt(), press.y.roundToInt()) }.size(0.dp)) {
+                DropdownMenu(
+                    expanded = expanded && available,
+                    onDismissRequest = { expanded = false },
+                    modifier = menuModifier,
+                    shape = MaterialTheme.shapes.extraLarge,
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    shadowElevation = 0.dp,
+                ) { items() }
             }
         }
     }

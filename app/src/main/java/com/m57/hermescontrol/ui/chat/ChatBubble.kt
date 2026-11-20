@@ -61,6 +61,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.model.Attachment
 import com.m57.hermescontrol.theme.HermesStatusColors
@@ -91,6 +92,7 @@ fun ChatBubble(
     onImageClick: (ImageViewerModel) -> Unit = {},
     modifier: Modifier = Modifier,
     showTimestamp: Boolean = true,
+    personalStyle: Boolean = false,
 ) {
     AnimatedVisibility(
         visible = true,
@@ -106,15 +108,24 @@ fun ChatBubble(
                 }
             }
         val attachments = message.attachments.orEmpty()
-        val hasImages = attachments.any { it.isImage }
+        val hasInlineImages = attachments.any { it.isImage }
+        val colors = MaterialTheme.colorScheme
+        val bubbleColor = if (personalStyle) colors.primary else colors.secondaryContainer
+        val textColor = if (personalStyle) colors.onPrimary else colors.onSecondaryContainer
+        val bodyStyle =
+            if (personalStyle) {
+                MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 26.sp)
+            } else {
+                MaterialTheme.typography.bodyLarge
+            }
         val isRtl = remember(message.content) { BidiUtils.isRtlText(message.content) }
         val direction = if (isRtl) LayoutDirection.Rtl else LocalLayoutDirection.current
         BoxWithConstraints(
             modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
             contentAlignment = Alignment.CenterEnd,
         ) {
-            val maxBubbleWidth = maxWidth * 0.80f
-            MessageActionHost(message = message) {
+            val maxBubbleWidth = maxWidth * if (personalStyle) 0.88f else 0.80f
+            MessageActionHost(message = message, useDialog = personalStyle) {
                 CompositionLocalProvider(LocalLayoutDirection provides direction) {
                     Column(
                         Modifier.widthIn(max = maxBubbleWidth).testTag("chat_bubble_user"),
@@ -141,50 +152,59 @@ fun ChatBubble(
                                 }
                             }
                         }
-                        if (message.content.isNotBlank() || (!hasImages && attachments.isNotEmpty())) {
+                        if (message.content.isNotBlank() || (!hasInlineImages && attachments.isNotEmpty())) {
                             Surface(
                                 shape =
-                                    RoundedCornerShape(
-                                        topStart = 22.dp,
-                                        topEnd = 22.dp,
-                                        bottomStart = 22.dp,
-                                        bottomEnd = 6.dp,
-                                    ),
-                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                    if (personalStyle) {
+                                        RoundedCornerShape(26.dp)
+                                    } else {
+                                        RoundedCornerShape(
+                                            topStart = 22.dp,
+                                            topEnd = 22.dp,
+                                            bottomStart = 22.dp,
+                                            bottomEnd = 6.dp,
+                                        )
+                                    },
+                                color = bubbleColor,
                                 modifier = Modifier.testTag("chat_user_text_surface"),
                             ) {
-                                Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                                Column(
+                                    Modifier.padding(
+                                        horizontal = if (personalStyle) 20.dp else 16.dp,
+                                        vertical = 10.dp,
+                                    ),
+                                ) {
                                     if (message.content.isNotBlank()) {
                                         CollapsiblePromptBody(
                                             text = highlightedText,
                                             messageId = message.id,
                                             content = message.content,
                                             role = message.role,
-                                            surfaceColor = MaterialTheme.colorScheme.secondaryContainer,
+                                            surfaceColor = bubbleColor,
                                             currentSearchMatch = searchQuery.isNotBlank() && isCurrentMatch,
                                             selectionEnabled = false,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            color = textColor,
                                             style =
-                                                MaterialTheme.typography.bodyLarge.copy(
+                                                bodyStyle.copy(
                                                     textDirection = if (isRtl) TextDirection.Rtl else TextDirection.Ltr,
                                                 ),
                                         )
                                     }
-                                    if (!hasImages && attachments.isNotEmpty()) {
+                                    if (!hasInlineImages && attachments.isNotEmpty()) {
                                         if (message.content.isNotBlank()) Spacer(Modifier.height(6.dp))
-                                        renderAttachments(MaterialTheme.colorScheme.onSecondaryContainer)
+                                        renderAttachments(textColor)
                                     }
-                                    if (!hasImages && !message.isStreaming && showTimestamp) {
+                                    if (!hasInlineImages && !message.isStreaming && showTimestamp) {
                                         UserMessageTimestamp(
                                             message,
-                                            MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f),
+                                            textColor.copy(alpha = 0.6f),
                                             Modifier.align(Alignment.End).padding(top = 4.dp),
                                         )
                                     }
                                 }
                             }
                         }
-                        if (hasImages) {
+                        if (hasInlineImages) {
                             // Media sits directly on the page, with no tinted bubble or empty text row.
                             renderAttachments(MaterialTheme.colorScheme.onSurface)
                             if (!message.isStreaming && showTimestamp) {

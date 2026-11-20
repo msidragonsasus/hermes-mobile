@@ -1,0 +1,333 @@
+package com.m57.hermescontrol.ui.chat.fullbleed
+
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.structuralEqualityPolicy
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.currentStateAsState
+import com.m57.hermescontrol.R
+import com.m57.hermescontrol.data.model.Attachment
+import com.m57.hermescontrol.theme.LocalChatFontScale
+import com.m57.hermescontrol.ui.chat.ChatBubble
+import com.m57.hermescontrol.ui.chat.ChatSearchState
+import com.m57.hermescontrol.ui.chat.ChatUiState
+import com.m57.hermescontrol.ui.chat.ChatViewModel
+import com.m57.hermescontrol.ui.chat.ClarifyUi
+import com.m57.hermescontrol.ui.chat.ImageViewerModel
+import com.m57.hermescontrol.ui.chat.LocalNativeUiMessage
+import com.m57.hermescontrol.ui.chat.MessageRole
+import com.m57.hermescontrol.ui.chat.StreamingState
+import com.m57.hermescontrol.ui.chat.awaitsUserInput
+import com.m57.hermescontrol.ui.chat.brainstorm.BrainstormCard
+import com.m57.hermescontrol.ui.chat.components.ChatScrollController
+import com.m57.hermescontrol.ui.chat.components.ClarifyBubble
+import com.m57.hermescontrol.ui.chat.isApprovalTimelineRow
+import com.m57.hermescontrol.ui.chat.isLivePreviewOf
+import com.m57.hermescontrol.ui.common.EmptyState
+import kotlin.math.abs
+
+@Composable
+internal fun MainChatTimeline(
+    state: ChatUiState,
+    streaming: State<StreamingState>,
+    headerHeight: Dp,
+    listState: LazyListState,
+    scrollController: ChatScrollController,
+    search: ChatSearchState,
+    viewModel: ChatViewModel,
+    onSaveAttachment: (Attachment) -> Unit,
+    savingAttachmentPath: String?,
+    onImageClick: (ImageViewerModel) -> Unit,
+) {
+    val slot by remember(streaming) {
+        derivedStateOf(structuralEqualityPolicy()) { streaming.value.streamingMessage?.mainChatStreamingSlot() }
+    }
+    val awaitingInput = state.awaitsUserInput()
+    val activeLedger = state.responseLedger
+    val historyAnswer =
+        remember(state.messages, activeLedger.activeHistoryAnswerId) {
+            state.messages.firstOrNull { it.id == activeLedger.activeHistoryAnswerId }
+        }
+    val showsLivePreview by remember(streaming, historyAnswer) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            historyAnswer != null && streaming.value.streamingMessage?.isLivePreviewOf(historyAnswer) == true
+        }
+    }
+    val scope = viewModel.renderPlanningScope()
+    val activeHasText =
+        remember(state.messages, activeLedger) {
+            val active = activeLedger.responses.singleOrNull { it.id == activeLedger.activeId }
+            active != null &&
+                state.messages.any {
+                    it.role == MessageRole.ASSISTANT && it.isMainChatSearchable() && it.id in active.messageIds
+                }
+        }
+    val canWait =
+        state.isAgentTyping && state.isConnected && !state.responseStatusUnknown && !awaitingInput && !activeHasText
+    val waiting by remember(streaming, canWait) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            canWait && !streaming.value.turnEnded && streaming.value.sealedOrphanIds.isEmpty()
+        }
+    }
+    val rows =
+        remember(
+            scope,
+            state.currentSessionId,
+            state.messages,
+            slot,
+            activeLedger,
+            awaitingInput,
+            waiting,
+            showsLivePreview,
+            state.brainstormsById,
+        ) {
+            planMainChatTimeline(
+                state.messages,
+                slot,
+                activeLedger,
+                waiting,
+                allowReplyActions = !awaitingInput,
+                showsLivePreview = showsLivePreview,
+                brainstormsById = state.brainstormsById,
+            )
+        }
+    val clarify = state.clarifyRequest
+    val pendingClarify =
+        remember(clarify, state.messages) {
+            clarify?.takeIf { it.ref == null && state.messages.none { message -> message.clarifyInfo == it } }
+        }
+    val messageCount = remember(rows) { rows.count { it.message != null && !it.live } }
+    LaunchedEffect(scope, state.currentSessionId, rows, pendingClarify) {
+        snapshotFlow { Triple(rows.lastOrNull()?.key, streaming.value.streamingMessage?.content, pendingClarify) }
+            .collect { scrollController.onTailChanged(it, messageCount) }
+    }
+
+    val matchId = search.currentMatchId
+    val matchOffset = search.matchOffsets.getOrNull(search.currentIndex)
+    LaunchedEffect(matchId, matchOffset, search.query, search.isActive, headerHeight, state.isLoadingOlder, rows) {
+        if (!search.isActive || matchOffset == null || matchId == null) return@LaunchedEffect
+        val index = rows.indexOfFirst { it.message?.id == matchId }
+        val message = rows.getOrNull(index)?.message ?: return@LaunchedEffect
+        scrollController.scrollToSearchMatch(
+            index + if (state.isLoadingOlder) 1 else 0,
+            matchOffset,
+            message.content.length,
+            obscuredTopPx = with(listState.layoutInfo) { beforeContentPadding },
+        )
+    }
+
+    val density = LocalDensity.current
+    val textScale = LocalChatFontScale.current
+    val chatDensity = remember(density, textScale) { Density(density.density, density.fontScale * textScale) }
+    val openingAttachmentPath = state.openingAttachmentPath
+    val headerPx = with(density) { headerHeight.roundToPx() }
+    val isLoadingOlder = state.isLoadingOlder
+    CompositionLocalProvider(LocalDensity provides chatDensity) {
+        if (rows.isEmpty() && pendingClarify == null && !state.isLoading && !state.hasOlderMessages) {
+            Box(Modifier.fillMaxSize().padding(top = headerHeight), contentAlignment = Alignment.Center) {
+                EmptyState(
+                    title = stringResource(R.string.chat_empty_title),
+                    subtitle = stringResource(R.string.chat_empty_subtitle),
+                )
+            }
+            return@CompositionLocalProvider
+        }
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize().testTag("main_chat_timeline"),
+            contentPadding = PaddingValues(top = headerHeight + 8.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (isLoadingOlder) {
+                item(key = "loading-older") {
+                    Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(Modifier.size(24.dp))
+                    }
+                }
+            }
+            items(rows, key = { it.key }, contentType = { it.message?.role }) { row ->
+                val message =
+                    if (row.live) {
+                        streaming.value.streamingMessage?.takeIf { it.id == row.message?.id } ?: return@items
+                    } else {
+                        row.message
+                    }
+                val query =
+                    if (message != null && search.isActive && message.id in search.matchedIds) search.query else ""
+                val currentMatch = message != null && search.currentMatchId == message.id
+                when {
+                    message == null -> {
+                        MainChatWaitingBubble(listState, headerPx)
+                    }
+
+                    message.clarifyInfo != null -> {
+                        MainChatClarification(message.clarifyInfo, viewModel)
+                    }
+
+                    row.brainstorm != null -> {
+                        BrainstormCard(snapshot = row.brainstorm, modifier = Modifier.padding(horizontal = 16.dp))
+                    }
+
+                    message.isApprovalTimelineRow() -> {
+                        FullBleedSystemEvent(message, onRespondApproval = viewModel::respondToApproval)
+                    }
+
+                    message.role == MessageRole.USER -> {
+                        ChatBubble(
+                            message = message,
+                            searchQuery = query,
+                            isCurrentMatch = currentMatch,
+                            onOpenAttachment = viewModel::openAttachment,
+                            onSaveAttachment = onSaveAttachment,
+                            savingAttachmentPath = savingAttachmentPath,
+                            openingAttachmentPath = openingAttachmentPath,
+                            canSaveAttachment = savingAttachmentPath == null,
+                            onImageClick = onImageClick,
+                            showTimestamp = false,
+                            personalStyle = true,
+                        )
+                    }
+
+                    else -> {
+                        BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                            CompositionLocalProvider(LocalNativeUiMessage provides row.nativeIdentity) {
+                                FullBleedAgentMessage(
+                                    message = message,
+                                    actionMessage =
+                                        if (row.live) {
+                                            message
+                                        } else {
+                                            message.copy(
+                                                id = row.reply?.responseId ?: message.id,
+                                                content = row.reply?.text ?: message.content,
+                                                isStreaming = row.reply == null,
+                                            )
+                                        },
+                                    showTurnHeader = false,
+                                    isDarkTheme = false,
+                                    searchQuery = query,
+                                    isCurrentMatch = currentMatch,
+                                    showReasoning = false,
+                                    onOpenAttachment = viewModel::openAttachment,
+                                    onSaveAttachment = onSaveAttachment,
+                                    savingAttachmentPath = savingAttachmentPath,
+                                    openingAttachmentPath = openingAttachmentPath,
+                                    canSaveAttachment = savingAttachmentPath == null,
+                                    onImageClick = onImageClick,
+                                    modifier = Modifier.widthIn(max = maxWidth * 0.88f),
+                                    showTimestamp = false,
+                                    showFooter = false,
+                                    personalStyle = true,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            if (pendingClarify != null) {
+                item(key = "clarify_bubble") { MainChatClarification(pendingClarify, viewModel) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MainChatClarification(
+    request: ClarifyUi,
+    viewModel: ChatViewModel,
+) {
+    ClarifyBubble(
+        clarifyRequest = request,
+        onRespondSingle = { viewModel.respondToClarify(request, it) },
+        onRespondBatch = { viewModel.respondToClarifyBatch(request, it) },
+        onDismiss = { viewModel.dismissClarify(request) },
+    )
+}
+
+@Composable
+private fun MainChatWaitingBubble(
+    listState: LazyListState,
+    headerPx: Int,
+) {
+    val visible by remember(listState, headerPx) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            val layout = listState.layoutInfo
+            layout.visibleItemsInfo.any {
+                it.key == MAIN_CHAT_WAITING_KEY &&
+                    it.offset + it.size > layout.viewportStartOffset + headerPx &&
+                    it.offset < layout.viewportEndOffset
+            }
+        }
+    }
+    val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
+    val position =
+        if (visible && lifecycle.isAtLeast(Lifecycle.State.RESUMED)) {
+            rememberInfiniteTransition(label = "reply dots").animateFloat(
+                initialValue = -1f,
+                targetValue = 3f,
+                animationSpec = infiniteRepeatable(tween(durationMillis = 900), RepeatMode.Restart),
+                label = "active dot",
+            )
+        } else {
+            null
+        }
+    val label = stringResource(R.string.chat_waiting_for_reply)
+    val dotColor = MaterialTheme.colorScheme.onSurfaceVariant
+    Canvas(
+        Modifier
+            .padding(start = 8.dp)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh, CircleShape)
+            .size(width = 66.dp, height = 40.dp)
+            .testTag(MAIN_CHAT_WAITING_KEY)
+            .semantics { contentDescription = label },
+    ) {
+        for (index in 0..2) {
+            val emphasis = position?.value?.let { (1f - abs(it - index)).coerceIn(0f, 1f) } ?: 0f
+            drawCircle(
+                color = dotColor.copy(alpha = 0.35f + 0.65f * emphasis),
+                radius = 3.dp.toPx(),
+                center = Offset(size.width / 2 + (index - 1) * 12.dp.toPx(), size.height / 2),
+            )
+        }
+    }
+}

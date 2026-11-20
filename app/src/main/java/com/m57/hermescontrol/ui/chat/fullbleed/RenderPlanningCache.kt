@@ -43,13 +43,16 @@ internal class RenderPlanningCache {
             if (streamingMessage != null && cached.liveTemplate != null &&
                 streamingMessage.copy(content = "") == cached.liveTemplate
             ) {
-                val agent = cached.anchor.turns.lastOrNull() as? ChatTurn.Agent
-                val prose = agent?.entries?.lastOrNull() as? AgentEntry.Prose
-                // Exact object ownership is required: ID/value equality is insufficient at commit races.
-                if (agent != null && prose != null && prose.message === cached.anchorStreaming) {
+                val agentIndex = cached.liveTurnIndex
+                if (agentIndex >= 0) {
+                    val agent = cached.anchor.turns[agentIndex] as ChatTurn.Agent
+                    val prose = agent.entries.last() as AgentEntry.Prose
                     val replacement = AgentEntry.Prose(streamingMessage)
-                    val replacementAgent = ChatTurn.Agent(ReplaceLast(agent.entries, replacement))
-                    val nextTurns = ReplaceLast(cached.anchor.turns, replacementAgent)
+                    val replacementAgent =
+                        ChatTurn.Agent(
+                            ReplaceAt(agent.entries, agent.entries.lastIndex, replacement),
+                        )
+                    val nextTurns = ReplaceAt(cached.anchor.turns, agentIndex, replacementAgent)
                     val indices =
                         if (replacement.visibleWhen(false) == prose.visibleWhen(false)) {
                             cached.anchor.messageIdToLazyIndex
@@ -109,18 +112,30 @@ internal class RenderPlanningCache {
         val anchor: RenderPlan,
         val liveTemplate: ChatMessage?,
     ) {
+        // Resolve exact object ownership once. ID/value equality is insufficient at commit races.
+        val liveTurnIndex =
+            if (liveTemplate == null) {
+                -1
+            } else {
+                anchor.turns.indexOfLast { turn ->
+                    val agent = turn as? ChatTurn.Agent ?: return@indexOfLast false
+                    val prose = agent.entries.lastOrNull() as? AgentEntry.Prose ?: return@indexOfLast false
+                    prose.message === anchorStreaming
+                }
+            }
         var currentStreaming = anchorStreaming
         var current = anchor
     }
 
-    /** The replacement is allocated once by the caller; get/last/iterator share its identity. */
-    private class ReplaceLast<T>(
+    /** The replacement is allocated once by the caller; get/iterator share its identity. */
+    private class ReplaceAt<T>(
         private val anchor: List<T>,
+        private val index: Int,
         private val replacement: T,
     ) : AbstractList<T>(),
         RandomAccess {
         override val size: Int get() = anchor.size
 
-        override fun get(index: Int): T = if (index == size - 1) replacement else anchor[index]
+        override fun get(index: Int): T = if (index == this.index) replacement else anchor[index]
     }
 }

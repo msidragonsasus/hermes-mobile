@@ -1,5 +1,7 @@
 package com.m57.hermescontrol.ui.chat
 
+import com.m57.hermescontrol.ui.chat.fullbleed.isMainChatSearchable
+
 /**
  * One search hit: which message it lives in and where in that message's
  * visible content the word starts (character offset). The offset lets the
@@ -50,12 +52,14 @@ class ChatSearchController {
     fun findMatches(
         messages: List<ChatMessage>,
         query: String,
+        mainChatOnly: Boolean = false,
     ): SearchResult {
         if (query.isBlank()) return SearchResult(emptyList(), 0, capped = false)
         val result = mutableListOf<SearchMatch>()
         var total = 0
         for ((idx, message) in messages.withIndex()) {
             if (message.role != MessageRole.USER && message.role != MessageRole.ASSISTANT) continue
+            if (mainChatOnly && !message.isMainChatSearchable()) continue
             var from = 0
             while (true) {
                 val hit = message.content.indexOf(query, from, ignoreCase = true)

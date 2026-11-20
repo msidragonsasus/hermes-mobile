@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -59,7 +60,9 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -79,11 +82,11 @@ import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.agents.BotConversations
 import com.m57.hermescontrol.agents.BotSettingsKey
-import com.m57.hermescontrol.agents.ChatSettingsKey
 import com.m57.hermescontrol.agents.SpecialistSetupSheet
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.model.Attachment
 import com.m57.hermescontrol.data.model.AttachmentSource
+import com.m57.hermescontrol.data.model.BotAvatarMeta
 import com.m57.hermescontrol.data.model.MainModelAssignment
 import com.m57.hermescontrol.data.update.AppUpdateCache
 import com.m57.hermescontrol.data.update.AppUpdateState
@@ -93,6 +96,7 @@ import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.notification.NotificationHelper
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.ui.chat.components.ChatConnectionBanner
+import com.m57.hermescontrol.ui.chat.components.ChatHeaderStatusSheet
 import com.m57.hermescontrol.ui.chat.components.ChatInputBar
 import com.m57.hermescontrol.ui.chat.components.ChatLifecycleEffects
 import com.m57.hermescontrol.ui.chat.components.ChatLoadingOverlay
@@ -102,6 +106,7 @@ import com.m57.hermescontrol.ui.chat.components.ChatTimelineNoPrefetchStrategy
 import com.m57.hermescontrol.ui.chat.components.ContextDetailSheet
 import com.m57.hermescontrol.ui.chat.components.ContextUsageChip
 import com.m57.hermescontrol.ui.chat.components.ConversationLayout
+import com.m57.hermescontrol.ui.chat.components.MainChatHeader
 import com.m57.hermescontrol.ui.chat.components.ReactionHeartsOverlay
 import com.m57.hermescontrol.ui.chat.components.ReloginDialog
 import com.m57.hermescontrol.ui.chat.components.SearchBarRow
@@ -113,6 +118,7 @@ import com.m57.hermescontrol.ui.chat.components.rememberChatScrollController
 import com.m57.hermescontrol.ui.chat.components.shouldShowProgressChip
 import com.m57.hermescontrol.ui.chat.components.tailContentKey
 import com.m57.hermescontrol.ui.chat.fullbleed.FullBleedChatList
+import com.m57.hermescontrol.ui.chat.fullbleed.MainChatTimeline
 import com.m57.hermescontrol.ui.common.ActionProgressDialog
 import com.m57.hermescontrol.ui.common.AppUpdateDialog
 import com.m57.hermescontrol.ui.common.CredentialWarningBanner
@@ -164,7 +170,7 @@ fun ChatScreen(
     viewModel: ChatViewModel = viewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val streamingState by viewModel.streamingState.collectAsStateWithLifecycle()
+    val streamingState = viewModel.streamingState.collectAsStateWithLifecycle()
     val credentialWarning by HermesWsClient.credentialWarning.collectAsStateWithLifecycle()
     // Snapshot-backed search state — read directly so only the scopes that
     // read its fields recompose on search changes (bar, matched bubbles).
@@ -205,60 +211,10 @@ fun ChatScreen(
             }
         }
 
-    // Periodic session sync while connected.
-    LaunchedEffect(lifecycleOwner, state.currentSessionId, state.connectionStatus) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            if (state.currentSessionId != null && state.connectionStatus == ConnectionStatus.CONNECTED) {
-                viewModel.syncCurrentSession()
-                viewModel.fetchContextUsage()
-            }
-            while (state.currentSessionId != null && state.connectionStatus == ConnectionStatus.CONNECTED) {
-                delay(SESSION_SYNC_INTERVAL_MS)
-                viewModel.syncCurrentSession()
-                viewModel.fetchContextUsage()
-            }
-        }
-    }
-
-    // Arm + trigger older-message paging when the user scrolls near the top.
-    // Before prepending, capture the anchor (first visible message id + offset)
-    // so the same content stays under the reader's eye after the insert
-    // (issue #682). Restored in a LaunchedEffect once the page actually lands.
-    val pagingAnchor = remember { mutableStateOf<Pair<String, Int>?>(null) }
-    LaunchedEffect(listState, state.currentSessionId, state.hasOlderMessages, state.isLoadingOlder) {
-        if (!state.hasOlderMessages || state.isLoadingOlder) return@LaunchedEffect
-        snapshotFlow { listState.firstVisibleItemIndex }
-            .distinctUntilChanged()
-            .collectLatest { firstVisibleIndex ->
-                if (firstVisibleIndex > 2) {
-                    isOlderPagingArmed = true
-                } else if (isOlderPagingArmed || state.messages.size <= 3) {
-                    val anchorId = state.messages.getOrNull(firstVisibleIndex)?.id
-                    val offset = scrollController.captureAnchorOffset()
-                    pagingAnchor.value = if (anchorId != null) anchorId to offset else null
-                    viewModel.loadOlderMessages()
-                }
-            }
-    }
-
-    // After older history is prepended, restore the anchor message (by id, so
-    // streaming-token inserts during paging don't skew the index) plus offset.
-    LaunchedEffect(state.messages) {
-        val anchor = pagingAnchor.value ?: return@LaunchedEffect
-        val (anchorId, offset) = anchor
-        val index = state.messages.indexOfFirst { it.id == anchorId }
-        if (index >= 0) {
-            scrollController.scrollToItem(index, offset)
-            pagingAnchor.value = null
-        }
-    }
-
     // Continuous bottom-follow tracking from LazyListState (issue #682).
     LaunchedEffect(Unit) {
         scrollController.observeUserScrollPosition()
     }
-
-    val thinkingIndicatorVisible = showsThinkingIndicator(state, streamingState)
 
     var inputFieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(""))
@@ -467,6 +423,61 @@ fun ChatScreen(
     LaunchedEffect(activeProfileName, rosterScope) {
         botsViewModel.loadBots(isRefresh = true)
     }
+    val mainChat = activeProfileName == "default"
+    val specialistStreaming = if (mainChat) null else streamingState.value
+    val thinkingIndicatorVisible = specialistStreaming?.let { showsThinkingIndicator(state, it) } ?: false
+    val shouldSync = !mainChat || !state.isAgentTyping || state.responseStatusUnknown
+    LaunchedEffect(lifecycleOwner, state.currentSessionId, state.connectionStatus, mainChat, shouldSync) {
+        if (state.currentSessionId == null || state.connectionStatus != ConnectionStatus.CONNECTED || !shouldSync) {
+            return@LaunchedEffect
+        }
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            if (!mainChat) {
+                viewModel.syncCurrentSession()
+                viewModel.fetchContextUsage()
+            }
+            while (true) {
+                delay(if (mainChat) 2 * SESSION_SYNC_INTERVAL_MS else SESSION_SYNC_INTERVAL_MS)
+                viewModel.syncCurrentSession(includeSubagents = !mainChat)
+                if (!mainChat) viewModel.fetchContextUsage()
+            }
+        }
+    }
+    // Arm + trigger older-message paging when the user scrolls near the top.
+    // Before prepending, capture the anchor (first visible message id + offset)
+    // so the same content stays under the reader's eye after the insert
+    // (issue #682). Restored in a LaunchedEffect once the page actually lands.
+    val pagingAnchor = remember { mutableStateOf<Pair<String, Int>?>(null) }
+    LaunchedEffect(listState, state.currentSessionId, state.hasOlderMessages, state.isLoadingOlder, mainChat) {
+        if (!state.hasOlderMessages || state.isLoadingOlder) return@LaunchedEffect
+        snapshotFlow { listState.firstVisibleItemIndex }
+            .distinctUntilChanged()
+            .collectLatest { firstVisibleIndex ->
+                if (firstVisibleIndex > 2) {
+                    isOlderPagingArmed = true
+                } else if (isOlderPagingArmed ||
+                    (if (mainChat) listState.layoutInfo.totalItemsCount else state.messages.size) <= 3
+                ) {
+                    val anchorId = if (mainChat) null else state.messages.getOrNull(firstVisibleIndex)?.id
+                    val offset = scrollController.captureAnchorOffset()
+                    pagingAnchor.value = if (anchorId != null) anchorId to offset else null
+                    viewModel.loadOlderMessages()
+                }
+            }
+    }
+
+    // After older history is prepended, restore the anchor message (by id, so
+    // streaming-token inserts during paging don't skew the index) plus offset.
+    LaunchedEffect(state.messages) {
+        val anchor = pagingAnchor.value ?: return@LaunchedEffect
+        val (anchorId, offset) = anchor
+        val index = state.messages.indexOfFirst { it.id == anchorId }
+        if (index >= 0) {
+            scrollController.scrollToItem(index, offset)
+            pagingAnchor.value = null
+        }
+    }
+
     val activeAgent =
         botsState.profiles.firstOrNull {
             botsState.rosterScope == rosterScope &&
@@ -529,18 +540,20 @@ fun ChatScreen(
             (!specialist.missing || specialistKnown) && specialist.showsFooter
     val settingsTail = specialist?.let { Triple(it.activeDraft?.id, it.snapshot?.activation, hasSetupFooter) }
     LaunchedEffect(
+        mainChat,
         visibleMessages,
         settingsTail,
-        streamingState.streamingMessage,
+        specialistStreaming?.streamingMessage,
         thinkingIndicatorVisible,
         state.subagentIndicators,
         state.todos,
         state.clarifyRequest,
     ) {
+        if (mainChat) return@LaunchedEffect
         val tailKey =
             tailContentKey(
                 messages = visibleMessages,
-                streamingMessage = streamingState.streamingMessage,
+                streamingMessage = specialistStreaming?.streamingMessage,
                 isThinking = thinkingIndicatorVisible,
                 subagentIndicators = state.subagentIndicators,
                 clarifyRequest = state.clarifyRequest,
@@ -564,7 +577,11 @@ fun ChatScreen(
         }
     }
 
+    val mainAvatar = activeAgent?.botMeta()?.avatar ?: BotAvatarMeta(icon = "robot")
+    var showHeaderStatusSheet by remember(activeProfileName, state.currentSessionId) { mutableStateOf(false) }
+
     HermesScaffold(
+        showTopBar = !mainChat,
         modifier = modifier,
         pinTopBar = true,
         title = {
@@ -608,7 +625,7 @@ fun ChatScreen(
             }
         },
         navigationIcon =
-            onOpenDrawer?.let { open ->
+            onOpenDrawer?.takeUnless { mainChat }?.let { open ->
                 NavIcon.Menu(
                     onOpen = open,
                     contentDescription = stringResource(R.string.content_desc_open_drawer),
@@ -645,35 +662,34 @@ fun ChatScreen(
                     Text(stringResource(R.string.specialist_detail_return_main))
                 }
             }
-            com.m57.hermescontrol.ui.chat.components.ConversationHeaderActions(
-                onNew = { viewModel.createNewSession() },
-                onSettings = {
-                    if (activeProfileName != "default") {
-                        NavigationController.navigateTo(BotSettingsKey(activeProfileName))
-                    } else {
-                        NavigationController.navigateTo(ChatSettingsKey)
-                    }
-                },
-                // Topics change inside the one main conversation; past ones stay in the drawer.
-                showNew = false,
-                extraSettingsAction =
-                    if (specialist != null && !specialist.legacy && specialist.canEnterEdit && !specialist.editing) {
-                        SettingsMenuItem(
-                            label = stringResource(R.string.specialist_chat_edit),
-                            enabled = canChangeSetup && specialist.canAct,
-                            onClick = { setupController.setEditing(true) },
-                        )
-                    } else {
-                        null
-                    },
-            )
+            if (!mainChat) {
+                com.m57.hermescontrol.ui.chat.components.ConversationHeaderActions(
+                    onNew = { viewModel.createNewSession() },
+                    onSettings = { NavigationController.navigateTo(BotSettingsKey(activeProfileName)) },
+                    // Topics change inside the one main conversation; past ones stay in the drawer.
+                    showNew = false,
+                    extraSettingsAction =
+                        if (specialist != null && !specialist.legacy && specialist.canEnterEdit &&
+                            !specialist.editing
+                        ) {
+                            SettingsMenuItem(
+                                label = stringResource(R.string.specialist_chat_edit),
+                                enabled = canChangeSetup && specialist.canAct,
+                                onClick = { setupController.setEditing(true) },
+                            )
+                        } else {
+                            null
+                        },
+                )
+            }
         },
     ) { _ ->
         ConversationLayout(
             modifier =
                 Modifier
                     .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.background),
+                    .background(MaterialTheme.colorScheme.background)
+                    .then(if (mainChat) Modifier.statusBarsPadding() else Modifier),
             onReply =
                 if (state.isConnected) {
                     { message -> inputFieldValue = quotedReplyField(message, inputFieldValue) }
@@ -687,7 +703,9 @@ fun ChatScreen(
                 // Only worth a line once the window is filling up; below half it is just noise.
                 val contextFull = state.fullContextTokens
                 val contextUsed = state.usedContextTokens
-                if (contextFull != null && contextUsed != null && contextFull > 0 && contextUsed * 2 >= contextFull) {
+                if (!mainChat && contextFull != null && contextUsed != null && contextFull > 0 &&
+                    contextUsed * 2 >= contextFull
+                ) {
                     ContextUsageChip(
                         usedTokens = contextUsed,
                         fullTokens = state.fullContextTokens,
@@ -757,7 +775,8 @@ fun ChatScreen(
                         }
                     },
                     queueOnSend =
-                        !setupComposer && (state.isAgentTyping || state.responseStatusUnknown || !state.isConnected),
+                        !setupComposer &&
+                            ((!mainChat && state.isAgentTyping) || state.responseStatusUnknown || !state.isConnected),
                     allowOfflineQueue = !setupComposer,
                     attachmentsEnabled = !setupComposer,
                     microphoneEnabled = !setupComposer,
@@ -855,16 +874,18 @@ fun ChatScreen(
             // Issue #942: compact glanceable progress strip while work is active.
             // Bound to the same hydrated todos / subagentIndicators state.
             // Auto-hides when all todos complete/cancel and no subagent is running.
-            val workActive = shouldShowProgressChip(state.todos, state.subagentIndicators)
-            TaskProgressChip(
-                visible = workActive,
-                todos = state.todos,
-                indicators = state.subagentIndicators,
-                onClick = {
-                    showSubagentInspectionSheet = true
-                    scrollController.resumeFollowing()
-                },
-            )
+            if (!mainChat) {
+                val workActive = shouldShowProgressChip(state.todos, state.subagentIndicators)
+                TaskProgressChip(
+                    visible = workActive,
+                    todos = state.todos,
+                    indicators = state.subagentIndicators,
+                    onClick = {
+                        showSubagentInspectionSheet = true
+                        scrollController.resumeFollowing()
+                    },
+                )
+            }
 
             credentialWarning?.let { warning ->
                 CredentialWarningBanner(
@@ -890,8 +911,18 @@ fun ChatScreen(
                 }
             }
 
+            val recoverableDrafts =
+                remember(mainChat, state.outgoingDrafts, state.activeDraftIds) {
+                    if (mainChat) {
+                        state.outgoingDrafts.filterNot {
+                            it.id in state.activeDraftIds
+                        }
+                    } else {
+                        state.outgoingDrafts
+                    }
+                }
             com.m57.hermescontrol.ui.chat.components.OutgoingDraftPanel(
-                drafts = state.outgoingDrafts,
+                drafts = recoverableDrafts,
                 activeIds = state.activeDraftIds,
                 storageError = state.draftStorageError,
                 onRestore = viewModel::restoreDraft,
@@ -931,7 +962,7 @@ fun ChatScreen(
                     Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                         SearchBarRow(
                             searchQuery = searchState.query,
-                            onQueryChange = { viewModel.setSearchQuery(it) },
+                            onQueryChange = { viewModel.setSearchQuery(it, mainChatOnly = mainChat) },
                             searchMatchCount = searchState.matchTotal,
                             searchMatchCapped = searchState.matchCapped,
                             currentMatchIndex = searchState.currentIndex,
@@ -988,6 +1019,8 @@ fun ChatScreen(
                             if (viewModel.sendNativeAction(text)) scrollController.jumpToBottom(animated = true)
                         }
                     }
+                var headerHeightPx by remember { mutableStateOf(0) }
+                val headerHeight = with(LocalDensity.current) { headerHeightPx.toDp() }
                 // Turn headers name the agent you are talking to, with its bot avatar.
                 val agentIdentity =
                     remember(activeAgent, activeTitle) {
@@ -1000,77 +1033,99 @@ fun ChatScreen(
                     LocalNativeUiHost provides nativeUiHost,
                     com.m57.hermescontrol.ui.chat.fullbleed.LocalChatAgentIdentity provides agentIdentity,
                 ) {
-                    FullBleedChatList(
-                        messages = visibleMessages,
-                        sessionKey = state.currentSessionId,
-                        streamingMessage = streamingState.streamingMessage,
-                        searchState = searchState,
-                        typingEffectEnabled = state.typingEffectEnabled,
-                        typingEffectDelayMs = state.typingEffectDelayMs,
-                        maxToolCallsPerTurn = state.maxToolCallsPerTurn,
-                        isLoading = state.isLoading,
-                        isLoadingOlder = state.isLoadingOlder,
-                        isDark = isDark,
-                        listState = listState,
-                        scrollController = scrollController,
-                        lastAnimatedMessageId = lastAnimatedMessageId,
-                        onLastAnimatedMessageIdChange = { lastAnimatedMessageId = it },
-                        viewModel = viewModel,
-                        clarifyRequest = state.clarifyRequest,
-                        onRespondClarify = { answer ->
-                            state.clarifyRequest?.let { viewModel.respondToClarify(it, answer) }
-                        },
-                        onRespondClarifyBatch = { answers ->
-                            state.clarifyRequest?.let { viewModel.respondToClarifyBatch(it, answers) }
-                        },
-                        onDismissClarify = { state.clarifyRequest?.let(viewModel::dismissClarify) },
-                        onSaveAttachment = onSaveAttachment,
-                        savingAttachmentPath = pendingSavePath ?: state.savingAttachmentPath,
-                        openingAttachmentPath = state.openingAttachmentPath,
-                        onImageClick = { viewingImage = it },
-                        showThinkingIndicator = thinkingIndicatorVisible,
-                        replyLifecycle =
-                            com.m57.hermescontrol.ui.chat.fullbleed
-                                .replyLifecycle(state, streamingState),
-                        brainstormsById = state.brainstormsById,
-                        specialistContent = { message ->
-                            if (message.id == SPECIALIST_SETUP_REVIEW) {
-                                specialist?.let { SpecialistReviewCard(it, canChangeSetup, setupController::confirm) }
-                                true
-                            } else {
-                                false
-                            }
-                        },
-                        specialistFooter =
-                            if (hasSetupFooter) {
-                                {
-                                    if (specialist.activeDraft?.kind == "edit") {
+                    if (mainChat) {
+                        MainChatTimeline(
+                            state = state,
+                            streaming = streamingState,
+                            headerHeight = headerHeight,
+                            listState = listState,
+                            scrollController = scrollController,
+                            search = searchState,
+                            viewModel = viewModel,
+                            onSaveAttachment = onSaveAttachment,
+                            savingAttachmentPath = pendingSavePath ?: state.savingAttachmentPath,
+                            onImageClick = { viewingImage = it },
+                        )
+                    } else if (specialistStreaming != null) {
+                        FullBleedChatList(
+                            messages = visibleMessages,
+                            sessionKey = state.currentSessionId,
+                            streamingMessage = specialistStreaming.streamingMessage,
+                            searchState = searchState,
+                            typingEffectEnabled = state.typingEffectEnabled,
+                            typingEffectDelayMs = state.typingEffectDelayMs,
+                            maxToolCallsPerTurn = state.maxToolCallsPerTurn,
+                            isLoading = state.isLoading,
+                            isLoadingOlder = state.isLoadingOlder,
+                            isDark = isDark,
+                            listState = listState,
+                            scrollController = scrollController,
+                            lastAnimatedMessageId = lastAnimatedMessageId,
+                            onLastAnimatedMessageIdChange = { lastAnimatedMessageId = it },
+                            viewModel = viewModel,
+                            clarifyRequest = state.clarifyRequest,
+                            onRespondClarify = { answer ->
+                                state.clarifyRequest?.let { viewModel.respondToClarify(it, answer) }
+                            },
+                            onRespondClarifyBatch = { answers ->
+                                state.clarifyRequest?.let { viewModel.respondToClarifyBatch(it, answers) }
+                            },
+                            onDismissClarify = { state.clarifyRequest?.let(viewModel::dismissClarify) },
+                            onSaveAttachment = onSaveAttachment,
+                            savingAttachmentPath = pendingSavePath ?: state.savingAttachmentPath,
+                            openingAttachmentPath = state.openingAttachmentPath,
+                            onImageClick = { viewingImage = it },
+                            showThinkingIndicator = thinkingIndicatorVisible,
+                            replyLifecycle =
+                                com.m57.hermescontrol.ui.chat.fullbleed
+                                    .replyLifecycle(state, specialistStreaming),
+                            brainstormsById = state.brainstormsById,
+                            specialistContent = { message ->
+                                if (message.id == SPECIALIST_SETUP_REVIEW) {
+                                    specialist?.let {
                                         SpecialistReviewCard(
-                                            specialist,
+                                            it,
                                             canChangeSetup,
                                             setupController::confirm,
-                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                                         )
                                     }
-                                    SpecialistChatActions(
-                                        state = specialist,
-                                        connected = state.isConnected,
-                                        canUseSession = canChangeSetup,
-                                        onRetry = setupController::retry,
-                                        onResolveSession = viewModel::showMainConversation,
-                                        onApply = setupController::apply,
-                                        onReturnToChat = { setupController.setEditing(false) },
-                                        onRecoverText = { text ->
-                                            val field = specialDrafts[setupKey] ?: TextFieldValue()
-                                            specialDrafts[setupKey] = ChatInputPolicy.restoreRejectedText(text, field)
-                                            setupController.recoverText()
-                                        },
-                                    )
+                                    true
+                                } else {
+                                    false
                                 }
-                            } else {
-                                null
                             },
-                    )
+                            specialistFooter =
+                                if (hasSetupFooter) {
+                                    {
+                                        if (specialist.activeDraft?.kind == "edit") {
+                                            SpecialistReviewCard(
+                                                specialist,
+                                                canChangeSetup,
+                                                setupController::confirm,
+                                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                                            )
+                                        }
+                                        SpecialistChatActions(
+                                            state = specialist,
+                                            connected = state.isConnected,
+                                            canUseSession = canChangeSetup,
+                                            onRetry = setupController::retry,
+                                            onResolveSession = viewModel::showMainConversation,
+                                            onApply = setupController::apply,
+                                            onReturnToChat = { setupController.setEditing(false) },
+                                            onRecoverText = { text ->
+                                                val field = specialDrafts[setupKey] ?: TextFieldValue()
+                                                specialDrafts[setupKey] =
+                                                    ChatInputPolicy.restoreRejectedText(text, field)
+                                                setupController.recoverText()
+                                            },
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
+                        )
+                    }
                 }
 
                 // Loading overlay: only over an empty transcript. Cached history stays readable
@@ -1095,12 +1150,30 @@ fun ChatScreen(
                     onScrollToBottom = scrollController::resumeFollowing,
                 )
 
+                if (mainChat) {
+                    MainChatHeader(
+                        name = activeTitle,
+                        avatar = mainAvatar,
+                        connection = state.connectionStatus,
+                        working = state.isAgentTyping,
+                        responseStatusUnknown = state.responseStatusUnknown,
+                        onOpenDrawer = onOpenDrawer,
+                        onOpenStatus = {
+                            showHeaderStatusSheet = true
+                            if (state.isConnected) viewModel.fetchContextUsage()
+                        },
+                        modifier = Modifier.align(Alignment.TopCenter).onSizeChanged { headerHeightPx = it.height },
+                    )
+                }
+
                 // Reaction heartsanimation (purely cosmetic — fades out
                 // automatically after the ViewModel clears the state)
                 key(state.reactionTriggerId) {
-                    ReactionHeartsOverlay(
-                        reactionKind = state.reactionKind,
-                    )
+                    if (!mainChat) {
+                        ReactionHeartsOverlay(
+                            reactionKind = state.reactionKind,
+                        )
+                    }
                 }
             }
         }
@@ -1237,6 +1310,26 @@ fun ChatScreen(
                 },
                 onConfirmed = { botsViewModel.loadBots(isRefresh = true) },
                 onDismiss = { setupSheetProfile = null },
+            )
+        }
+
+        if (showHeaderStatusSheet) {
+            ChatHeaderStatusSheet(
+                title = activeTitle,
+                avatar = mainAvatar,
+                currentSessionModel = state.currentSessionModel,
+                reasoningLevel = state.reasoningLevel,
+                canDisableReasoning = state.currentModelCapabilities?.can_disable_reasoning,
+                supportsReasoning = state.currentModelCapabilities?.reasoning,
+                usedContextTokens = state.usedContextTokens,
+                fullContextTokens = state.fullContextTokens,
+                compressionCount = state.compressionCount,
+                hasContextBreakdown = state.contextBreakdown != null,
+                controlsEnabled = !setupComposer && state.isConnected,
+                onSelectModel = { viewModel.openModelPicker() },
+                onSelectReasoning = { level -> viewModel.setReasoningLevel(level) },
+                onOpenContextDetails = { showContextSheet = true },
+                onDismiss = { showHeaderStatusSheet = false },
             )
         }
     }

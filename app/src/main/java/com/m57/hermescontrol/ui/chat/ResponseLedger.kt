@@ -20,6 +20,8 @@ data class ResponseRecord(
     val finishedAt: Long? = null,
     val coverage: Boolean = true,
     val authority: ReplyAuthorityFacts = ReplyAuthorityFacts(),
+    /** An ordinary busy send shown immediately. Admission and coverage still require evidence. */
+    val serverFollowUp: Boolean = false,
 )
 
 @Serializable
@@ -74,9 +76,18 @@ data class ResponseLedger(
     ): ResponseLedger = copy(responses = responses.map { if (it.id == id) transform(it) else it })
 
     /** Only a definitely-unsent, untouched provisional is not real response history. */
-    fun retireUnusedProvisional(id: String?): ResponseLedger {
+    fun retireUnusedProvisional(
+        id: String?,
+        removedUserId: String? = null,
+    ): ResponseLedger {
         val unused = responses.singleOrNull { it.id == id } ?: return this
-        if (unused != ResponseRecord(id = unused.id) ||
+        val stripped =
+            if (removedUserId != null && unused.userIds == listOf(removedUserId)) {
+                unused.copy(userIds = emptyList())
+            } else {
+                unused
+            }
+        if (stripped != ResponseRecord(id = unused.id, serverFollowUp = unused.serverFollowUp) ||
             id in pendingSubmissions.values || id in pendingInputs.values || id in possibleContinuations.values
         ) {
             return this

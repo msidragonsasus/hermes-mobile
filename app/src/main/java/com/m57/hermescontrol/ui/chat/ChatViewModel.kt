@@ -51,6 +51,7 @@ import com.m57.hermescontrol.domain.hermes.AttentionRepository
 import com.m57.hermescontrol.domain.hermes.ConnectionScope
 import com.m57.hermescontrol.domain.hermes.DraftState
 import com.m57.hermescontrol.domain.hermes.OutgoingDraft
+import com.m57.hermescontrol.domain.hermes.PromptAcceptance
 import com.m57.hermescontrol.domain.hermes.RequestRef
 import com.m57.hermescontrol.domain.hermes.SessionRef
 import com.m57.hermescontrol.domain.hermes.SubmissionProofSource
@@ -860,6 +861,14 @@ class ChatViewModel(
     private var pendingInitialPrompt: PendingPrompt? = null
     private val additionalPendingPrompts = mutableListOf<PendingPrompt>()
     private var pendingPromptTimeout: Job? = null
+
+    private data class FollowUpDispatch(
+        val generation: Long,
+        val predecessorId: String?,
+        val job: Job,
+    )
+
+    private var lastFollowUpDispatch: FollowUpDispatch? = null
     private val activePromptIntents = ConcurrentHashMap<String, OutgoingDraft>()
     private var hasObservedActiveResponse = false
     private var transcriptOwner: TranscriptOwner? = null
@@ -874,7 +883,7 @@ class ChatViewModel(
         val observedAt: Long,
         val generation: Long,
         val scope: ConnectionScope,
-        val responseId: String,
+        val responseIds: Set<String>,
         val ordinal: Long,
     )
 
@@ -950,6 +959,7 @@ class ChatViewModel(
         val responseId: String? = null,
         val continuationId: String? = null,
         val ordinary: Boolean = false,
+        val serverFollowUp: Boolean = false,
     )
 
     private val turnLifecycleVersion =
@@ -1705,7 +1715,9 @@ class ChatViewModel(
             }
             if (correlatedResponse(terminal.event) != null) {
                 handleWsEvent(terminal.event, terminal.observedAt, terminal.ordinal)
-            } else if (terminal.responseId in _uiState.value.responseLedger.pendingSubmissions.values) {
+            } else if (_uiState.value.responseLedger.pendingSubmissions.values
+                    .any { it in terminal.responseIds }
+            ) {
                 pendingTerminals.add(terminal)
             }
         }
@@ -1739,17 +1751,26 @@ class ChatViewModel(
                 else -> null
             }
         if (!isCurrentSession(transitionSessionId)) return
-        if (event is WsEvent.MessageStart &&
-            (
-                _uiState.value.responseLedger.activeId == null ||
-                    _uiState.value.responseLedger.responses.any {
-                        it.id == _uiState.value.responseLedger.activeId &&
-                            it.finishedAt != null
-                    }
-            )
-        ) {
-            // A remotely observed run has identity, but no invented exhaustive historical coverage.
-            _uiState.update { it.copy(responseLedger = it.responseLedger.open().gap()) }
+        val currentLedgerAtStart = _uiState.value.responseLedger
+        val activeFinishedOrNull =
+            currentLedgerAtStart.activeId == null ||
+                currentLedgerAtStart.responses.any {
+                    it.id == currentLedgerAtStart.activeId && it.finishedAt != null
+                }
+        if (event is WsEvent.MessageStart && activeFinishedOrNull) {
+            val nextQueued =
+                currentLedgerAtStart.responses.firstOrNull {
+                    event.sessionId != null &&
+                        (isPendingServerFollowUp(it) || isDispatchingServerFollowUp(it, currentLedgerAtStart))
+                }
+            if (nextQueued != null) {
+                _uiState.update {
+                    it.copy(responseLedger = it.responseLedger.copy(activeId = nextQueued.id).gap())
+                }
+            } else {
+                // A remotely observed run has identity, but no invented exhaustive historical coverage.
+                _uiState.update { it.copy(responseLedger = it.responseLedger.open().gap()) }
+            }
         }
         val receipt = (event as? WsEvent.MessageComplete)?.persistedTurn
         var currentLedger = _uiState.value.responseLedger
@@ -1788,6 +1809,12 @@ class ChatViewModel(
         val correlated = matches.singleOrNull()
         val queuedExecution =
             correlated?.authority?.queued != null && correlated.finishedAt == null &&
+                !(
+                    correlated.serverFollowUp && _uiState.value.isAgentTyping &&
+                        currentLedger.responses.any {
+                            it.id == currentLedger.activeId && it.id != correlated.id && it.finishedAt == null
+                        }
+                ) &&
                 currentLedger.responses.none {
                     it.id != correlated.id && it.authority.opening != null &&
                         it.finishedAt == null
@@ -1796,11 +1823,10 @@ class ChatViewModel(
             currentLedger = currentLedger.copy(activeId = correlated!!.id)
             _uiState.update { it.copy(responseLedger = currentLedger) }
         }
-        val freshOpening =
+        val activeResponse =
             currentLedger.responses
                 .singleOrNull { it.id == currentLedger.activeId }
-                ?.authority
-                ?.opening
+        val freshOpening = activeResponse?.authority?.opening
         val compatibleFirstTerminal =
             !currentLedger.requiresCorrelation && freshOpening != null &&
                 freshOpening.disposition == "STREAMING" &&
@@ -1823,40 +1849,67 @@ class ChatViewModel(
                     observedAt,
                     sessionGeneration,
                     sessionScope!!,
-                    currentLedger.activeId!!,
+                    setOf(currentLedger.activeId!!),
                     eventOrdinal,
                 ),
             )
         }
+        // The legacy queue ACK only says "queued". Its serial, session-scoped stream can
+        // finish what we are displaying, but cannot prove row ownership or reply coverage.
+        val hasTerminalIdentity =
+            receipt?.submissionId != null || receipt?.userRowId != null || !receipt?.userRowIds.isNullOrEmpty()
+        val followUpPredecessorId =
+            lastFollowUpDispatch?.takeIf { it.generation == sessionGeneration }?.predecessorId
+        val orderedFollowUpTerminal =
+            event is WsEvent.MessageComplete && !hasTerminalIdentity && event.sessionId != null &&
+                sessionScope != null && sessionScope == submissionTransport.configuredScope() &&
+                queueTurnObserved && !_streamingState.value.turnEnded && !_uiState.value.responseStatusUnknown &&
+                activeResponse != null && activeResponse.finishedAt == null &&
+                (
+                    activeResponse.serverFollowUp ||
+                        activeResponse.id == followUpPredecessorId ||
+                        currentLedger.responses.any { it.serverFollowUp && it.finishedAt == null }
+                )
         if ((event is WsEvent.MessageComplete || event is WsEvent.MessageDone) &&
-            currentLedger.requiresCorrelation && correlated == null
+            currentLedger.requiresCorrelation && correlated == null && !orderedFollowUpTerminal
         ) {
+            // Some gateways emit a redundant completion hint after message.complete.
+            if (event is WsEvent.MessageDone && _streamingState.value.turnEnded &&
+                (
+                    activeResponse?.serverFollowUp == true ||
+                        (activeResponse != null && activeResponse.id == followUpPredecessorId)
+                )
+            ) {
+                return
+            }
             val scope = sessionScope
-            val responseId = currentLedger.activeId
+            val pendingResponses = currentLedger.pendingSubmissions.values.toSet()
+            val candidates =
+                currentLedger.responses
+                    .filter { it.id in pendingResponses && (it.id == currentLedger.activeId || it.serverFollowUp) }
+                    .mapTo(mutableSetOf()) { it.id }
             if (event is WsEvent.MessageComplete && event.sessionId != null && scope != null &&
-                scope == submissionTransport.configuredScope() && responseId != null &&
-                responseId in currentLedger.pendingSubmissions.values &&
-                (receipt?.submissionId != null || receipt?.userRowId != null || !receipt?.userRowIds.isNullOrEmpty())
+                scope == submissionTransport.configuredScope() && candidates.isNotEmpty() && hasTerminalIdentity
             ) {
                 // The worker may finish before prompt.submit returns its admission IDs.
                 // Retain only explicitly addressed evidence in this exact observation lifetime.
                 pendingTerminals.add(
-                    PendingTerminal(event, observedAt, sessionGeneration, scope, responseId, eventOrdinal),
+                    PendingTerminal(event, observedAt, sessionGeneration, scope, candidates, eventOrdinal),
                 )
                 return
             }
-            // A no-key server queue cannot open a reply, but its observed final prose must not disappear.
-            val unboundQueuedBody =
+            val standaloneQueuedBody =
                 (event as? WsEvent.MessageComplete)
                     ?.takeIf { complete ->
                         complete.text.isNotBlank() && complete.responseReused != true &&
+                            currentLedger.responses.none { it.serverFollowUp && it.finishedAt == null } &&
                             currentLedger.responses.any { it.authority.queued != null && it.authority.opening == null }
                     }?.let { ChatMessage(role = MessageRole.ASSISTANT, content = it.text, timestamp = observedAt) }
             _uiState.update {
                 it.copy(
                     responseStatusUnknown = true,
                     responseLedger = it.responseLedger.gap(),
-                    messages = it.messages + listOfNotNull(unboundQueuedBody),
+                    messages = it.messages + listOfNotNull(standaloneQueuedBody),
                 )
             }
             persistTranscript()
@@ -1883,13 +1936,31 @@ class ChatViewModel(
                     terminalReplay.finishedAt != null
             )
         ) {
+            val earlyQueuedReply =
+                (event as? WsEvent.MessageComplete)
+                    ?.takeIf {
+                        terminalReplay.id != currentLedger.activeId &&
+                            terminalReplay.finishedAt == null &&
+                            terminalReplay.serverFollowUp &&
+                            it.text.isNotBlank() &&
+                            it.responseReused != true
+                    }?.let { complete ->
+                        ChatMessage(
+                            role = MessageRole.ASSISTANT,
+                            content = complete.text,
+                            timestamp = observedAt,
+                            finishTimestamp = observedAt,
+                        )
+                    }
             // An attributed old terminal cannot finalize, flush or overwrite the current stream.
             _uiState.update {
                 it.copy(
+                    messages = it.messages + listOfNotNull(earlyQueuedReply),
                     responseLedger =
                         it.responseLedger
                             .update(terminalReplay.id) { old ->
                                 old.admitTerminal(terminalEvidence(event, observedAt, eventOrdinal)).copy(
+                                    messageIds = (old.messageIds + listOfNotNull(earlyQueuedReply?.id)).distinct(),
                                     canonicalRowIds =
                                         if (receipt?.complete ==
                                             true
@@ -1994,7 +2065,7 @@ class ChatViewModel(
         if ((event is WsEvent.MessageComplete || event is WsEvent.MessageDone) && !lateFrame) {
             ledger =
                 ledger.update(ledger.activeId) {
-                    (
+                    val finished =
                         if (correlated != null ||
                             compatibleFirstTerminal
                         ) {
@@ -2006,7 +2077,8 @@ class ChatViewModel(
                                 authority = it.authority.copy(local = null, deliveryGap = true),
                             )
                         }
-                    ).copy(
+                    if (orderedFollowUpTerminal && correlated == null) return@update finished
+                    finished.copy(
                         canonicalRowIds =
                             if (receipt?.complete ==
                                 true
@@ -2871,11 +2943,94 @@ class ChatViewModel(
             state.outgoingDrafts.any {
                 it.state == DraftState.QUEUED && it.savedSessionId == state.currentSessionId
             }
+        val canSubmitNow =
+            scope != null && sessionScope == scope && submissionTransport.isReady(scope) && runtimeSessionId != null &&
+                !state.isLoading && !state.responseStatusUnknown
+        if (knownActive && canSubmitNow && BotConversations.activeProfile() == "default") {
+            val directive = BusyTurnDirective.classify(trimmed, explicitSteer = steer)
+            val hasServerFollowUp =
+                state.responseLedger.responses.any {
+                    it.id != state.responseLedger.activeId && it.serverFollowUp && it.finishedAt == null
+                }
+            // A hard interrupt on the gateway also discards its accepted next prompts.
+            if (directive == BusyTurnAction.STOP && attachments.isEmpty() && !hasServerFollowUp) {
+                interruptSession()
+                return
+            }
+            if (directive != BusyTurnAction.SEPARATE && attachments.isEmpty()) {
+                val message =
+                    ChatMessage(
+                        role = MessageRole.USER,
+                        content = text,
+                        timestamp = clock(),
+                    )
+                clearAttachments()
+                val turnOpening = openTurnLifecycle(awaitsAdmission = false)
+                _uiState.update { it.copy(messages = it.messages + message, isAgentTyping = true) }
+                stagePrompt(
+                    text,
+                    emptyList(),
+                    wasStreaming = true,
+                    message = message,
+                    turnOpening = turnOpening,
+                    queued = false,
+                    redirect = true,
+                )
+                return
+            }
+            if (!hasQueue && attachments.none { it.isImage }) {
+                val message =
+                    ChatMessage(
+                        role = MessageRole.USER,
+                        content = text,
+                        timestamp = clock(),
+                        attachments = attachments.takeIf { it.isNotEmpty() },
+                    )
+                clearAttachments()
+                val queuedRecord = ResponseRecord(userIds = listOf(message.id), serverFollowUp = true)
+                val continuation =
+                    _uiState.value.responseLedger.let { ledger ->
+                        ledger.responses
+                            .singleOrNull { it.id == ledger.activeId && it.finishedAt == null }
+                            ?.id
+                    }
+                val turnOpening =
+                    TurnOpening(
+                        version = turnLifecycleVersion.get(),
+                        streamVersion = streamObservationVersion.get(),
+                        wasEnded = _streamingState.value.turnEnded,
+                        responseId = queuedRecord.id,
+                        continuationId = continuation,
+                        serverFollowUp = true,
+                    )
+                _uiState.update { current ->
+                    current.copy(
+                        messages = current.messages + message,
+                        responseLedger =
+                            current.responseLedger.copy(
+                                responses = current.responseLedger.responses + queuedRecord,
+                                requiresCorrelation = true,
+                            ),
+                    )
+                }
+                stagePrompt(
+                    text,
+                    attachments,
+                    wasStreaming = true,
+                    message = message,
+                    turnOpening = turnOpening,
+                    queued = true,
+                    redirect = false,
+                )
+                return
+            }
+        }
         if ((!steer || !knownActive || attachments.isNotEmpty()) &&
             (
                 wasStreaming || state.responseStatusUnknown || scope == null ||
                     !submissionTransport.isReady(scope) || hasQueue || runtimeSessionId == null ||
-                    state.isLoading || (!queueExecutionIdle && !knownActive && !canRetryRefusedAdmission())
+                    state.isLoading || state.responseLedger.responses.any(::isPendingServerFollowUp) ||
+                    (!queueExecutionIdle && !knownActive && !canRetryRefusedAdmission())
             )
         ) {
             enqueuePrompt(text, attachments)
@@ -2921,6 +3076,7 @@ class ChatViewModel(
         }
         val scope = sessionScope ?: submissionTransport.configuredScope() ?: return false
         if (!submissionTransport.isReady(scope) || runtimeSessionId == null ||
+            state.responseLedger.responses.any(::isPendingServerFollowUp) ||
             (!queueExecutionIdle && !canRetryRefusedAdmission())
         ) {
             return false
@@ -3083,6 +3239,25 @@ class ChatViewModel(
         }
     }
 
+    private fun isPendingServerFollowUp(response: ResponseRecord): Boolean {
+        val scope = sessionScope ?: return false
+        val queued = response.authority.queued ?: return false
+        return response.serverFollowUp && response.finishedAt == null && response.authority.opening == null &&
+            queued.target == scope.draftTargetKey() && queued.session == _uiState.value.currentSessionId &&
+            queued.observation == sessionGeneration && queued.connectionGeneration == scope.generation &&
+            queued.observationProcessId == scope.processId
+    }
+
+    private fun isDispatchingServerFollowUp(
+        response: ResponseRecord,
+        ledger: ResponseLedger,
+    ): Boolean =
+        response.serverFollowUp && response.finishedAt == null && response.authority.opening == null &&
+            ledger.possibleContinuations.keys.any { attempt ->
+                ledger.pendingSubmissions[attempt] == response.id &&
+                    activePromptIntents[attempt]?.scope == sessionScope
+            }
+
     private fun drainOutgoingQueue() {
         if (blocksSpecialistRegularPrompt()) return
         val state = _uiState.value
@@ -3093,7 +3268,8 @@ class ChatViewModel(
             sessionScope != scope || !submissionTransport.isReady(scope) ||
             state.clarifyRequest != null || state.sudoPrompt != null || state.secretPrompt != null ||
             state.vaultPrompt != null ||
-            state.activeDraftIds.isNotEmpty() || state.draftStorageError
+            state.activeDraftIds.isNotEmpty() || state.draftStorageError ||
+            state.responseLedger.responses.any(::isPendingServerFollowUp)
         ) {
             return
         }
@@ -3201,7 +3377,7 @@ class ChatViewModel(
                 useEditingDraft && it.id == editingDraftId && it.state == DraftState.DRAFT &&
                     it.targetKey == scope.draftTargetKey()
             }
-        val effectiveQueued = (existing?.queued ?: queued) || _uiState.value.responseStatusUnknown
+        val effectiveQueued = queued || existing?.queued == true || _uiState.value.responseStatusUnknown
         val effectiveRedirect = redirect && !effectiveQueued
         if (useEditingDraft) editingDraftId = null
         val draft =
@@ -3233,66 +3409,85 @@ class ChatViewModel(
             )
         }
         _uiState.update { it.copy(activeDraftIds = it.activeDraftIds + draft.id) }
-        viewModelScope.launch {
-            try {
-                withContext(ioDispatcher) { draftStore.save(draft) }
-                unsavedDrafts.remove(draft.id)
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                retainUnstoredDraft(draft, message, wasStreaming, generation)
-                finishDraftAttempt(draft.id)
-                return@launch
-            }
-            if (generation != sessionGeneration || !submissionTransport.isReady(scope)) {
-                forgetUnsentAuthority(draft.id, message?.id, generation)
-                removeUnsentBubble(message, wasStreaming, generation)
-                finishDraftAttempt(draft.id)
-                return@launch
-            }
-            val storageId = _uiState.value.currentSessionId
-            val runtimeId = runtimeSessionId
-            if (storageId == null || runtimeId == null) {
-                // Session creation may finish while the durable save is suspended. Recheck above;
-                // only this same connected scope may dispatch after its creation ACK.
-                val pending =
-                    PendingPrompt(
+        // Match the gateway's FIFO to the order the user saw in this chat.
+        val previousFollowUp =
+            lastFollowUpDispatch?.takeIf { turnOpening.serverFollowUp && it.generation == generation }?.job
+        val dispatch =
+            viewModelScope.launch {
+                previousFollowUp?.join()
+                try {
+                    withContext(ioDispatcher) { draftStore.save(draft) }
+                    unsavedDrafts.remove(draft.id)
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    retainUnstoredDraft(
+                        draft,
+                        message,
+                        wasStreaming,
+                        generation,
+                        restoreTyping = !turnOpening.serverFollowUp,
+                    )
+                    if (turnOpening.serverFollowUp) forgetUnsentAuthority(draft.id, message?.id, generation)
+                    finishDraftAttempt(draft.id)
+                    return@launch
+                }
+                if (generation != sessionGeneration || !submissionTransport.isReady(scope) ||
+                    (turnOpening.serverFollowUp && _uiState.value.responseStatusUnknown)
+                ) {
+                    forgetUnsentAuthority(draft.id, message?.id, generation)
+                    removeUnsentBubble(message, wasStreaming, generation, restoreTyping = !turnOpening.serverFollowUp)
+                    finishDraftAttempt(draft.id)
+                    return@launch
+                }
+                val storageId = _uiState.value.currentSessionId
+                val runtimeId = runtimeSessionId
+                if (storageId == null || runtimeId == null) {
+                    // Session creation may finish while the durable save is suspended. Recheck above;
+                    // only this same connected scope may dispatch after its creation ACK.
+                    val pending =
+                        PendingPrompt(
+                            draft,
+                            wasStreaming,
+                            message,
+                            effectiveQueued,
+                            effectiveRedirect,
+                            generation,
+                            turnOpening,
+                        )
+                    if (pendingInitialPrompt == null) {
+                        pendingInitialPrompt = pending
+                        pendingPromptTimeout =
+                            viewModelScope.launch {
+                                delay(5_000)
+                                releasePendingInitialPrompt()
+                            }
+                    } else {
+                        additionalPendingPrompts += pending
+                    }
+                    return@launch
+                }
+                if (sessionScope != scope) {
+                    forgetUnsentAuthority(draft.id, message?.id, generation)
+                    removeUnsentBubble(message, wasStreaming, generation, restoreTyping = !turnOpening.serverFollowUp)
+                    finishDraftAttempt(draft.id)
+                    return@launch
+                }
+                val wire =
+                    dispatchPrompt(
                         draft,
                         wasStreaming,
+                        storageId,
+                        runtimeId,
                         message,
                         effectiveQueued,
                         effectiveRedirect,
                         generation,
                         turnOpening,
                     )
-                if (pendingInitialPrompt == null) {
-                    pendingInitialPrompt = pending
-                    pendingPromptTimeout =
-                        viewModelScope.launch {
-                            delay(5_000)
-                            releasePendingInitialPrompt()
-                        }
-                } else {
-                    additionalPendingPrompts += pending
-                }
-                return@launch
+                if (turnOpening.serverFollowUp) wire.join()
             }
-            if (sessionScope != scope) {
-                forgetUnsentAuthority(draft.id, message?.id, generation)
-                removeUnsentBubble(message, wasStreaming, generation)
-                finishDraftAttempt(draft.id)
-                return@launch
-            }
-            dispatchPrompt(
-                draft,
-                wasStreaming,
-                storageId,
-                runtimeId,
-                message,
-                effectiveQueued,
-                effectiveRedirect,
-                generation,
-                turnOpening,
-            )
+        if (turnOpening.serverFollowUp) {
+            lastFollowUpDispatch = FollowUpDispatch(generation, turnOpening.continuationId, dispatch)
         }
     }
 
@@ -3306,7 +3501,7 @@ class ChatViewModel(
         redirect: Boolean,
         dispatchGeneration: Long,
         turnOpening: TurnOpening,
-    ) {
+    ): Job {
         val outgoing = draft.copy(savedSessionId = storageSessionId, runtimeSessionId = agentSessionId)
         _uiState.update { state ->
             val capturedId = turnOpening.responseId
@@ -3350,7 +3545,7 @@ class ChatViewModel(
         var canRollbackOpening = false
         val unknownBeforeAttempt = _uiState.value.responseStatusUnknown
         val idleBeforeAttempt = queueExecutionIdle
-        viewModelScope.launch(ioDispatcher) {
+        return viewModelScope.launch(ioDispatcher) {
             val prepared = mutableListOf<PreparedAttachment>()
             var attempted = false
             var remoteAttachment = false
@@ -3387,7 +3582,13 @@ class ChatViewModel(
                             ) {
                                 draftStore.save(outgoing.copy(state = DraftState.DRAFT))
                             }
-                            restoreUnsentComposer(outgoing, userMessage, wasStreaming, dispatchGeneration)
+                            restoreUnsentComposer(
+                                outgoing,
+                                userMessage,
+                                wasStreaming,
+                                dispatchGeneration,
+                                restoreTyping = !turnOpening.serverFollowUp,
+                            )
                             if (dispatchGeneration == sessionGeneration) {
                                 _uiState.update {
                                     it.copy(
@@ -3404,7 +3605,12 @@ class ChatViewModel(
                 }
                 if (dispatchGeneration != sessionGeneration || !submissionTransport.isReady(outgoing.scope)) {
                     queueClaims.remove(outgoing.id)
-                    removeUnsentBubble(userMessage, wasStreaming, dispatchGeneration)
+                    removeUnsentBubble(
+                        userMessage,
+                        wasStreaming,
+                        dispatchGeneration,
+                        restoreTyping = !turnOpening.serverFollowUp,
+                    )
                     return@launch
                 }
                 // This write-ahead record survives process death even if the first send/ACK is lost.
@@ -3432,7 +3638,12 @@ class ChatViewModel(
                                 draftStore.save(outgoing)
                                 queueClaims.remove(outgoing.id)
                             }
-                            removeUnsentBubble(userMessage, wasStreaming, dispatchGeneration)
+                            removeUnsentBubble(
+                                userMessage,
+                                wasStreaming,
+                                dispatchGeneration,
+                                restoreTyping = !turnOpening.serverFollowUp,
+                            )
                             return@launch
                         }
 
@@ -3519,6 +3730,18 @@ class ChatViewModel(
                                                     }
                                                 },
                                         )
+                                    }
+                                    if (result.value == PromptAcceptance.STREAMING && turnOpening.serverFollowUp &&
+                                        _uiState.value.responseLedger.responses.any {
+                                            it.id == turnOpening.responseId && it.serverFollowUp &&
+                                                it.finishedAt == null &&
+                                                it.id == _uiState.value.responseLedger.activeId
+                                        }
+                                    ) {
+                                        if (_streamingState.value.turnEnded) {
+                                            _streamingState.update { it.copy(turnEnded = false) }
+                                        }
+                                        _uiState.update { it.copy(isAgentTyping = true) }
                                     }
                                     if (streamVersion == streamObservationVersion.get() &&
                                         result.value != com.m57.hermescontrol.domain.hermes.PromptAcceptance.QUEUED
@@ -3625,7 +3848,13 @@ class ChatViewModel(
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e(TAG, "Outgoing draft operation unavailable")
                 if (!attempted) {
-                    retainUnstoredDraft(outgoing, userMessage, wasStreaming, dispatchGeneration)
+                    retainUnstoredDraft(
+                        outgoing,
+                        userMessage,
+                        wasStreaming,
+                        dispatchGeneration,
+                        restoreTyping = !turnOpening.serverFollowUp,
+                    )
                 } else {
                     // No resend and no rollback after a possible remote write. Keep UNKNOWN.
                     draftOperationErrors[outgoing.id] = outgoing.targetKey
@@ -3662,7 +3891,11 @@ class ChatViewModel(
             state.copy(
                 messages = state.messages.filterNot { it.id == userId },
                 responseLedger =
-                    if (retireProvisional) ledger.retireUnusedProvisional(provisionalId) else ledger,
+                    if (retireProvisional || ledger.responses.any { it.id == provisionalId && it.serverFollowUp }) {
+                        ledger.retireUnusedProvisional(provisionalId, removedUserId = userId)
+                    } else {
+                        ledger
+                    },
             )
         }
         persistTranscript()
@@ -3681,6 +3914,10 @@ class ChatViewModel(
     ) {
         withContext(Dispatchers.Main.immediate) {
             if (generation != sessionGeneration) return@withContext
+            if (opening.serverFollowUp) {
+                _uiState.update { it.copy(responseStatusUnknown = true) }
+                return@withContext
+            }
             if (streamVersion == streamObservationVersion.get()) {
                 restoreTypingState(wasStreaming, generation, streamVersion)
                 return@withContext
@@ -3702,7 +3939,7 @@ class ChatViewModel(
             val hasPendingTerminal =
                 pendingTerminals.any { pending ->
                     val receipt = pending.event.persistedTurn
-                    pending.responseId == responseId && pending.generation == generation &&
+                    responseId in pending.responseIds && pending.generation == generation &&
                         pending.scope == outgoing.scope && pending.event.sessionId != null &&
                         pending.event.sessionId in listOf(outgoing.savedSessionId, outgoing.runtimeSessionId) &&
                         (
@@ -3752,6 +3989,7 @@ class ChatViewModel(
         message: ChatMessage?,
         wasStreaming: Boolean,
         generation: Long,
+        restoreTyping: Boolean = true,
     ) {
         if (generation != sessionGeneration) return
         editingDraftId = draft.id
@@ -3760,7 +3998,7 @@ class ChatViewModel(
                 composerTextToRestore = draft.text,
                 pendingAttachments = draft.attachments + it.pendingAttachments,
                 messages = it.messages.filterNot { row -> row.id == message?.id },
-                isAgentTyping = wasStreaming,
+                isAgentTyping = if (restoreTyping) wasStreaming else it.isAgentTyping,
             )
         }
     }
@@ -3770,6 +4008,7 @@ class ChatViewModel(
         message: ChatMessage?,
         wasStreaming: Boolean,
         generation: Long,
+        restoreTyping: Boolean = true,
     ) {
         unsavedDrafts[draft.id] = draft
         _uiState.update {
@@ -3783,7 +4022,7 @@ class ChatViewModel(
                     },
             )
         }
-        restoreUnsentComposer(draft, message, wasStreaming, generation)
+        restoreUnsentComposer(draft, message, wasStreaming, generation, restoreTyping)
     }
 
     private fun clearDraftOperationError(id: String) {
@@ -6124,8 +6363,8 @@ class ChatViewModel(
         }
     }
 
-    fun syncCurrentSession() {
-        refreshSubagents()
+    fun syncCurrentSession(includeSubagents: Boolean = true) {
+        if (includeSubagents) refreshSubagents()
         // Issue #840: a session created but never prompted has no server row
         // yet — the REST transcript 404s and the resume-retry machinery spins
         // forever (visible in logcat as repeated /messages 404s). MessageStart
@@ -7195,7 +7434,10 @@ class ChatViewModel(
 
     fun toggleSearch() = searchDelegate.toggleSearch()
 
-    fun setSearchQuery(query: String) = searchDelegate.setSearchQuery(query)
+    fun setSearchQuery(
+        query: String,
+        mainChatOnly: Boolean = false,
+    ) = searchDelegate.setSearchQuery(query, mainChatOnly)
 
     fun navigateSearchMatch(direction: Int) = searchDelegate.navigateSearchMatch(direction)
 

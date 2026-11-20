@@ -1667,7 +1667,7 @@ class ChatViewModelTest {
         emitEvent(WsEvent.MessageStart(session))
         emitEvent(WsEvent.MessageInterim("retry prefix", false, session))
         advanceUntilIdle()
-        vm.sendMessage("queued after retry")
+        vm.sendMessage("/queue queued after retry")
         advanceUntilIdle()
         verify(exactly = 0) { HermesWsClient.sendMessage(any(), "queued after retry", any(), any()) }
         val entered = CompletableDeferred<Unit>()
@@ -1749,7 +1749,7 @@ class ChatViewModelTest {
             emitEvent(WsEvent.MessageStart(session))
             emitEvent(WsEvent.MessageInterim("later prefix", false, session))
             advanceUntilIdle()
-            vm.sendMessage("must stay queued")
+            vm.sendMessage("/queue must stay queued")
             advanceUntilIdle()
             emitEvent(WsEvent.MessageDone(session))
             emitEvent(WsEvent.MessageComplete("unattributed", session, partial = true))
@@ -1970,7 +1970,7 @@ class ChatViewModelTest {
             advanceUntilIdle()
             emitEvent(WsEvent.MessageStart(session))
             runCurrent()
-            vm.sendMessage("queued next")
+            vm.sendMessage("/queue queued next")
             advanceUntilIdle()
             val entered = CompletableDeferred<Unit>()
             val release = CompletableDeferred<Unit>()
@@ -3546,7 +3546,7 @@ class ChatViewModelTest {
             val second = vm.uiState.value.responseLedger.activeId
             emitEvent(WsEvent.MessageStart(session))
             emitEvent(WsEvent.MessageInterim("second prose", false, session))
-            vm.sendMessage("queued third")
+            vm.sendMessage("/queue queued third")
             runCurrent()
             val terminal =
                 WsEvent.MessageComplete(
@@ -4644,7 +4644,7 @@ class ChatViewModelTest {
             advanceUntilIdle()
             emitEvent(WsEvent.MessageStart(session))
             runCurrent()
-            vm.sendMessage("queued next")
+            vm.sendMessage("/queue queued next")
             advanceUntilIdle()
             val entered = CompletableDeferred<Unit>()
             val release = CompletableDeferred<Unit>()
@@ -5069,7 +5069,7 @@ class ChatViewModelTest {
             stubEmptySessionRests(session)
             emitEvent(WsEvent.MessageStart(session))
             runCurrent()
-            vm.sendMessage("Review after reconnect")
+            vm.sendMessage("/queue Review after reconnect")
             advanceUntilIdle()
             val saved = fakeDraftStore.drafts.value.single()
             val requests = captureRecoveryResumes()
@@ -5106,7 +5106,7 @@ class ChatViewModelTest {
             val (old, session) = createViewModelWithSession()
             emitEvent(WsEvent.MessageStart(session))
             runCurrent()
-            old.sendMessage("Same live connection")
+            old.sendMessage("/queue Same live connection")
             advanceUntilIdle()
             val saved = fakeDraftStore.drafts.value.single()
             androidx.lifecycle.ViewModelStore().apply {
@@ -5135,8 +5135,8 @@ class ChatViewModelTest {
             val (vm, session) = createViewModelWithSession()
             emitEvent(WsEvent.MessageStart(session))
             runCurrent()
-            vm.sendMessage("First follow-up")
-            vm.sendMessage("Second follow-up")
+            vm.sendMessage("/queue First follow-up")
+            vm.sendMessage("/queue Second follow-up")
             advanceUntilIdle()
             assertEquals(
                 listOf("First follow-up", "Second follow-up"),
@@ -5233,8 +5233,8 @@ class ChatViewModelTest {
             val (vm, session) = createViewModelWithSession()
             emitEvent(WsEvent.MessageStart(session))
             runCurrent()
-            vm.sendMessage("Edit me")
-            vm.sendMessage("Cancel me")
+            vm.sendMessage("/queue Edit me")
+            vm.sendMessage("/queue Cancel me")
             advanceUntilIdle()
             val drafts = vm.uiState.value.outgoingDrafts
             vm.restoreDraft(drafts[0].id)
@@ -5265,7 +5265,7 @@ class ChatViewModelTest {
             val (vm, session) = createViewModelWithSession()
             emitEvent(WsEvent.MessageStart(session))
             runCurrent()
-            vm.sendMessage("Original conversation only")
+            vm.sendMessage("/queue Original conversation only")
             advanceUntilIdle()
             val original = fakeDraftStore.drafts.value.single()
             val requests = captureRecoveryResumes()
@@ -5453,7 +5453,7 @@ class ChatViewModelTest {
             val (vm, session) = createViewModelWithSession()
             emitEvent(WsEvent.MessageStart(session))
             runCurrent()
-            vm.sendMessage("Edit after saving recovers")
+            vm.sendMessage("/queue Edit after saving recovers")
             advanceUntilIdle()
             val id =
                 fakeDraftStore.drafts.value
@@ -5489,7 +5489,7 @@ class ChatViewModelTest {
             // A draft being edited in the composer, with an attachment picked.
             emitEvent(WsEvent.MessageStart(session))
             runCurrent()
-            vm.sendMessage("Draft still being edited")
+            vm.sendMessage("/queue Draft still being edited")
             advanceUntilIdle()
             val editing = fakeDraftStore.drafts.value.single()
             vm.restoreDraft(editing.id)
@@ -5676,28 +5676,19 @@ class ChatViewModelTest {
             val (vm, session) = createViewModelWithSession()
             emitEvent(WsEvent.MessageStart(session))
             runCurrent()
-            vm.sendMessage("Older draft")
+            vm.sendMessage("/queue Older draft")
             advanceUntilIdle()
             val id =
                 fakeDraftStore.drafts.value
                     .single()
                     .id
+            vm.sendMessage("/queue Already waiting")
+            advanceUntilIdle()
             vm.restoreDraft(id)
             advanceUntilIdle()
-            vm.sendMessage("Already waiting")
+            vm.sendMessage("Added later")
             advanceUntilIdle()
-            // The edited draft now represents Already waiting. Create a separate ordinary draft fixture.
-            val ordinary =
-                fakeDraftStore.drafts.value.single().copy(
-                    id = "old-ordinary",
-                    text = "Added later",
-                    createdAt = 1,
-                    state = DraftState.DRAFT,
-                )
-            fakeDraftStore.save(ordinary)
-            advanceUntilIdle()
-            vm.queueDraft(ordinary.id)
-            advanceUntilIdle()
+            assertEquals(listOf("Already waiting", "Added later"), fakeDraftStore.drafts.value.map { it.text })
             emitEvent(WsEvent.MessageDone(session))
             advanceUntilIdle()
             verify(exactly = 1) { HermesWsClient.sendMessage(session, "Already waiting", any(), true) }
@@ -8013,7 +8004,7 @@ class ChatViewModelTest {
             val (vm, session) = createViewModelWithSession()
             emitEvent(WsEvent.MessageStart(session))
             runCurrent()
-            vm.sendMessage("After the question")
+            vm.sendMessage("/queue After the question")
             advanceUntilIdle()
             observeClarify(vm)
             emitEvent(WsEvent.MessageDone("other-session"))
@@ -13299,7 +13290,7 @@ class ChatViewModelTest {
             // This turn originated on the server: no prior local PendingAdmission exists.
             emitEvent(WsEvent.MessageStart(sessionId))
             advanceUntilIdle()
-            vm.sendMessage("Queued B")
+            vm.sendMessage("/queue Queued B")
             advanceUntilIdle()
             assertEquals(
                 "Queued B",
@@ -13337,7 +13328,7 @@ class ChatViewModelTest {
             }
             vm.sendMessage("A awaiting start")
             advanceUntilIdle() // Submission ACK settles, but no message.start arrives.
-            vm.sendMessage("Durable B")
+            vm.sendMessage("/queue Durable B")
             advanceUntilIdle()
             val savedB = fakeDraftStore.drafts.value.single()
             assertEquals(DraftState.QUEUED, savedB.state)
@@ -14026,7 +14017,7 @@ class ChatViewModelTest {
             wire("message.complete", terminal)
             assertEquals("Actual addressed terminal must be held pending admission", 1, pending().size)
             val held = pending().single()!!
-            assertEquals(targetId, field(held, "responseId"))
+            assertEquals(setOf(targetId), field(held, "responseIds"))
             assertEquals(generation, field(held, "generation"))
             assertEquals(scope, field(held, "scope"))
             val event = field(held, "event") as WsEvent.MessageComplete
@@ -14252,7 +14243,7 @@ class ChatViewModelTest {
         )
         val pending = completionField(vm, "pendingTerminals") as List<*>
         assertEquals(1, pending.size)
-        assertEquals(responseId, completionField(pending.single()!!, "responseId"))
+        assertEquals(setOf(responseId), completionField(pending.single()!!, "responseIds"))
         assertFalse(vm.uiState.value.responseStatusUnknown)
         return CompletionPendingFixture(vm, session, responseId, liveId, prefix, release, resumes)
     }
@@ -15429,5 +15420,332 @@ class ChatViewModelTest {
             state.value = state.value.copy(isLoading = true, resumeError = null, isResumeRetrying = false)
             assertTrue(viewModel.recoverStuckLoading())
             assertFalse(state.value.isLoading)
+        }
+
+    @Test
+    fun busyFollowUp_displaysImmediatelyWithoutQueueAndIsolatesAAndBAnswers() =
+        runTest {
+            val (vm, session) = createViewModelWithSession()
+            fakeSubmission.nextPromptResult =
+                SubmissionResult.Confirmed(
+                    "rpc-A",
+                    com.m57.hermescontrol.domain.hermes.PromptAcceptance.STREAMING,
+                    com.m57.hermescontrol.domain.hermes
+                        .PromptEvidence(userRowId = 10L, submissionId = "sub-A"),
+                )
+            vm.sendMessage("Aの重い依頼")
+            advanceUntilIdle()
+            emitEvent(WsEvent.MessageStart(session))
+            emitEvent(WsEvent.MessageInterim("Aの途中経過", false, session))
+            advanceUntilIdle()
+
+            // Send separate topic B while A is still processing.
+            fakeSubmission.nextPromptResult =
+                SubmissionResult.Confirmed(
+                    "rpc-B",
+                    com.m57.hermescontrol.domain.hermes.PromptAcceptance.QUEUED,
+                    com.m57.hermescontrol.domain.hermes
+                        .PromptEvidence(userRowId = 20L, submissionId = "sub-B"),
+                )
+            vm.sendMessage("別件Bの質問")
+            advanceUntilIdle()
+
+            // B is immediately shown in the same chat, no wait-queue draft remains, and A is not interrupted.
+            assertTrue(
+                vm.uiState.value.messages
+                    .any { it.role == MessageRole.USER && it.content == "別件Bの質問" },
+            )
+            assertTrue(
+                vm.uiState.value.outgoingDrafts
+                    .isEmpty(),
+            )
+            assertTrue(vm.uiState.value.isAgentTyping)
+            verify(exactly = 1) { HermesWsClient.sendMessage(session, "別件Bの質問", any(), true) }
+            verify(exactly = 0) { HermesWsClient.sendRedirect(any(), any(), any()) }
+            verify(exactly = 0) { HermesWsClient.send(WsMethods.SESSION_INTERRUPT, any(), any()) }
+
+            // Late interim + final answer for A arriving AFTER B must anchor under A, never under B.
+            emitEvent(WsEvent.MessageInterim("Aの追加作業", false, session))
+            emitEvent(
+                WsEvent.MessageComplete(
+                    text = "Aの最終回答",
+                    sessionId = session,
+                    persistedTurn =
+                        com.m57.hermescontrol.data.ws.PersistedTurn(
+                            userRowId = 10L,
+                            finalAssistantRowId = 11L,
+                            rowIds = listOf(10L, 11L),
+                            complete = true,
+                            submissionId = "sub-A",
+                        ),
+                ),
+            )
+            advanceUntilIdle()
+
+            val turnsAfterA =
+                com.m57.hermescontrol.ui.chat.fullbleed
+                    .groupIntoTurns(
+                        vm.uiState.value.messages.filterNot {
+                            it.role == MessageRole.SYSTEM &&
+                                it.content == "Session created"
+                        },
+                        vm.uiState.value.responseLedger,
+                    )
+            assertEquals(
+                "Unexpected turns: $turnsAfterA | ledger=${vm.uiState.value.responseLedger.responses}",
+                3,
+                turnsAfterA.size,
+            )
+            assertEquals(
+                "Aの重い依頼",
+                (turnsAfterA[0] as com.m57.hermescontrol.ui.chat.fullbleed.ChatTurn.User).message.content,
+            )
+            val agentAProse =
+                (turnsAfterA[1] as com.m57.hermescontrol.ui.chat.fullbleed.ChatTurn.Agent)
+                    .entries
+                    .filterIsInstance<com.m57.hermescontrol.ui.chat.fullbleed.AgentEntry.Prose>()
+                    .map { it.message.content }
+            assertEquals(listOf("Aの途中経過", "Aの追加作業", "Aの最終回答"), agentAProse)
+            assertEquals(
+                "別件Bの質問",
+                (turnsAfterA[2] as com.m57.hermescontrol.ui.chat.fullbleed.ChatTurn.User).message.content,
+            )
+
+            // Server picks up B at the turn boundary: B's reply anchors strictly under B.
+            emitEvent(WsEvent.MessageStart(session))
+            emitEvent(
+                WsEvent.MessageComplete(
+                    text = "Bの回答",
+                    sessionId = session,
+                    persistedTurn =
+                        com.m57.hermescontrol.data.ws.PersistedTurn(
+                            userRowId = 20L,
+                            finalAssistantRowId = 21L,
+                            rowIds = listOf(20L, 21L),
+                            complete = true,
+                            submissionId = "sub-B",
+                        ),
+                ),
+            )
+            advanceUntilIdle()
+
+            val turnsAfterB =
+                com.m57.hermescontrol.ui.chat.fullbleed
+                    .groupIntoTurns(
+                        vm.uiState.value.messages.filterNot {
+                            it.role == MessageRole.SYSTEM &&
+                                it.content == "Session created"
+                        },
+                        vm.uiState.value.responseLedger,
+                    )
+            assertEquals(4, turnsAfterB.size)
+            val agentBProse =
+                (turnsAfterB[3] as com.m57.hermescontrol.ui.chat.fullbleed.ChatTurn.Agent)
+                    .entries
+                    .filterIsInstance<com.m57.hermescontrol.ui.chat.fullbleed.AgentEntry.Prose>()
+                    .map { it.message.content }
+            assertEquals(listOf("Bの回答"), agentBProse)
+        }
+
+    @Test
+    fun busyFollowUp_earlyCorrelatedReplyForBStaysUnderBWhileAContinues() =
+        runTest {
+            val (vm, session) = createViewModelWithSession()
+            fakeSubmission.nextPromptResult =
+                SubmissionResult.Confirmed(
+                    "rpc-A",
+                    com.m57.hermescontrol.domain.hermes.PromptAcceptance.STREAMING,
+                    com.m57.hermescontrol.domain.hermes
+                        .PromptEvidence(userRowId = 10L, submissionId = "sub-A"),
+                )
+            vm.sendMessage("重い調査A")
+            advanceUntilIdle()
+            emitEvent(WsEvent.MessageStart(session))
+            emitEvent(WsEvent.MessageInterim("Aをバックグラウンド実行中", false, session))
+            advanceUntilIdle()
+
+            fakeSubmission.nextPromptResult =
+                SubmissionResult.Confirmed(
+                    "rpc-B",
+                    com.m57.hermescontrol.domain.hermes.PromptAcceptance.QUEUED,
+                    com.m57.hermescontrol.domain.hermes
+                        .PromptEvidence(userRowId = 20L, submissionId = "sub-B"),
+                )
+            val acceptB = CompletableDeferred<Unit>()
+            fakeSubmission.beforePrompt = { acceptB.await() }
+            vm.sendMessage("軽い質問B")
+            runCurrent()
+            assertTrue(
+                vm.uiState.value.messages
+                    .any { it.role == MessageRole.USER && it.content == "軽い質問B" },
+            )
+
+            // B returns early while A is still active, even before its admission ACK.
+            emitEvent(
+                WsEvent.MessageComplete(
+                    text = "Bの即答",
+                    sessionId = session,
+                    persistedTurn =
+                        com.m57.hermescontrol.data.ws.PersistedTurn(
+                            userRowId = 20L,
+                            finalAssistantRowId = 21L,
+                            rowIds = listOf(20L, 21L),
+                            complete = true,
+                            submissionId = "sub-B",
+                        ),
+                ),
+            )
+            runCurrent()
+            assertTrue("A must remain active after B completes early", vm.uiState.value.isAgentTyping)
+            acceptB.complete(Unit)
+            advanceUntilIdle()
+            assertTrue(
+                vm.uiState.value.messages
+                    .any { it.content == "Bの即答" },
+            )
+
+            // A completes later and stays under A.
+            emitEvent(
+                WsEvent.MessageComplete(
+                    text = "Aの最終報告",
+                    sessionId = session,
+                    persistedTurn =
+                        com.m57.hermescontrol.data.ws.PersistedTurn(
+                            userRowId = 10L,
+                            finalAssistantRowId = 12L,
+                            rowIds = listOf(10L, 12L),
+                            complete = true,
+                            submissionId = "sub-A",
+                        ),
+                ),
+            )
+            advanceUntilIdle()
+
+            val turns =
+                com.m57.hermescontrol.ui.chat.fullbleed
+                    .groupIntoTurns(
+                        vm.uiState.value.messages.filterNot {
+                            it.role == MessageRole.SYSTEM &&
+                                it.content == "Session created"
+                        },
+                        vm.uiState.value.responseLedger,
+                    )
+            assertEquals(4, turns.size)
+            assertEquals(
+                listOf("Aをバックグラウンド実行中", "Aの最終報告"),
+                (turns[1] as com.m57.hermescontrol.ui.chat.fullbleed.ChatTurn.Agent)
+                    .entries
+                    .filterIsInstance<com.m57.hermescontrol.ui.chat.fullbleed.AgentEntry.Prose>()
+                    .map { it.message.content },
+            )
+            assertEquals(
+                listOf("Bの即答"),
+                (turns[3] as com.m57.hermescontrol.ui.chat.fullbleed.ChatTurn.Agent)
+                    .entries
+                    .filterIsInstance<com.m57.hermescontrol.ui.chat.fullbleed.AgentEntry.Prose>()
+                    .map { it.message.content },
+            )
+        }
+
+    @Test
+    fun busyFollowUp_legacyQueueUsesSerialDisplayWithoutGrantingReplyAuthority() =
+        runTest {
+            val (vm, session) = createViewModelWithSession()
+            vm.sendMessage("仕事A")
+            advanceUntilIdle()
+            emitEvent(WsEvent.MessageStart(session))
+            fakeSubmission.nextPromptResult =
+                SubmissionResult.Confirmed("legacy-queue", com.m57.hermescontrol.domain.hermes.PromptAcceptance.QUEUED)
+            vm.sendMessage("別件B")
+            advanceUntilIdle()
+            fakeSubmission.nextPromptResult = null
+
+            vm.sendMessage("/queue C")
+            emitEvent(WsEvent.MessageComplete("回答A", session))
+            emitEvent(WsEvent.MessageDone(session))
+            advanceUntilIdle()
+            assertFalse(vm.uiState.value.responseStatusUnknown)
+            verify(exactly = 0) { HermesWsClient.sendMessage(session, "C", any(), any()) }
+
+            emitEvent(WsEvent.MessageStart(session))
+            emitEvent(WsEvent.MessageComplete("回答B", session))
+            advanceUntilIdle()
+            val state = vm.uiState.value
+            val firstTwo = state.responseLedger.responses.take(2)
+            assertEquals(
+                listOf("回答A", "回答B"),
+                firstTwo.map { response -> state.messages.single { it.id in response.messageIds }.content },
+            )
+            assertTrue(firstTwo.all { it.authority.terminals.isEmpty() })
+            assertTrue(vm.footerPayloads().isEmpty())
+            verify(exactly = 1) { HermesWsClient.sendMessage(session, "C", any(), true) }
+        }
+
+    @Test
+    fun busyFollowUp_definitelyUnsentBDoesNotFenceOffTheObservedAReply() =
+        runTest {
+            val (vm, session) = createViewModelWithSession()
+            vm.sendMessage("仕事A")
+            advanceUntilIdle()
+            emitEvent(WsEvent.MessageStart(session))
+
+            fakeSubmission.nextPromptResult = SubmissionResult.NotSent
+            vm.sendMessage("別件B")
+            advanceUntilIdle()
+            assertTrue(vm.uiState.value.isAgentTyping)
+            assertFalse(
+                vm.uiState.value.messages
+                    .any { it.role == MessageRole.USER && it.content == "別件B" },
+            )
+
+            emitEvent(WsEvent.MessageComplete("回答A", session))
+            advanceUntilIdle()
+            assertFalse(vm.uiState.value.isAgentTyping)
+            assertFalse(vm.uiState.value.responseStatusUnknown)
+            assertTrue(
+                vm.uiState.value.messages
+                    .any { it.role == MessageRole.ASSISTANT && it.content == "回答A" },
+            )
+            assertTrue(vm.footerPayloads().isEmpty())
+        }
+
+    @Test
+    fun busyFollowUp_explicitStopInterruptsWithoutNewSession() =
+        runTest {
+            val (vm, session) = createViewModelWithSession()
+            vm.sendMessage("処理A")
+            advanceUntilIdle()
+            emitEvent(WsEvent.MessageStart(session))
+            advanceUntilIdle()
+
+            vm.sendMessage("止めて")
+            advanceUntilIdle()
+
+            verify(
+                exactly = 1,
+            ) { HermesWsClient.send(WsMethods.SESSION_INTERRUPT, mapOf("session_id" to session), any()) }
+            verify(exactly = 0) { HermesWsClient.sendMessage(any(), "止めて", any(), any()) }
+            assertEquals(session, vm.uiState.value.currentSessionId)
+        }
+
+    @Test
+    fun busyFollowUp_explicitAmendRedirectsActiveTurnInPlace() =
+        runTest {
+            val (vm, session) = createViewModelWithSession()
+            vm.sendMessage("処理A")
+            advanceUntilIdle()
+            emitEvent(WsEvent.MessageStart(session))
+            advanceUntilIdle()
+
+            fakeSubmission.nextPromptResult =
+                SubmissionResult.Confirmed(
+                    "rpc-amend",
+                    com.m57.hermescontrol.domain.hermes.PromptAcceptance.REDIRECTED,
+                )
+            vm.sendMessage("今の修正: 箇条書きにして")
+            advanceUntilIdle()
+
+            verify(exactly = 1) { HermesWsClient.sendRedirect(session, "今の修正: 箇条書きにして", any()) }
+            verify(exactly = 0) { HermesWsClient.send(WsMethods.SESSION_INTERRUPT, any(), any()) }
         }
 }

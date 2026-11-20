@@ -152,6 +152,7 @@ fun HermesScaffold(
     pinTopBar: Boolean = false,
     /** Optional compact screen-owned bar; other screens retain the Material default. */
     topBarHeight: Dp? = null,
+    showTopBar: Boolean = true,
     showShellMenu: Boolean = true,
     snackbarHost: @Composable () -> Unit = {},
     actions: @Composable () -> Unit = {},
@@ -191,6 +192,7 @@ fun HermesScaffold(
             contentWindowInsets = WindowInsets.navigationBars,
             snackbarHost = { snackbarHost() },
             topBar = {
+                if (!showTopBar) return@Scaffold
                 TopAppBar(
                     title = title,
                     expandedHeight = topBarHeight ?: TopAppBarDefaults.TopAppBarExpandedHeight,

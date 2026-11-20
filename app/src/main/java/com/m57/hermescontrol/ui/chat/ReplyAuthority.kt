@@ -331,7 +331,7 @@ fun ResponseLedger.acceptInput(
             var facts = record.authority
             when (disposition) {
                 "STREAMING" -> {
-                    if (ordinary && p != null) {
+                    if ((ordinary || record.serverFollowUp) && p != null) {
                         facts = facts.copy(openingObservations = (facts.openingObservations + evidence).distinct())
                         val old = facts.opening
                         facts =
@@ -387,6 +387,16 @@ fun ResponseLedger.acceptInput(
                 submissionIds = (record.submissionIds + listOfNotNull(submission)).distinct(),
             )
         }
+    if (disposition == "STREAMING" && owner != null && owner != ledger.activeId &&
+        ledger.responses.any { it.id == owner && it.serverFollowUp && it.finishedAt == null }
+    ) {
+        val activeFinishedOrAbsent =
+            ledger.activeId == null ||
+                ledger.responses.any { it.id == ledger.activeId && it.finishedAt != null }
+        if (activeFinishedOrAbsent) {
+            ledger = ledger.copy(activeId = owner)
+        }
+    }
     if (disposition in listOf("STEERED", "REDIRECTED") && owner != null && p != null && p != owner) {
         val unused =
             ledger.responses.singleOrNull {

@@ -104,6 +104,8 @@ internal fun resolveCodeFenceRenderKind(
         else -> CodeFenceRenderKind.CODE_BLOCK
     }
 
+private val streamingRichFence = Regex("(?m)^\\s*(`{3,}|~{3,})(hermes-ui-v2|hermes-ui|intelligent-ui|liveui)\\s*$")
+
 @Composable
 fun MarkdownText(
     text: String,
@@ -116,6 +118,8 @@ fun MarkdownText(
     nativeUiIdentity: String? = LocalNativeUiMessage.current,
     allowInteractiveContent: Boolean = true,
     onOpenAttachment: ((com.m57.hermescontrol.data.model.Attachment) -> Unit)? = null,
+    bodyStyle: TextStyle = MaterialTheme.typography.bodyMedium,
+    fillWidth: Boolean = true,
 ) {
     MarkdownLinkScope(onOpenAttachment) {
         MarkdownContent(
@@ -128,6 +132,8 @@ fun MarkdownText(
             onImageClick,
             nativeUiIdentity,
             allowInteractiveContent,
+            bodyStyle,
+            fillWidth,
         )
     }
 }
@@ -143,6 +149,8 @@ private fun MarkdownContent(
     onImageClick: ((ImageViewerModel) -> Unit)?,
     nativeUiIdentity: String?,
     allowInteractiveContent: Boolean,
+    bodyStyle: TextStyle,
+    fillWidth: Boolean,
 ) {
     val statusColors = LocalHermesStatusColors.current
     val highlights = searchHighlightColors(statusColors)
@@ -152,7 +160,8 @@ private fun MarkdownContent(
         remember(text, isStreaming, allowInteractiveContent) {
             if (allowInteractiveContent &&
                 isStreaming &&
-                Regex("(?m)^\\s*(`{3,}|~{3,})(hermes-ui-v2|hermes-ui|intelligent-ui|liveui)\\s*$").containsMatchIn(text)
+                ('`' in text || '~' in text) &&
+                streamingRichFence.containsMatchIn(text)
             ) {
                 parseBlocks(text).takeIf { blocks ->
                     blocks.any {
@@ -174,7 +183,7 @@ private fun MarkdownContent(
                 text = if (isRtl) BidiUtils.anchorTrailingRtl(text) else text,
                 color = textColor,
                 style =
-                    MaterialTheme.typography.bodyMedium.copy(
+                    bodyStyle.copy(
                         textDirection = bidiTextDirection(isRtl),
                     ),
                 modifier = modifier,
@@ -187,7 +196,7 @@ private fun MarkdownContent(
     val blocks = streamingBlocks ?: remember(text) { parseBlocks(text) }
     val latexMeasurer = rememberLatexMeasurer()
 
-    Column(modifier = modifier.fillMaxWidth()) {
+    Column(modifier = if (fillWidth) modifier.fillMaxWidth() else modifier) {
         for ((blockIndex, block) in blocks.withIndex()) {
             when (block) {
                 is MdBlock.Code -> {
@@ -253,7 +262,7 @@ private fun MarkdownContent(
                             textColor = textColor,
                             latexMeasurer = latexMeasurer,
                             style =
-                                MaterialTheme.typography.bodyMedium
+                                bodyStyle
                                     .copy(
                                         fontSize = fontSize,
                                         fontWeight = FontWeight.Bold,
@@ -290,7 +299,7 @@ private fun MarkdownContent(
                             Text(
                                 text = bulletChar,
                                 color = textColor,
-                                style = MaterialTheme.typography.bodyMedium,
+                                style = bodyStyle,
                                 modifier = Modifier.padding(end = 6.dp),
                             )
                             MarkdownInlineText(
@@ -298,7 +307,7 @@ private fun MarkdownContent(
                                 textColor = textColor,
                                 latexMeasurer = latexMeasurer,
                                 style =
-                                    MaterialTheme.typography.bodyMedium.copy(
+                                    bodyStyle.copy(
                                         textDirection = bidiTextDirection(isRtl),
                                     ),
                                 searchQuery = searchQuery,
@@ -347,7 +356,7 @@ private fun MarkdownContent(
                                 textColor = textColor,
                                 latexMeasurer = latexMeasurer,
                                 style =
-                                    MaterialTheme.typography.bodyMedium.copy(
+                                    bodyStyle.copy(
                                         textDirection = bidiTextDirection(isRtl),
                                     ),
                                 searchQuery = searchQuery,
@@ -376,7 +385,7 @@ private fun MarkdownContent(
                             Text(
                                 text = "${block.index}.",
                                 color = textColor,
-                                style = MaterialTheme.typography.bodyMedium,
+                                style = bodyStyle,
                                 modifier = Modifier.padding(end = 6.dp),
                             )
                             MarkdownInlineText(
@@ -384,7 +393,7 @@ private fun MarkdownContent(
                                 textColor = textColor,
                                 latexMeasurer = latexMeasurer,
                                 style =
-                                    MaterialTheme.typography.bodyMedium.copy(
+                                    bodyStyle.copy(
                                         textDirection = bidiTextDirection(isRtl),
                                     ),
                                 searchQuery = searchQuery,
@@ -419,7 +428,7 @@ private fun MarkdownContent(
                                 textColor = textColor,
                                 latexMeasurer = latexMeasurer,
                                 style =
-                                    MaterialTheme.typography.bodyMedium.copy(
+                                    bodyStyle.copy(
                                         fontStyle = FontStyle.Italic,
                                         textDirection = bidiTextDirection(isRtl),
                                     ),
@@ -502,7 +511,7 @@ private fun MarkdownContent(
                                     text = if (itemRtl) BidiUtils.anchorTrailingRtl(item.term) else item.term,
                                     color = textColor,
                                     style =
-                                        MaterialTheme.typography.bodyMedium.copy(
+                                        bodyStyle.copy(
                                             fontWeight = FontWeight.Bold,
                                             textDirection = bidiTextDirection(itemRtl),
                                         ),
@@ -513,7 +522,7 @@ private fun MarkdownContent(
                                         text = if (defRtl) BidiUtils.anchorTrailingRtl(def) else def,
                                         color = textColor,
                                         style =
-                                            MaterialTheme.typography.bodyMedium.copy(
+                                            bodyStyle.copy(
                                                 textDirection = bidiTextDirection(defRtl),
                                             ),
                                         modifier = Modifier.padding(start = 16.dp, bottom = 2.dp),
@@ -538,7 +547,7 @@ private fun MarkdownContent(
                         Text(
                             text = "Footnotes",
                             color = textColor,
-                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                            style = bodyStyle.copy(fontWeight = FontWeight.Bold),
                             modifier = Modifier.padding(bottom = 2.dp),
                         )
                         block.notes.forEach { note ->
@@ -580,7 +589,7 @@ private fun MarkdownContent(
                             textColor = textColor,
                             latexMeasurer = latexMeasurer,
                             style =
-                                MaterialTheme.typography.bodyMedium.copy(
+                                bodyStyle.copy(
                                     textDirection = bidiTextDirection(isRtl),
                                 ),
                             searchQuery = searchQuery,

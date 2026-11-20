@@ -1,24 +1,40 @@
 package com.m57.hermescontrol.ui.chat
 
+import android.Manifest
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.os.Build
+import android.os.Debug
+import android.os.ParcelFileDescriptor
 import android.os.SystemClock
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivityResultRegistryOwner
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.unit.Density
 import androidx.test.espresso.Espresso
 import androidx.test.platform.app.InstrumentationRegistry
 import com.m57.hermescontrol.data.model.SessionInfo
@@ -27,6 +43,7 @@ import com.m57.hermescontrol.navigation.ShellTab
 import com.m57.hermescontrol.theme.HermesControlTheme
 import com.m57.hermescontrol.theme.ThemePreference
 import com.m57.hermescontrol.ui.chat.components.ConversationMenuSheet
+import com.m57.hermescontrol.ui.chat.fullbleed.MAIN_CHAT_WAITING_KEY
 import com.m57.hermescontrol.ui.common.ActionProgressController
 import com.m57.hermescontrol.ui.common.ShellBottomBar
 import com.m57.hermescontrol.ui.sessions.SessionsUiState
@@ -46,7 +63,10 @@ class ChatUiEvidenceTest {
     val compose = createAndroidComposeRule<ComponentActivity>()
 
     @Composable
-    private fun JapaneseTheme(content: @Composable () -> Unit) {
+    private fun JapaneseTheme(
+        preference: ThemePreference = ThemePreference.DARK,
+        content: @Composable () -> Unit,
+    ) {
         val context = LocalContext.current
         val current = LocalConfiguration.current
         val configuration = remember(current) { Configuration(current).apply { setLocale(Locale.JAPAN) } }
@@ -56,8 +76,90 @@ class ChatUiEvidenceTest {
             LocalContext provides localized,
             LocalActivityResultRegistryOwner provides compose.activity,
         ) {
-            HermesControlTheme(themePreference = ThemePreference.DARK, content = content)
+            HermesControlTheme(themePreference = preference, content = content)
         }
+    }
+
+    @Test
+    fun mainHeaderAndStatusSheetRemainReachableWithLargeText() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            instrumentation.uiAutomation.grantRuntimePermission(
+                instrumentation.targetContext.packageName,
+                Manifest.permission.POST_NOTIFICATIONS,
+            )
+        }
+        val model = mockk<ChatViewModel>(relaxed = true)
+        every { model.specialistChat } returns
+            mockk {
+                every { state } returns MutableStateFlow(SpecialistChatState())
+            }
+        every { model.uiState } returns
+            MutableStateFlow(
+                ChatUiState(
+                    connectionStatus = ConnectionStatus.CONNECTED,
+                    currentSessionModel = "test-model",
+                    reasoningLevel = "high",
+                    usedContextTokens = 500,
+                    fullContextTokens = 8000,
+                ),
+            )
+        every { model.streamingState } returns MutableStateFlow(StreamingState())
+        every { model.searchState } returns ChatSearchState()
+        every { model.actionProgress } returns ActionProgressController(CoroutineScope(Dispatchers.Main))
+        val preference = mutableStateOf(ThemePreference.DARK)
+        val fontScale = mutableStateOf(1f)
+        compose.runOnUiThread {
+            compose.activity.enableEdgeToEdge()
+            compose.activity.window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        }
+        compose.setContent {
+            JapaneseTheme(preference.value) {
+                CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, fontScale.value)) {
+                    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+                    Scaffold(
+                        contentWindowInsets = WindowInsets.navigationBars,
+                        bottomBar = { if (!imeVisible) ShellBottomBar(ShellTab.AGENT, museMinimal = true) },
+                    ) { padding ->
+                        ChatScreen(
+                            viewModel = model,
+                            onOpenDrawer = {},
+                            modifier = Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize(),
+                        )
+                    }
+                }
+            }
+        }
+        capture("05-main-chat-dark")
+        compose.onNodeWithTag("menu_button", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithTag("chat_header_avatar", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithText("新規").assertDoesNotExist()
+        compose.onNodeWithTag("model_chip").assertDoesNotExist()
+        compose.onNodeWithTag("reasoning_chip").assertDoesNotExist()
+        compose.onNodeWithTag("chat_settings_button").assertDoesNotExist()
+        compose.onNodeWithTag("shell_tab_agent").assertIsDisplayed()
+        compose.onNodeWithTag("chat_header_pill").performClick()
+        compose.onNodeWithTag("header_sheet_model_row").assertIsDisplayed()
+        compose.onNodeWithTag("header_sheet_reasoning_card").assertIsDisplayed()
+        compose.onNodeWithTag("header_sheet_context_row").assertIsDisplayed()
+        capture("06-main-chat-status-sheet")
+        Espresso.pressBack()
+        compose.runOnIdle {
+            preference.value = ThemePreference.LIGHT
+            fontScale.value = 1.6f
+        }
+        compose.onNodeWithTag("chat_header_pill").assertIsDisplayed()
+        capture("07-main-chat-light-large-text")
+        compose.onNodeWithTag("chat_input").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("shell_tab_agent").fetchSemanticsNodes().isEmpty() }
+        compose.onNodeWithTag("chat_header_pill").assertIsDisplayed()
+        compose.onNodeWithTag("model_chip").assertIsDisplayed()
+        compose.onNodeWithTag("reasoning_chip").assertIsDisplayed()
+        capture("08-main-chat-light-keyboard")
+        Espresso.pressBack()
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("shell_tab_agent").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("model_chip").assertDoesNotExist()
+        compose.onNodeWithTag("reasoning_chip").assertDoesNotExist()
     }
 
     private fun capture(name: String) {
@@ -77,11 +179,87 @@ class ChatUiEvidenceTest {
     }
 
     @Test
-    fun captureComposerPickerToolsAndConnectionHistory() {
+    fun streamingReplacesWaitingDotsWithTheAnswerBubble() {
+        val transcript =
+            List(500) { index ->
+                ChatMessage(
+                    id = "history-$index",
+                    role = if (index % 2 == 0) MessageRole.USER else MessageRole.ASSISTANT,
+                    content = "Previous message $index",
+                )
+            } + ChatMessage(id = "current", role = MessageRole.USER, content = "Current prompt")
+        val model = mockk<ChatViewModel>(relaxed = true)
+        val streaming = MutableStateFlow(StreamingState())
+        every { model.specialistChat } returns
+            mockk {
+                every { state } returns MutableStateFlow(SpecialistChatState())
+            }
+        every { model.uiState } returns
+            MutableStateFlow(
+                ChatUiState(
+                    messages = transcript,
+                    currentSessionId = "fixture-stream-session",
+                    connectionStatus = ConnectionStatus.CONNECTED,
+                    isAgentTyping = true,
+                ),
+            )
+        every { model.streamingState } returns streaming
+        every { model.searchState } returns ChatSearchState()
+        every { model.actionProgress } returns ActionProgressController(CoroutineScope(Dispatchers.Main))
+        compose.setContent { JapaneseTheme { ChatScreen(viewModel = model, onOpenDrawer = {}) } }
+        compose.onNodeWithTag(MAIN_CHAT_WAITING_KEY).assertIsDisplayed()
+
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val packageName = instrumentation.targetContext.packageName
+
+        fun graphicsStats(suffix: String = ""): String =
+            ParcelFileDescriptor
+                .AutoCloseInputStream(
+                    instrumentation.uiAutomation.executeShellCommand("dumpsys gfxinfo $packageName$suffix"),
+                ).bufferedReader()
+                .use { it.readText() }
+
+        graphicsStats(" reset")
+        val cpuBefore = compose.runOnIdle { Debug.threadCpuTimeNanos() }
+        val runtime = Runtime.getRuntime()
+        val heapBefore = runtime.totalMemory() - runtime.freeMemory()
+        val wallBefore = SystemClock.elapsedRealtime()
+        val reply = ChatMessage(id = "stream", role = MessageRole.ASSISTANT, content = "Streaming", isStreaming = true)
+        var text = reply.content
+        compose.mainClock.autoAdvance = false
+        try {
+            repeat(120) {
+                text += " delta"
+                val update = StreamingState(streamingMessage = reply.copy(content = text), isWritingText = true)
+                compose.runOnUiThread { streaming.value = update }
+                compose.mainClock.advanceTimeByFrame()
+                compose.waitForIdle()
+            }
+        } finally {
+            compose.mainClock.autoAdvance = true
+        }
+        compose.onNodeWithText(text).assertIsDisplayed()
+        compose.onNodeWithTag(MAIN_CHAT_WAITING_KEY).assertDoesNotExist()
+        val elapsed = SystemClock.elapsedRealtime() - wallBefore
+        val cpuNanos = compose.runOnIdle { Debug.threadCpuTimeNanos() } - cpuBefore
+        val heapAfter = runtime.totalMemory() - runtime.freeMemory()
+        File(instrumentation.targetContext.getExternalFilesDir(null), "chat-streaming-metrics.txt").writeText(
+            "historyRows=501 updates=120 elapsedMs=$elapsed mainThreadCpuNs=$cpuNanos\n" +
+                "javaHeapUsedBefore=$heapBefore javaHeapUsedAfter=$heapAfter\n" + graphicsStats(),
+        )
+    }
+
+    @Test
+    fun mainChatShowsMessagesAndPreservesTheAttachmentPicker() {
         val messages =
             listOf(
                 ChatMessage(id = "fixture-user", role = MessageRole.USER, content = "表示確認用の会話です。"),
-                ChatMessage(id = "fixture-answer", role = MessageRole.ASSISTANT, content = "確認結果です。詳細は必要なときに開けます。"),
+                ChatMessage(
+                    id = "fixture-answer",
+                    role = MessageRole.ASSISTANT,
+                    content = "確認結果です。詳細は必要なときに開けます。",
+                    reasoningText = "非表示にする推論テキスト",
+                ),
                 ChatMessage(
                     id = "fixture-tool-1",
                     role = MessageRole.TOOL,
@@ -108,7 +286,7 @@ class ChatUiEvidenceTest {
                 ChatMessage(id = "fixture-connect-3", role = MessageRole.SYSTEM, content = "Connected to Hermes"),
                 ChatMessage(id = "fixture-connect-4", role = MessageRole.SYSTEM, content = "Session resumed"),
             )
-        val state =
+        val fixtureState =
             ChatUiState(
                 messages = messages,
                 connectionStatus = ConnectionStatus.CONNECTED,
@@ -119,7 +297,11 @@ class ChatUiEvidenceTest {
                 typingEffectEnabled = false,
             )
         val model = mockk<ChatViewModel>(relaxed = true)
-        every { model.uiState } returns MutableStateFlow(state)
+        every { model.specialistChat } returns
+            mockk {
+                every { state } returns MutableStateFlow(SpecialistChatState())
+            }
+        every { model.uiState } returns MutableStateFlow(fixtureState)
         every { model.streamingState } returns MutableStateFlow(StreamingState())
         every { model.searchState } returns ChatSearchState()
         every { model.actionProgress } returns ActionProgressController(CoroutineScope(Dispatchers.Main))
@@ -131,19 +313,19 @@ class ChatUiEvidenceTest {
                 }
             }
         }
-        // Idle composer is one line: model / thinking controls appear only while composing.
-        compose.onNodeWithTag("model_chip").assertDoesNotExist()
-        compose.onNodeWithTag("reasoning_chip").assertDoesNotExist()
-        capture("01-composer-tools-collapsed")
+        compose.onNodeWithTag("chat_user_text_surface").assertIsDisplayed()
+        compose.onNodeWithTag("chat_assistant_bubble").assertIsDisplayed()
+        compose.onNodeWithTag("fullbleed_agent_header").assertDoesNotExist()
+        compose.onNodeWithTag("fullbleed_finish_time").assertDoesNotExist()
+        compose.onNodeWithText("非表示にする推論テキスト").assertDoesNotExist()
+        compose.onNodeWithTag("chat_tool_toggle").assertDoesNotExist()
+        compose.onNodeWithTag("chat_connection_events").assertDoesNotExist()
+        capture("01-main-chat-bubbles")
         compose.onNodeWithTag("chat_attach_button").performClick()
         compose.onNodeWithTag("chat_attachment_menu").assertIsDisplayed()
         capture("02-google-symbols-attachment-picker")
         Espresso.pressBack()
-        compose.onAllNodesWithTag("chat_tool_toggle")[0].performClick()
-        capture("03-tool-detail-expanded")
-        compose.onAllNodesWithTag("chat_tool_toggle")[0].performClick()
-        compose.onNodeWithTag("chat_connection_events").performClick()
-        capture("04-connection-history-expanded")
+        compose.onNodeWithTag("chat_attachment_menu").assertDoesNotExist()
     }
 
     @Test

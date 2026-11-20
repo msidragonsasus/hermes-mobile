@@ -103,6 +103,12 @@ android {
             buildConfigField("boolean", "ALLOW_CLEARTEXT", "true")
             manifestPlaceholders["usesCleartextTraffic"] = "true"
         }
+        create("profile") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs["debug"]
+            isDebuggable = false
+            matchingFallbacks += "release"
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21

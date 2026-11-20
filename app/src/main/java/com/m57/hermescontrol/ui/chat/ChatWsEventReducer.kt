@@ -404,7 +404,7 @@ object ChatWsEventReducer {
             segments += sealedLive.copy(isStreaming = false, reasoningText = reasoning, finishTimestamp = now)
         }
         val text = event.text
-        val turn = state.messages.drop(state.messages.indexOfLast { it.role == MessageRole.USER } + 1) + segments
+        val turn = currentTurnMessages(state) + segments
 
         fun ChatMessage.shows(text: String) = role == MessageRole.ASSISTANT && content.trim() == text.trim()
         // Only explicit already-streamed evidence can reuse a delivered segment.
@@ -554,12 +554,33 @@ object ChatWsEventReducer {
         }
     }
 
+    private fun currentTurnMessages(state: ChatUiState): List<ChatMessage> {
+        val activeId = state.responseLedger.activeId
+        val active = activeId?.let { id -> state.responseLedger.responses.singleOrNull { it.id == id } }
+        if (active != null) {
+            val activeUserIdx =
+                state.messages.indexOfLast {
+                    it.id in active.userIds || state.responseLedger.pendingInputs[it.id] == active.id
+                }
+            val followUpUserIds =
+                state.responseLedger.responses
+                    .filter { it.serverFollowUp }
+                    .flatMapTo(mutableSetOf()) { it.userIds }
+            val lastFollowUpIdx = state.messages.indexOfLast { it.id in followUpUserIds }
+            if (activeUserIdx in 0 until lastFollowUpIdx) {
+                val ownedIds = active.messageIds.toHashSet()
+                return state.messages.filter { it.id in ownedIds }
+            }
+        }
+        return state.messages.drop(state.messages.indexOfLast { it.role == MessageRole.USER } + 1)
+    }
+
     private fun finalizedMessageInCurrentTurn(
         state: ChatUiState,
         streamingState: StreamingState,
     ): ChatMessage? {
         val finalized = streamingState.finalizedMessage ?: return null
-        val turn = state.messages.drop(state.messages.indexOfLast { it.role == MessageRole.USER } + 1)
+        val turn = currentTurnMessages(state)
         // Hydration may have replaced the local UUID with its REST counterpart.
         // Only match within this turn so a later identical answer stays distinct.
         return turn.firstOrNull { it.id == finalized.id }
@@ -587,8 +608,7 @@ object ChatWsEventReducer {
             if (event.responsePreviewed == true && !streamingState.turnEnded &&
                 streaming?.content.isNullOrBlank()
             ) {
-                state.messages
-                    .drop(state.messages.indexOfLast { it.role == MessageRole.USER } + 1)
+                currentTurnMessages(state)
                     .singleOrNull {
                         it.id == streamingState.previewedFinalCandidateId &&
                             it.id in streamingState.sealedOrphanIds &&

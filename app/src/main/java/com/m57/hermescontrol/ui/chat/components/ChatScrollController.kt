@@ -9,12 +9,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.yield
 
 /**
  * Owns all chat scroll behavior (issue #682):
@@ -59,6 +60,8 @@ class ChatScrollController(
 
     private var lastTailKey: Any? = null
     private var lastMessageCount: Int = 0
+    private var tailFollowJob: Job? = null
+    private var tailFollowPending = false
 
     /**
      * Guard flag: true while a programmatic scroll-to-bottom is in flight.
@@ -104,12 +107,7 @@ class ChatScrollController(
                         // IME, attachments and a growing composer resize the viewport without
                         // a reader gesture. Preserve follow intent; an older-history reader
                         // keeps their existing LazyColumn anchor instead.
-                        isProgrammaticScroll = true
-                        try {
-                            scrollToBottomAwaitingLayout()
-                        } finally {
-                            isProgrammaticScroll = false
-                        }
+                        scheduleTailFollow()
                     } else if (atBottom) {
                         isFollowingBottom = true
                         // Reaching the bottom means the reader caught up.
@@ -147,60 +145,54 @@ class ChatScrollController(
         lastMessageCount = messageCount
         lastTailKey = tailKey
         if (isFollowingBottom) {
-            // Pin instantly so rapid streamed tokens don't queue competing
-            // animations; the reader stays glued to the growing tail.
-            // Use layout-aware scrolling to survive the Compose layout race.
-            scope.launch {
-                isProgrammaticScroll = true
-                try {
-                    scrollToBottomAwaitingLayout()
-                } finally {
-                    isProgrammaticScroll = false
-                }
-            }
+            scheduleTailFollow()
         } else {
             pendingCount += newMessages
         }
     }
 
-    /**
-     * Scroll to the true bottom of the list, waiting for Compose to lay out
-     * any newly added items first.
-     *
-     * The race: state.messages changes → LaunchedEffect fires onTailChanged →
-     * scrollToBottom uses layoutInfo.totalItemsCount which still reflects the
-     * OLD item count → scrolls to the old last item → the new item lays out
-     * below the viewport → isAtBottom returns false → follow mode breaks.
-     *
-     * Fix: yield to let the composition/layout pass run, then scroll. If the
-     * item count still hasn't caught up (rare, heavy layout), wait briefly
-     * via snapshotFlow on the layout info.
-     */
-    private suspend fun scrollToBottomAwaitingLayout() {
-        // Yield twice: first for recomposition, second for layout.
-        yield()
-        yield()
-        listState.scrollToBottom(animated = false)
-        // If we're still not at the bottom after the first scroll (e.g. a
-        // new item was laid out between the scroll and now), do one more pass.
-        if (!listState.isAtBottom(bottomPixelTolerance)) {
-            // Wait up to 150ms for the layout to settle with the new items.
-            withTimeoutOrNull(150L) {
-                snapshotFlow { listState.layoutInfo.totalItemsCount }
-                    .first { it > 0 }
+    private fun scheduleTailFollow() {
+        tailFollowPending = true
+        if (tailFollowJob?.isActive == true) return
+        tailFollowJob =
+            scope.launch {
+                isProgrammaticScroll = true
+                try {
+                    while (tailFollowPending && isFollowingBottom) {
+                        tailFollowPending = false
+                        scrollToBottomAwaitingLayout()
+                    }
+                } finally {
+                    isProgrammaticScroll = false
+                }
             }
+    }
+
+    private suspend fun scrollToBottomAwaitingLayout(animated: Boolean = false) {
+        if (listState.layoutInfo.totalItemsCount == 0) {
+            withTimeoutOrNull(150L) { snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 } } ?: return
+        }
+        // Layout-info observers can resume during LazyColumn subcomposition. Snap only on a later frame.
+        withFrameNanos { }
+        listState.scrollToBottom(animated)
+        if (!listState.isAtBottom(bottomPixelTolerance)) {
+            withFrameNanos { }
             listState.scrollToBottom(animated = false)
         }
     }
 
     /** Force-follow to the bottom (session switch / explicit send). Clears unread. */
     fun jumpToBottom(animated: Boolean = false) {
+        val previousFollow = tailFollowJob
+        previousFollow?.cancel()
+        tailFollowPending = false
         pendingCount = 0
         isFollowingBottom = true
         scope.launch {
+            previousFollow?.join()
             isProgrammaticScroll = true
             try {
-                listState.scrollToBottom(animated = animated)
+                scrollToBottomAwaitingLayout(animated)
             } finally {
                 isProgrammaticScroll = false
             }
@@ -248,6 +240,7 @@ class ChatScrollController(
         index: Int,
         contentOffset: Int,
         contentLength: Int,
+        obscuredTopPx: Int = 0,
     ) {
         // Runs in the caller's search effect: a changed query cancels stale positioning.
         listState.animateScrollToItem(index)
@@ -255,7 +248,9 @@ class ChatScrollController(
         val item = info.visibleItemsInfo.firstOrNull { it.index == index } ?: return
         val viewportHeight = info.viewportEndOffset - info.viewportStartOffset
         val fraction = if (contentLength > 0) contentOffset.toFloat() / contentLength else 0f
-        val targetTop = (viewportHeight / 3) - (item.size * fraction).toInt()
+        val targetTop =
+            (viewportHeight / 3).coerceAtLeast(obscuredTopPx + info.viewportStartOffset) -
+                (item.size * fraction).toInt()
         val delta = item.offset - targetTop
         if (delta != 0) {
             listState.animateScrollBy(delta.toFloat())
