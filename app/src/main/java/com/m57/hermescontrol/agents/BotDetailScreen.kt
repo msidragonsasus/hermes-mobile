@@ -1,25 +1,30 @@
 package com.m57.hermescontrol.agents
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.AutoAwesome
-import androidx.compose.material.icons.outlined.DeleteOutline
-import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Shield
@@ -28,8 +33,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -46,12 +51,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -61,6 +73,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.local.AuthManager
+import com.m57.hermescontrol.data.model.BotAvatarMeta
 import com.m57.hermescontrol.data.model.ConfigUpdateRequest
 import com.m57.hermescontrol.data.model.CronJob
 import com.m57.hermescontrol.data.model.ProfileInfo
@@ -78,6 +91,7 @@ import com.m57.hermescontrol.data.remote.SpecialistsRepository
 import com.m57.hermescontrol.data.remote.safeApiCall
 import com.m57.hermescontrol.ui.bots.BotsViewModel
 import com.m57.hermescontrol.ui.bots.EditBotBottomSheet
+import com.m57.hermescontrol.ui.chat.components.friendlyModelName
 import com.m57.hermescontrol.ui.chat.specialistAppsSummary
 import com.m57.hermescontrol.ui.common.BotAvatar
 import com.m57.hermescontrol.ui.common.CompactListRow
@@ -364,6 +378,30 @@ private enum class DetailEditorSheet {
     SETUP,
 }
 
+private val generatedBotId = Regex("bot-[0-9a-f]+", RegexOption.IGNORE_CASE)
+
+internal fun botDetailDisplayName(
+    profileName: String,
+    fallback: String,
+    vararg profiles: ProfileInfo?,
+): String {
+    fun String.isDisplayName(): Boolean =
+        isNotBlank() &&
+            !trim().equals(profileName, ignoreCase = true) &&
+            !generatedBotId.matches(trim()) &&
+            !(generatedBotId.matches(profileName) && contains(profileName, ignoreCase = true))
+
+    val matchingProfiles = profiles.filterNotNull().filter { it.name == profileName }
+    return matchingProfiles.firstNotNullOfOrNull {
+        BotConversations.label(profileName, it)?.takeIf { name ->
+            name.isDisplayName()
+        }
+    }
+        ?: matchingProfiles.firstNotNullOfOrNull { it.display_name?.takeIf { name -> name.isDisplayName() } }
+        ?: BotConversations.label(profileName)?.takeIf { it.isDisplayName() }
+        ?: fallback
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun BotDetailScreen(
@@ -375,6 +413,7 @@ internal fun BotDetailScreen(
         },
 ) {
     val state by detailViewModel.uiState.collectAsStateWithLifecycle()
+    val roster by botsViewModel.uiState.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
     val specialistRepository = remember { SpecialistsRepository() }
@@ -386,6 +425,12 @@ internal fun BotDetailScreen(
     }
 
     val bot = state.profile
+    val rosterBot =
+        roster.profiles.takeIf { roster.rosterScope == BotConversations.serverScope() }?.firstOrNull {
+            it.name ==
+                profileName
+        }
+    val displayName = botDetailDisplayName(profileName, stringResource(R.string.chat_header_specialist), rosterBot, bot)
     val setupIncomplete =
         state.setupSnapshot?.setup_completed == false || (bot?.isSetupIncomplete == true && state.setupSnapshot == null)
 
@@ -394,7 +439,7 @@ internal fun BotDetailScreen(
             onDismissRequest = { showDeleteConfirm = false },
             title = {
                 Text(
-                    text = stringResource(R.string.bots_edit_delete_confirm_title, bot.effectiveTitle),
+                    text = stringResource(R.string.bots_edit_delete_confirm_title, displayName),
                     fontWeight = FontWeight.Bold,
                 )
             },
@@ -661,6 +706,7 @@ internal fun BotDetailScreen(
             if (bot != null) {
                 EditBotBottomSheet(
                     bot = bot,
+                    displayName = displayName,
                     onExecutionSettings = {
                         activeEditor = null
                         NavigationController.navigateTo(BotDefaultsKey(profileName))
@@ -684,7 +730,7 @@ internal fun BotDetailScreen(
             if (bot != null) {
                 SpecialistSetupSheet(
                     profileName = bot.name,
-                    displayTitle = bot.effectiveTitle,
+                    displayTitle = displayName,
                     isChatConnected = false,
                     canSendToCurrentChat = false,
                     onConfirmed = {
@@ -702,18 +748,14 @@ internal fun BotDetailScreen(
     }
 
     HermesScaffold(
-        title = {
-            Text(
-                text = bot?.effectiveTitle ?: profileName,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        },
+        title = {},
         navigationIcon = NavIcon.Back { NavigationController.goBack() },
         drawerGesturesEnabled = false,
+        pinTopBar = true,
+        topBarHeight = 48.dp,
         showShellMenu = false,
         modifier = Modifier.testTag("bot_detail_screen"),
-    ) { innerPadding ->
+    ) {
         when {
             state.loading && bot == null -> {
                 LoadingState(Modifier.fillMaxSize())
@@ -728,60 +770,18 @@ internal fun BotDetailScreen(
             }
 
             bot != null -> {
-                val approvalLabel =
-                    when (state.approvalMode) {
-                        "smart" -> "smart"
-                        "off" -> "off"
-                        else -> "manual"
-                    }
-                val enabledSkillCount = state.skills.count { it.enabled }
-                val activeCronCount = state.cronJobs.count { it.state != "paused" }
-                val rows =
-                    listOf(
-                        Triple(
-                            "soul",
-                            Icons.Outlined.Description to stringResource(R.string.specialist_detail_row_soul),
-                            bot.effectiveDescription.ifBlank { "未設定" },
-                        ),
-                        Triple(
-                            "routines",
-                            Icons.Outlined.Schedule to stringResource(R.string.specialist_detail_row_routines),
-                            "${activeCronCount}件有効",
-                        ),
-                        Triple(
-                            "skills",
-                            Icons.Outlined.AutoAwesome to stringResource(R.string.specialist_detail_row_skills),
-                            "$enabledSkillCount/${state.skills.size}件",
-                        ),
-                        Triple(
-                            "approvals",
-                            Icons.Outlined.Shield to stringResource(R.string.specialist_detail_row_approvals),
-                            approvalLabel,
-                        ),
-                        Triple(
-                            "model",
-                            Icons.Outlined.Tune to stringResource(R.string.specialist_detail_row_model),
-                            bot.model?.takeIf { it.isNotBlank() } ?: "既定",
-                        ),
-                        Triple(
-                            "appearance",
-                            Icons.Outlined.Palette to stringResource(R.string.specialist_detail_row_appearance),
-                            bot.effectiveTitle,
-                        ),
-                    )
-
+                val avatar = bot.botMeta()?.avatar
+                val description = bot.effectiveDescription
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize().padding(innerPadding).padding(horizontal = 16.dp),
+                    modifier = Modifier.fillMaxSize().testTag("bot_detail_list"),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     if (state.saving) {
-                        item("saving") {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        }
+                        item("saving") { LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) }
                     }
-
                     state.notice?.let { note ->
                         item("notice") {
-                            Spacer(Modifier.height(8.dp))
                             InlineNotice(
                                 text = note,
                                 tone = NoticeTone.Info,
@@ -790,123 +790,94 @@ internal fun BotDetailScreen(
                             )
                         }
                     }
-
                     state.error?.let { err ->
-                        item("error") {
-                            Spacer(Modifier.height(8.dp))
-                            InlineNotice(text = err, tone = NoticeTone.Error)
-                        }
+                        item("error") { InlineNotice(text = err, tone = NoticeTone.Error) }
                     }
 
                     item("header") {
-                        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                BotAvatar(
-                                    name = bot.name,
-                                    avatar = bot.botMeta()?.avatar,
-                                    size = 52.dp,
-                                    showPresence = false,
-                                )
-                                Spacer(Modifier.width(12.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        text = bot.effectiveTitle,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    Text(
-                                        text = "@${bot.name}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                    )
-                                }
-                                Surface(
-                                    color =
-                                        if (setupIncomplete) {
-                                            MaterialTheme.colorScheme.secondaryContainer
-                                        } else {
-                                            MaterialTheme.colorScheme.surfaceContainerHigh
-                                        },
-                                    shape = MaterialTheme.shapes.small,
-                                ) {
-                                    Text(
-                                        text =
-                                            stringResource(
-                                                if (setupIncomplete) {
-                                                    R.string.specialist_detail_status_incomplete
-                                                } else {
-                                                    R.string.specialist_detail_status_ready
-                                                },
-                                            ),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    )
-                                }
-                            }
-
-                            Spacer(Modifier.height(14.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            BotAvatar(
+                                name = displayName,
+                                avatar = avatar?.copy(shape = "circle"),
+                                size = 72.dp,
+                                showPresence = false,
+                                modifier = Modifier.clearAndSetSemantics {},
+                            )
+                            Text(
+                                text = displayName,
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.semantics { heading() }.testTag("detail_name"),
+                            )
+                            BotDetailDescription(
+                                description = description,
+                                onEdit = { activeEditor = DetailEditorSheet.SOUL },
+                            )
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                shape = CircleShape,
                             ) {
-                                PrimaryPillButton(
-                                    onClick = {
-                                        scope.launch {
-                                            val canonicalId =
-                                                bot.canonical_session?.resolved_id ?: bot.canonical_session?.id
-                                            BotConversations.openSpecialist(
-                                                profileName = bot.name,
-                                                canonicalSessionId = canonicalId,
-                                                openSetupAfterLaunch = setupIncomplete,
-                                            )
-                                        }
-                                    },
-                                    modifier = Modifier.weight(1f).testTag("detail_open_chat"),
-                                ) {
-                                    Icon(
-                                        Icons.AutoMirrored.Filled.Chat,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
+                                Text(
+                                    text =
+                                        stringResource(
+                                            if (setupIncomplete) {
+                                                R.string.specialist_detail_status_setting_up
+                                            } else {
+                                                R.string.specialist_detail_status_ready
+                                            },
+                                        ),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                )
+                            }
+                        }
+                    }
+
+                    item("consultation") {
+                        PrimaryPillButton(
+                            onClick = {
+                                scope.launch {
+                                    val canonicalId = bot.canonical_session?.resolved_id ?: bot.canonical_session?.id
+                                    BotConversations.openSpecialist(
+                                        profileName = bot.name,
+                                        canonicalSessionId = canonicalId,
+                                        openSetupAfterLaunch = setupIncomplete,
                                     )
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(stringResource(R.string.specialist_detail_open_chat))
                                 }
-                                if (setupIncomplete || state.setupSnapshot?.activation == "pending_apply") {
-                                    OutlinedButton(
-                                        onClick = {
-                                            val epoch = AuthManager.connectionEpoch.value
-                                            scope.launch {
-                                                val capabilities =
-                                                    specialistRepository.fetchCapabilities(
-                                                        SpecialistRequestScope(epoch),
-                                                    )
-                                                if (epoch != AuthManager.connectionEpoch.value) return@launch
-                                                when (capabilities) {
-                                                    is SpecialistCapabilitiesState.Supported -> {
-                                                        if (capabilities.capabilities.supportsSetupChat) {
-                                                            if (!BotConversations.openSpecialist(bot.name)) {
-                                                                android.widget.Toast
-                                                                    .makeText(
-                                                                        context,
-                                                                        R.string.specialist_chat_unavailable,
-                                                                        android.widget.Toast.LENGTH_SHORT,
-                                                                    ).show()
-                                                            }
-                                                        } else {
-                                                            activeEditor = DetailEditorSheet.SETUP
-                                                        }
-                                                    }
+                            },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("detail_open_chat"),
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Chat,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(stringResource(R.string.specialist_detail_open_chat))
+                        }
+                    }
 
-                                                    is SpecialistCapabilitiesState.LegacyUnsupported -> {
-                                                        activeEditor =
-                                                            DetailEditorSheet.SETUP
-                                                    }
-
-                                                    else -> {
+                    if (setupIncomplete || state.setupSnapshot?.activation == "pending_apply") {
+                        item("setup") {
+                            OutlinedButton(
+                                onClick = {
+                                    val epoch = AuthManager.connectionEpoch.value
+                                    scope.launch {
+                                        val capabilities =
+                                            specialistRepository.fetchCapabilities(
+                                                SpecialistRequestScope(epoch),
+                                            )
+                                        if (epoch != AuthManager.connectionEpoch.value) return@launch
+                                        when (capabilities) {
+                                            is SpecialistCapabilitiesState.Supported -> {
+                                                if (capabilities.capabilities.supportsSetupChat) {
+                                                    if (!BotConversations.openSpecialist(bot.name)) {
                                                         android.widget.Toast
                                                             .makeText(
                                                                 context,
@@ -914,82 +885,108 @@ internal fun BotDetailScreen(
                                                                 android.widget.Toast.LENGTH_SHORT,
                                                             ).show()
                                                     }
+                                                } else {
+                                                    activeEditor = DetailEditorSheet.SETUP
                                                 }
                                             }
-                                        },
-                                        modifier = Modifier.testTag("detail_open_setup"),
-                                    ) {
-                                        Text(stringResource(R.string.specialist_setup_open_action))
+
+                                            is SpecialistCapabilitiesState.LegacyUnsupported -> {
+                                                activeEditor = DetailEditorSheet.SETUP
+                                            }
+
+                                            else -> {
+                                                android.widget.Toast
+                                                    .makeText(
+                                                        context,
+                                                        R.string.specialist_chat_unavailable,
+                                                        android.widget.Toast.LENGTH_SHORT,
+                                                    ).show()
+                                            }
+                                        }
                                     }
-                                }
-                            }
-                        }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    }
-
-                    items(rows, key = { it.first }) { (id, iconAndTitle, trailingValue) ->
-                        val (icon, label) = iconAndTitle
-                        CompactListRow(
-                            onClick = {
-                                when (id) {
-                                    "soul" -> activeEditor = DetailEditorSheet.SOUL
-                                    "routines" -> activeEditor = DetailEditorSheet.ROUTINES
-                                    "skills" -> activeEditor = DetailEditorSheet.SKILLS
-                                    "approvals" -> activeEditor = DetailEditorSheet.APPROVALS
-                                    "model" -> NavigationController.navigateTo(BotDefaultsKey(bot.name))
-                                    "appearance" -> activeEditor = DetailEditorSheet.APPEARANCE
-                                }
-                            },
-                            trailing = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = trailingValue,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    Spacer(Modifier.width(4.dp))
-                                    Icon(
-                                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            },
-                            modifier = Modifier.testTag("detail_row_$id"),
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    icon,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(20.dp),
-                                )
-                                Spacer(Modifier.width(12.dp))
-                                Text(
-                                    text = label,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                                },
+                                modifier = Modifier.fillMaxWidth().testTag("detail_open_setup"),
+                            ) {
+                                Text(stringResource(R.string.specialist_setup_open_action))
                             }
                         }
                     }
 
-                    state.setupSnapshot?.apps?.let { apps ->
-                        item("apps") {
-                            CompactListRow(modifier = Modifier.testTag("detail_row_apps")) {
-                                Text(
-                                    stringResource(R.string.specialist_apps_label),
-                                    style = MaterialTheme.typography.bodyLarge,
-                                )
-                                Text(
-                                    specialistAppsSummary(
-                                        apps,
-                                    ).ifBlank { stringResource(R.string.specialist_chat_none) },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    item("work") {
+                        BotSettingsGroup(stringResource(R.string.specialist_detail_group_work)) {
+                            BotSettingsRow(
+                                label = stringResource(R.string.specialist_detail_row_routines),
+                                icon = Icons.Outlined.Schedule,
+                                value =
+                                    stringResource(
+                                        R.string.specialist_detail_routines_count,
+                                        state.cronJobs.count { it.state != "paused" },
+                                    ),
+                                modifier = Modifier.testTag("detail_row_routines"),
+                                onClick = { activeEditor = DetailEditorSheet.ROUTINES },
+                            )
+                            BotSettingsRow(
+                                label = stringResource(R.string.specialist_detail_row_skills),
+                                icon = Icons.Outlined.AutoAwesome,
+                                value =
+                                    stringResource(
+                                        R.string.specialist_detail_skills_count,
+                                        state.skills.count { it.enabled },
+                                        state.skills.size,
+                                    ),
+                                modifier = Modifier.testTag("detail_row_skills"),
+                                onClick = { activeEditor = DetailEditorSheet.SKILLS },
+                            )
+                            BotSettingsRow(
+                                label = stringResource(R.string.specialist_detail_row_approvals),
+                                icon = Icons.Outlined.Shield,
+                                value = state.approvalMode.takeIf { it == "smart" || it == "off" } ?: "manual",
+                                modifier = Modifier.testTag("detail_row_approvals"),
+                                onClick = { activeEditor = DetailEditorSheet.APPROVALS },
+                            )
+                        }
+                    }
+
+                    item("model") {
+                        BotSettingsGroup(stringResource(R.string.specialist_detail_group_model)) {
+                            BotSettingsRow(
+                                label = stringResource(R.string.specialist_detail_row_model),
+                                icon = Icons.Outlined.Tune,
+                                value =
+                                    friendlyModelName(bot.model)
+                                        ?: stringResource(R.string.specialist_detail_default_model),
+                                modifier = Modifier.testTag("detail_row_model"),
+                                onClick = { NavigationController.navigateTo(BotDefaultsKey(bot.name)) },
+                            )
+                        }
+                    }
+
+                    item("appearance_and_apps") {
+                        BotSettingsGroup(stringResource(R.string.specialist_detail_group_appearance_apps)) {
+                            BotSettingsRow(
+                                label = stringResource(R.string.specialist_detail_row_appearance),
+                                icon = Icons.Outlined.Palette,
+                                modifier = Modifier.testTag("detail_row_appearance"),
+                                onClick = { activeEditor = DetailEditorSheet.APPEARANCE },
+                                avatarPreview = {
+                                    BotAvatar(
+                                        name = displayName,
+                                        avatar = avatar,
+                                        size = 32.dp,
+                                        showPresence = false,
+                                        modifier = Modifier.clearAndSetSemantics {},
+                                    )
+                                },
+                            )
+                            state.setupSnapshot?.apps?.let { apps ->
+                                BotSettingsRow(
+                                    label = stringResource(R.string.specialist_apps_label),
+                                    icon = Icons.Outlined.Extension,
+                                    value =
+                                        specialistAppsSummary(
+                                            apps,
+                                        ).ifBlank { stringResource(R.string.specialist_chat_none) },
+                                    modifier = Modifier.testTag("detail_row_apps"),
                                 )
                             }
                         }
@@ -997,30 +994,141 @@ internal fun BotDetailScreen(
 
                     if (bot.is_default != true && bot.name != "default") {
                         item("delete") {
-                            CompactListRow(
+                            TextButton(
                                 onClick = { showDeleteConfirm = true },
-                                modifier = Modifier.testTag("detail_row_delete"),
+                                colors =
+                                    ButtonDefaults.textButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.error,
+                                    ),
+                                modifier = Modifier.fillMaxWidth().testTag("detail_row_delete"),
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        Icons.Outlined.DeleteOutline,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(20.dp),
-                                    )
-                                    Spacer(Modifier.width(12.dp))
-                                    Text(
-                                        text = stringResource(R.string.specialist_detail_row_delete),
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        color = MaterialTheme.colorScheme.error,
-                                        maxLines = 1,
-                                    )
-                                }
+                                Text(stringResource(R.string.specialist_detail_row_delete))
                             }
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun BotDetailDescription(
+    description: String,
+    onEdit: () -> Unit,
+) {
+    if (description.isBlank()) {
+        TextButton(onClick = onEdit, modifier = Modifier.testTag("detail_row_soul")) {
+            Text(stringResource(R.string.specialist_detail_row_soul))
+        }
+        return
+    }
+
+    var expanded by rememberSaveable(description) { mutableStateOf(false) }
+    var overflows by remember(description) { mutableStateOf(false) }
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                maxLines = if (expanded) Int.MAX_VALUE else 2,
+                overflow = TextOverflow.Ellipsis,
+                onTextLayout = { if (!expanded) overflows = it.hasVisualOverflow },
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            IconButton(onClick = onEdit, modifier = Modifier.testTag("detail_row_soul")) {
+                Icon(
+                    Icons.Outlined.Edit,
+                    contentDescription = stringResource(R.string.specialist_detail_row_soul),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        if (overflows || expanded) {
+            TextButton(onClick = { expanded = !expanded }) {
+                Text(
+                    stringResource(
+                        if (expanded) R.string.prompt_disclosure_show_less else R.string.prompt_disclosure_show_more,
+                    ),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BotSettingsGroup(
+    title: String,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = MaterialTheme.shapes.extraLarge,
+    ) {
+        Column(
+            modifier = Modifier.padding(vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp).semantics { heading() },
+            )
+            content()
+        }
+    }
+}
+
+@Composable
+private fun BotSettingsRow(
+    label: String,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    value: String? = null,
+    onClick: (() -> Unit)? = null,
+    avatarPreview: (@Composable () -> Unit)? = null,
+) {
+    val secondary = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .heightIn(min = 56.dp)
+                .then(if (onClick == null) Modifier else Modifier.clickable(role = Role.Button, onClick = onClick))
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(icon, contentDescription = null, tint = secondary, modifier = Modifier.size(20.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1.6f),
+        )
+        avatarPreview?.invoke()
+        if (value != null) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodySmall,
+                color = secondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.End,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        if (onClick != null) {
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = secondary,
+                modifier = Modifier.size(20.dp),
+            )
         }
     }
 }

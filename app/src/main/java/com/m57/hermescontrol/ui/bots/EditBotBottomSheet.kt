@@ -73,9 +73,10 @@ fun EditBotBottomSheet(
     onSave: (title: String, description: String, shape: String, color: String, icon: String?) -> Unit,
     onDelete: () -> Unit,
     onExecutionSettings: (() -> Unit)? = null,
+    displayName: String? = null,
 ) {
     val meta = bot.botMeta()
-    var title by remember { mutableStateOf(meta?.title ?: bot.effectiveTitle) }
+    var title by remember { mutableStateOf(displayName ?: meta?.title ?: bot.effectiveTitle) }
     var description by remember { mutableStateOf(meta?.description ?: bot.effectiveDescription) }
     var selectedShape by remember { mutableStateOf(meta?.avatar?.shape ?: "circle") }
     var selectedColor by remember { mutableStateOf(meta?.avatar?.color ?: BOT_AVATAR_COLORS[0]) }
@@ -87,7 +88,7 @@ fun EditBotBottomSheet(
             onDismissRequest = { showDeleteConfirm = false },
             title = {
                 Text(
-                    text = stringResource(R.string.bots_edit_delete_confirm_title, bot.effectiveTitle),
+                    text = stringResource(R.string.bots_edit_delete_confirm_title, displayName ?: bot.effectiveTitle),
                     fontWeight = FontWeight.Bold,
                 )
             },
@@ -149,7 +150,7 @@ fun EditBotBottomSheet(
                 contentAlignment = Alignment.Center,
             ) {
                 BotAvatar(
-                    name = bot.name,
+                    name = if (displayName != null) title.ifBlank { displayName } else bot.name,
                     avatar =
                         BotAvatarMeta(
                             shape = selectedShape,
@@ -212,7 +213,7 @@ fun EditBotBottomSheet(
                                 .testTag("bot_icon_option_${icon ?: "initials"}"),
                     ) {
                         BotAvatar(
-                            name = title.ifBlank { bot.name },
+                            name = title.ifBlank { displayName ?: bot.name },
                             avatar = BotAvatarMeta(shape = "circle", color = selectedColor, icon = icon),
                             size = 36.dp,
                             showPresence = false,

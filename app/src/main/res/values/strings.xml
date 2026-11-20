@@ -1462,6 +1462,12 @@
   <string name="specialist_setup_persisted_next_boundary">Saved permanently. SOUL and skill changes activate at the next session rebuild or compression (history is preserved).</string>
   <string name="specialist_setup_missing">Setup data was not found for this bot on the server (404).</string>
   <string name="specialist_detail_open_chat">Open consultation</string>
+  <string name="specialist_detail_group_work">How it works</string>
+  <string name="specialist_detail_group_model">Model</string>
+  <string name="specialist_detail_group_appearance_apps">Appearance and connections</string>
+  <string name="specialist_detail_routines_count">%1$d active</string>
+  <string name="specialist_detail_skills_count">%1$d/%2$d</string>
+  <string name="specialist_detail_default_model">Default</string>
   <string name="specialist_detail_return_main">Main</string>
   <string name="specialist_detail_row_soul">Role &amp; rules (SOUL)</string>
   <string name="specialist_detail_row_routines">Routines</string>
@@ -1472,6 +1478,7 @@
   <string name="specialist_detail_row_delete">Delete bot</string>
   <string name="specialist_detail_status_ready">Ready</string>
   <string name="specialist_detail_status_incomplete">Setup pending</string>
+  <string name="specialist_detail_status_setting_up">Setting up</string>
   <string name="specialist_detail_approval_manual">Manual (ask every time)</string>
   <string name="specialist_detail_approval_smart">Smart (risky actions ask)</string>
   <string name="specialist_detail_approval_off">Off (no prompts)</string>

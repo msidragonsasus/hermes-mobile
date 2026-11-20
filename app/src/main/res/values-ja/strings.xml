@@ -1295,7 +1295,13 @@
   <string name="specialist_setup_send_role_toggle">確定した役割をこの会話へ通常のメッセージとして1通送る</string>
   <string name="specialist_setup_persisted_next_boundary">設定を保存しました。SOULとスキルの変更は次回の会話再構築・圧縮時に反映されます（会話履歴は保持されます）。</string>
   <string name="specialist_setup_missing">このbotのセットアップ情報が見つかりませんでした（404）。</string>
-  <string name="specialist_detail_open_chat">個別相談を開く</string>
+  <string name="specialist_detail_open_chat">相談を開く</string>
+  <string name="specialist_detail_group_work">働き方</string>
+  <string name="specialist_detail_group_model">モデル</string>
+  <string name="specialist_detail_group_appearance_apps">見た目と連携</string>
+  <string name="specialist_detail_routines_count">%1$d件有効</string>
+  <string name="specialist_detail_skills_count">%1$d/%2$d件</string>
+  <string name="specialist_detail_default_model">既定</string>
   <string name="specialist_detail_return_main">メインへ</string>
   <string name="specialist_detail_row_soul">役割・ルール（SOUL）</string>
   <string name="specialist_detail_row_routines">定例作業</string>
@@ -1306,6 +1312,7 @@
   <string name="specialist_detail_row_delete">削除</string>
   <string name="specialist_detail_status_ready">設定済み</string>
   <string name="specialist_detail_status_incomplete">未完了（自動振り分け対象外）</string>
+  <string name="specialist_detail_status_setting_up">セットアップ中</string>
   <string name="specialist_detail_approval_manual">毎回確認（manual）</string>
   <string name="specialist_detail_approval_smart">危険な操作のみ確認（smart）</string>
   <string name="specialist_detail_approval_off">確認なし（off）</string>
