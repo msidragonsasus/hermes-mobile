@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,10 +19,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -39,17 +42,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.onClick
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.selected
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.R
 
@@ -169,47 +163,60 @@ fun ReasoningLevelPanel(
     val levels = availableReasoningLevels(canDisableReasoning)
     val committed = levels.indexOfFirst { it.first == (reasoningLevel ?: "medium") }.coerceAtLeast(0)
     var preview by remember(committed) { mutableIntStateOf(committed) }
-    Column(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp).testTag("reasoning_panel"),
-        horizontalAlignment = Alignment.CenterHorizontally,
+    val labels = levels.map { stringResource(it.second) }
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.extraLarge,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        contentColor = MaterialTheme.colorScheme.onSurface,
     ) {
-        Text(
-            buildAnnotatedString {
-                withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)) {
-                    append(stringResource(levels[preview].second))
-                }
-                append(stringResource(R.string.chat_reasoning_slider_suffix))
-            },
-            style = MaterialTheme.typography.titleMedium,
-        )
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            shadowElevation = 6.dp,
-            modifier = Modifier.padding(top = 12.dp).fillMaxWidth(),
+        Column(
+            modifier = Modifier.testTag("reasoning_panel").padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            SteppedSlider(
-                labels = levels.map { stringResource(it.second) },
-                tags = levels.map { "reasoning_level_${it.first}" },
-                selected = preview,
-                onPreview = { preview = it },
-                onCommit = { onSelect(levels[it].first) },
-                modifier = Modifier.padding(6.dp),
+            Text(
+                text = labels[preview] + stringResource(R.string.chat_reasoning_slider_suffix),
+                style = MaterialTheme.typography.titleMedium,
             )
+            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                SteppedSlider(
+                    count = levels.size,
+                    selected = preview,
+                    onPreview = { preview = it },
+                    onCommit = { onSelect(levels[it].first) },
+                    modifier = Modifier.padding(4.dp),
+                )
+            }
+            FlowRow(
+                modifier = Modifier.fillMaxWidth().selectableGroup(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+            ) {
+                levels.forEachIndexed { index, (level, _) ->
+                    FilterChip(
+                        selected = preview == index,
+                        onClick = {
+                            preview = index
+                            onSelect(level)
+                        },
+                        label = { Text(labels[index]) },
+                        modifier = Modifier.testTag("reasoning_level_$level"),
+                        border = null,
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
 private fun SteppedSlider(
-    labels: List<String>,
-    tags: List<String>,
+    count: Int,
     selected: Int,
     onPreview: (Int) -> Unit,
     onCommit: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val count = labels.size
     val thumb = 44.dp
     val density = LocalDensity.current
     val track = MaterialTheme.colorScheme.primary
@@ -228,13 +235,13 @@ private fun SteppedSlider(
             Modifier
                 .fillMaxWidth()
                 .fillMaxHeight()
-                .pointerInput(count) {
+                .pointerInput(count, stepWidth, density) {
                     detectTapGestures { offset ->
                         val i = indexAt(offset.x)
                         onPreview(i)
                         onCommit(i)
                     }
-                }.pointerInput(count) {
+                }.pointerInput(count, stepWidth, density) {
                     detectHorizontalDragGestures(
                         onDragStart = { dragIndex = indexAt(it.x) },
                         onDragEnd = { onCommit(dragIndex) },
@@ -253,22 +260,9 @@ private fun SteppedSlider(
                     .clip(CircleShape)
                     .background(track),
             )
-            labels.forEachIndexed { i, label ->
+            repeat(count) { i ->
                 Box(
-                    Modifier
-                        .offset(x = stepWidth * i)
-                        .size(thumb)
-                        .testTag(tags[i])
-                        .semantics {
-                            contentDescription = label
-                            role = Role.RadioButton
-                            this.selected = i == selected
-                            onClick {
-                                onPreview(i)
-                                onCommit(i)
-                                true
-                            }
-                        },
+                    Modifier.offset(x = stepWidth * i).size(thumb),
                     contentAlignment = Alignment.Center,
                 ) {
                     Box(

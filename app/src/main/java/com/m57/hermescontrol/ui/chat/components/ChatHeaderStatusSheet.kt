@@ -137,18 +137,12 @@ internal fun ChatHeaderStatusSheet(
             }
 
             if (controlsEnabled && supportsReasoning != false) {
-                Surface(
-                    shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainer,
-                    modifier = Modifier.fillMaxWidth().testTag("header_sheet_reasoning_card"),
-                ) {
-                    ReasoningLevelPanel(
-                        reasoningLevel = reasoningLevel,
-                        canDisableReasoning = canDisableReasoning,
-                        onSelect = { level -> onSelectReasoning(level) },
-                        modifier = Modifier.padding(vertical = 8.dp),
-                    )
-                }
+                ReasoningLevelPanel(
+                    reasoningLevel = reasoningLevel,
+                    canDisableReasoning = canDisableReasoning,
+                    onSelect = onSelectReasoning,
+                    modifier = Modifier.testTag("header_sheet_reasoning_card"),
+                )
             }
 
             if (fullContextTokens != null && usedContextTokens != null && fullContextTokens > 0) {

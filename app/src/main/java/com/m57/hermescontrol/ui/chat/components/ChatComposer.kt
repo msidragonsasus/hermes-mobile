@@ -233,6 +233,7 @@ fun ChatInputBar(
                             reasoningLevel = reasoningLevel,
                             canDisableReasoning = canDisableReasoning,
                             onSelect = onReasoningTap,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
                         )
                     }
                 }
