@@ -38,12 +38,15 @@ import com.m57.hermescontrol.data.transport.HermesAttentionTransport
 import com.m57.hermescontrol.data.ws.ConnectionStatus
 import com.m57.hermescontrol.data.ws.HermesWsClient
 import com.m57.hermescontrol.data.ws.JsonRpcError
+import com.m57.hermescontrol.data.ws.PersistedTurn
 import com.m57.hermescontrol.data.ws.ScopedWsEvent
 import com.m57.hermescontrol.data.ws.WsEvent
 import com.m57.hermescontrol.data.ws.WsMethods
 import com.m57.hermescontrol.domain.hermes.AttentionStatus
 import com.m57.hermescontrol.domain.hermes.DraftState
 import com.m57.hermescontrol.domain.hermes.OutgoingDraft
+import com.m57.hermescontrol.domain.hermes.PromptAcceptance
+import com.m57.hermescontrol.domain.hermes.PromptEvidence
 import com.m57.hermescontrol.domain.hermes.SubmissionResult
 import com.m57.hermescontrol.domain.hermes.draftTargetKey
 import com.m57.hermescontrol.ui.chat.components.quotedReplyMessage
@@ -54,6 +57,7 @@ import com.m57.hermescontrol.ui.chat.fakes.FakeSubmissionTransport
 import com.m57.hermescontrol.ui.chat.fullbleed.AgentEntry
 import com.m57.hermescontrol.ui.chat.fullbleed.ChatTurn
 import com.m57.hermescontrol.ui.chat.fullbleed.groupIntoTurnsWithStreaming
+import com.m57.hermescontrol.ui.chat.fullbleed.planMainChatTimeline
 import com.m57.hermescontrol.ui.chat.fullbleed.replyFooters
 import com.m57.hermescontrol.ui.chat.fullbleed.replyLifecycle
 import io.mockk.*
@@ -15441,6 +15445,238 @@ class ChatViewModelTest {
             assertTrue(viewModel.recoverStuckLoading())
             assertFalse(state.value.isLoading)
         }
+
+    @Test
+    fun busyFollowUp_queuedReply_syncCurrentSession_doesNotDuplicateAssistantBubble_legacyAck() =
+        runTest { queuedReplySync(legacyAck = true) }
+
+    @Test
+    fun busyFollowUp_queuedReply_syncCurrentSession_doesNotDuplicateAssistantBubble_incompleteReceipt() =
+        runTest { queuedReplySync(legacyAck = false) }
+
+    private suspend fun TestScope.queuedReplySync(legacyAck: Boolean) {
+        val (vm, session) = startReplyBeforeFollowUp()
+        val question = "Install now"
+        val answer = "Installation completed"
+        sendServerFollowUp(vm, question, legacyAck)
+        emitEvent(predecessorCompletion(session))
+        emitEvent(WsEvent.MessageStart(session))
+        emitEvent(WsEvent.MessageToken(answer, session))
+        emitEvent(WsEvent.MessageComplete(answer, session, persistedTurn = if (legacyAck) null else followUpReceipt()))
+        advanceUntilIdle()
+        assertTimelineReplyOnce(vm, question, answer)
+
+        if (!legacyAck) {
+            // A page can contain the addressed final before it contains the user root.
+            syncReplyHistory(vm, session, historyRow(21, "assistant", answer))
+            assertTimelineReplyOnce(vm, question, answer)
+        }
+        repeat(2) {
+            syncReplyHistory(
+                vm,
+                session,
+                historyRow(10, "user", "Check prerequisites"),
+                historyRow(11, "assistant", "Prerequisites checked"),
+                historyRow(20, "user", question),
+                historyRow(21, "assistant", answer),
+            )
+            assertTimelineReplyOnce(vm, question, answer)
+        }
+        assertTrue(vm.footerPayloads().none { it == answer })
+    }
+
+    @Test
+    fun busyFollowUp_earlyQueuedReply_whileStreaming_doesNotDuplicateLiveAndFinal() =
+        runTest {
+            val (vm, session) = startReplyBeforeFollowUp()
+            val question = "Install early"
+            val answer = "Installation completed early"
+            sendServerFollowUp(vm, question, legacyAck = false)
+            emitEvent(WsEvent.MessageToken(answer, session))
+            advanceUntilIdle()
+            assertEquals(
+                answer,
+                vm.streamingState.value.streamingMessage
+                    ?.content,
+            )
+
+            emitEvent(WsEvent.MessageComplete(answer, session, persistedTurn = followUpReceipt()))
+            advanceUntilIdle()
+            assertTimelineReplyOnce(vm, question, answer)
+            assertTrue("The predecessor can still complete", vm.uiState.value.isAgentTyping)
+
+            emitEvent(predecessorCompletion(session))
+            advanceUntilIdle()
+            syncReplyHistory(vm, session, historyRow(21, "assistant", answer))
+            assertTimelineReplyOnce(vm, question, answer)
+            val turns = groupIntoTurnsWithStreaming(vm.uiState.value.messages, null, vm.uiState.value.responseLedger)
+            val predecessor = turns.indexOfFirst { it is ChatTurn.User && it.message.content == "Check prerequisites" }
+            val followUp = turns.indexOfFirst { it is ChatTurn.User && it.message.content == question }
+            assertEquals(listOf("Prerequisites checked"), (turns[predecessor + 1] as ChatTurn.Agent).prose())
+            assertEquals(listOf(answer), (turns[followUp + 1] as ChatTurn.Agent).prose())
+        }
+
+    @Test
+    fun uncorrelatedComplete_afterStreaming_syncCurrentSession_doesNotRenderLiveAndCanonicalTogether() =
+        runTest { uncorrelatedReplySync(replayedPredecessor = false) }
+
+    @Test
+    fun uncorrelatedOlderComplete_keepsDistinctLiveReplyUntilItsOwnHistoryArrives() =
+        runTest { uncorrelatedReplySync(replayedPredecessor = true) }
+
+    private suspend fun TestScope.uncorrelatedReplySync(replayedPredecessor: Boolean) {
+        val (vm, session) = startReplyBeforeFollowUp()
+        emitEvent(predecessorCompletion(session))
+        advanceUntilIdle()
+
+        val question = "Install without a terminal receipt"
+        val answer = "Installation completed without a terminal receipt"
+        val preview = if (replayedPredecessor) "Installation completed" else answer
+        fakeSubmission.nextPromptResult =
+            SubmissionResult.Confirmed("rpc-current", PromptAcceptance.STREAMING, PromptEvidence(userRowId = 20L))
+        vm.sendMessage(question)
+        advanceUntilIdle()
+        emitEvent(WsEvent.MessageStart(session))
+        emitEvent(WsEvent.MessageToken(preview, session))
+        advanceUntilIdle()
+
+        val terminalText = if (replayedPredecessor) "Prerequisites checked" else answer
+        emitEvent(WsEvent.MessageComplete(terminalText, session))
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.responseStatusUnknown)
+        assertTimelineReplyOnce(vm, question, preview)
+        if (replayedPredecessor) {
+            syncReplyHistory(
+                vm,
+                session,
+                historyRow(10, "user", "Check prerequisites"),
+                historyRow(11, "assistant", "Prerequisites checked"),
+            )
+            assertEquals(
+                preview,
+                vm.streamingState.value.streamingMessage
+                    ?.content,
+            )
+        } else {
+            assertNull(vm.streamingState.value.streamingMessage)
+        }
+
+        syncReplyHistory(
+            vm,
+            session,
+            historyRow(20, "user", question),
+            historyRow(21, "assistant", answer),
+        )
+        assertTimelineReplyOnce(vm, question, answer)
+        assertNull(vm.streamingState.value.streamingMessage)
+        val owner =
+            vm.uiState.value.responseLedger.responses
+                .last()
+        assertTrue(owner.authority.terminals.isEmpty())
+        assertTrue(vm.footerPayloads().none { it == answer })
+    }
+
+    private suspend fun TestScope.startReplyBeforeFollowUp(): Pair<ChatViewModel, String> {
+        val (vm, session) = createViewModelWithSession()
+        fakeSubmission.nextPromptResult =
+            SubmissionResult.Confirmed("rpc-A", PromptAcceptance.STREAMING, PromptEvidence(userRowId = 10L))
+        vm.sendMessage("Check prerequisites")
+        advanceUntilIdle()
+        emitEvent(WsEvent.MessageStart(session))
+        advanceUntilIdle()
+        return vm to session
+    }
+
+    private fun predecessorCompletion(session: String) =
+        WsEvent.MessageComplete(
+            "Prerequisites checked",
+            session,
+            persistedTurn =
+                PersistedTurn(
+                    userRowId = 10L,
+                    finalAssistantRowId = 11L,
+                    rowIds = listOf(10L, 11L),
+                    complete = true,
+                ),
+        )
+
+    private suspend fun TestScope.sendServerFollowUp(
+        vm: ChatViewModel,
+        question: String,
+        legacyAck: Boolean,
+    ) {
+        fakeSubmission.nextPromptResult =
+            SubmissionResult.Confirmed(
+                "rpc-B",
+                PromptAcceptance.QUEUED,
+                if (legacyAck) null else PromptEvidence(userRowId = 20L),
+            )
+        vm.sendMessage(question)
+        advanceUntilIdle()
+        assertTrue(
+            vm.uiState.value.responseLedger.responses
+                .last()
+                .serverFollowUp,
+        )
+    }
+
+    private fun followUpReceipt() =
+        PersistedTurn(userRowId = 20L, finalAssistantRowId = 21L, rowIds = listOf(21L), complete = false)
+
+    private fun historyRow(
+        id: Int,
+        role: String,
+        body: String,
+    ) = SessionMessage(id = id, role = role, content = JsonPrimitive(body))
+
+    private fun TestScope.syncReplyHistory(
+        vm: ChatViewModel,
+        session: String,
+        vararg rows: SessionMessage,
+    ) {
+        val api = ApiClient.hermesApi
+        var fetched = false
+        coEvery { api.getSessionMessages(session, any(), any(), any(), any()) } coAnswers {
+            fetched = true
+            Response.success(SessionMessagesResponse(messages = rows.toList()))
+        }
+        vm.syncCurrentSession(includeSubagents = false)
+        advanceUntilIdle()
+        assertTrue("The requested history page must be fetched", fetched)
+    }
+
+    private fun ChatTurn.Agent.prose() = entries.filterIsInstance<AgentEntry.Prose>().map { it.message.content }
+
+    private fun assertTimelineReplyOnce(
+        vm: ChatViewModel,
+        question: String,
+        answer: String,
+    ) {
+        val state = vm.uiState.value
+        val rows =
+            planMainChatTimeline(
+                state.messages,
+                vm.streamingState.value.streamingMessage,
+                state.responseLedger,
+                waitingForFirstText = false,
+            ).mapNotNull { it.message }
+        assertEquals(
+            "Assistant bubbles: ${rows.map { it.content }}",
+            1,
+            rows.count {
+                it.role == MessageRole.ASSISTANT &&
+                    it.content == answer
+            },
+        )
+        assertEquals(
+            "User bubbles: ${rows.map { it.content }}",
+            1,
+            rows.count {
+                it.role == MessageRole.USER &&
+                    it.content == question
+            },
+        )
+    }
 
     @Test
     fun busyFollowUp_displaysImmediatelyWithoutQueueAndIsolatesAAndBAnswers() =

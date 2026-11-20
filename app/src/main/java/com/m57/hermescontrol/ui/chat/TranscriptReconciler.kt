@@ -28,6 +28,7 @@ internal fun reconcileTranscript(
     offset: Int,
     latest: Boolean,
     older: Boolean = false,
+    recoveringReply: ChatMessage? = null,
 ): ChatUiState {
     val state = adoptRewrittenRows(input, target, session, raw, newestPage = latest && offset == 0 && !older)
     val addresses = raw.mapNotNull { it.id?.toLong()?.takeIf { row -> row > 0 } }
@@ -591,6 +592,7 @@ internal fun reconcileTranscript(
             raw,
             older,
             live = state.isAgentTyping || state.responseStatusUnknown || state.awaitsUserInput(),
+            recoveringReply = recoveringReply,
         )
     val visible =
         if (latest && offset == 0 && !older && !state.isAgentTyping && !state.responseStatusUnknown) {
@@ -984,9 +986,8 @@ private fun canonicalRowOf(
  * A finished local turn whose stored rows arrived without a complete receipt (interrupted,
  * queued or receipt-less turns) would otherwise show twice: the optimistic bubbles and the same
  * turn from history. Fold local copies into server rows only when:
- * - the turn's user row is PROVEN by an address (guarded ACK row, terminal receipt or exact
- *   alias). Text, position and time never establish which history turn a local turn is; an
- *   unproven local turn stays as an ambiguous observation with its pending input;
+ * - the user row has an exact address (ACK, receipt or alias), or a receipt-less serial follow-up
+ *   matches the complete history turn immediately after its addressed predecessor;
  * - each folded message keeps everything it held: a reply folds only into a server row of the
  *   proven span with the same body, compatible reasoning, attachments and display kind (a tool
  *   also needs its unique call id). Missing unprojected history reasoning is retained from the local row.
@@ -1001,6 +1002,7 @@ private fun foldUnprovenLocalTurns(
     raw: List<SessionMessage>,
     older: Boolean,
     live: Boolean,
+    recoveringReply: ChatMessage?,
 ): Pair<List<ChatMessage>, ResponseLedger> {
     val rows = raw.map { it.id?.toLong()?.takeIf { row -> row > 0 } }
     val positionByRow = rows.withIndex().mapNotNull { (index, row) -> row?.let { it to index } }.toMap()
@@ -1022,12 +1024,12 @@ private fun foldUnprovenLocalTurns(
     var membersByRecord: Map<String, Set<String>> = emptyMap()
     var claimCounts: Map<Long, Int> = emptyMap()
     var memberCounts: Map<String, Int> = emptyMap()
-    for (initial in ledger.responses) {
+    for ((index, initial) in ledger.responses.withIndex()) {
         val record = result.responses.singleOrNull { it.id == initial.id } ?: continue
         if (record.authority.revocations.isNotEmpty()) continue // Disputed: keep every body.
         val hasApproval = result.approvalPlacements.values.any { it.responseId == record.id }
         val running = record.finishedAt == null && record.id == result.activeId && live
-        if (running && !hasApproval) continue
+        if (running && !hasApproval && recoveringReply == null) continue
         val localUserIds = (record.userIds + result.pendingInputs.filterValues { it == record.id }.keys).toSet()
         val proven =
             (
@@ -1037,15 +1039,28 @@ private fun foldUnprovenLocalTurns(
                         .keys
                         .mapNotNull { it.toLongOrNull() }
             ).toSet()
-        // No address, no identity: never pick a history turn by its words, position or time.
-        if (proven.isEmpty()) continue
-        val root = proven.mapNotNull { positionByRow[it] }.filter(::isOrdinaryUser).minOrNull() ?: continue
-        val span = spanOf(root) ?: continue
+        if (proven.isEmpty() && (older || !record.serverFollowUp || record.finishedAt == null)) continue
         val byId = current.associateBy { it.id }
 
         fun displayOf(row: Long): String? =
             result.aliases[row.toString()]?.takeIf { it in byId }
                 ?: canonicalMessageId(target, session, row).takeIf { it in byId }
+
+        val root =
+            proven.mapNotNull { positionByRow[it] }.filter(::isOrdinaryUser).minOrNull()
+                ?: if (proven.isEmpty()) {
+                    legacyFollowUpRoot(
+                        record,
+                        result.responses.getOrNull(index - 1),
+                        target,
+                        session,
+                        raw,
+                        byId,
+                    ) { position -> rows[position]?.let(::displayOf)?.let(byId::get) }
+                } else {
+                    null
+                } ?: continue
+        val span = spanOf(root) ?: continue
         val positionOfDisplay =
             rows.withIndex().mapNotNull { (index, row) -> row?.let(::displayOf)?.let { it to index } }.toMap()
 
@@ -1093,6 +1108,35 @@ private fun foldUnprovenLocalTurns(
                 .mapNotNull { rows[it]?.let(::displayOf)?.let(byId::get) }
                 .filter { it.role == MessageRole.ASSISTANT || it.role == MessageRole.TOOL }
                 .toMutableList()
+        val storedFinal =
+            available.lastOrNull()?.takeIf {
+                it.role == MessageRole.ASSISTANT && it.displayKind == null && !it.hasServerDisplayProjection &&
+                    positionOfDisplay[it.id] == span.last
+            }
+        if (running && !hasApproval) {
+            val preview = recoveringReply ?: continue
+            val finalRow = rows[span.last] ?: continue
+            if (storedFinal != null && LIVE_BUBBLE_ID.matches(preview.id) && !memberOfOther(preview.id) &&
+                !backed(preview.id) && storedFinal.id == canonicalMessageId(target, session, finalRow) &&
+                preview.isCoveredByStoredReply(storedFinal) &&
+                available.count { preview.isCoveredByStoredReply(it) } == 1
+            ) {
+                // Bind the visible preview to the stored final inside the addressed active turn.
+                // Its stable id lets the ViewModel retire the stream without claiming a terminal.
+                val recovered = storedFinal.withLocalPresentation(preview).copy(id = preview.id)
+                current =
+                    current.filterNot { it.id == preview.id }.map {
+                        if (it.id == storedFinal.id) recovered else it
+                    }
+                result =
+                    result.observe(listOf(preview.id)).copy(
+                        aliases =
+                            result.aliases + (finalRow.toString() to preview.id),
+                    )
+                folded += finalRow
+            }
+            continue
+        }
         val replies =
             current.filter {
                 it.id in record.messageIds && (it.role == MessageRole.ASSISTANT || it.role == MessageRole.TOOL) &&
@@ -1103,11 +1147,6 @@ private fun foldUnprovenLocalTurns(
             hasApproval && record.finishedAt != null &&
                 sharesUniqueToolCall(current, ownMembers, raw.subList(span.first, span.last + 1))
         val localFinal = replies.lastOrNull { it.role == MessageRole.ASSISTANT }
-        val storedFinal =
-            available.lastOrNull()?.takeIf {
-                it.role == MessageRole.ASSISTANT && it.displayKind == null && !it.hasServerDisplayProjection &&
-                    positionOfDisplay[it.id] == span.last
-            }
         // Live streaming attaches the turn's reasoning to the final answer; history stores it on
         // the row that produced it (often the tool-call row). Within this proven span that trace
         // is kept, so it does not make the answer look lossy.
@@ -1213,6 +1252,59 @@ private fun foldUnprovenLocalTurns(
         folded += ownedRows
     }
     return current to result
+}
+
+/** Recover one unaddressed, finished queue reply using its immediate predecessor's exact final row. */
+private fun legacyFollowUpRoot(
+    record: ResponseRecord,
+    predecessor: ResponseRecord?,
+    target: String,
+    session: String,
+    raw: List<SessionMessage>,
+    messages: Map<String, ChatMessage>,
+    displayedAt: (Int) -> ChatMessage?,
+): Int? {
+    val facts = record.authority
+    val queued = facts.queued ?: return null
+    if (!record.serverFollowUp || record.finishedAt == null || facts.opening != null || facts.terminals.isNotEmpty() ||
+        queued.target != target || queued.session != session || record.canonicalRowIds.isNotEmpty()
+    ) {
+        return null
+    }
+    val predecessorFinal = predecessor?.canonicalFinalAssistantRowId ?: return null
+    if (predecessor.authority.revocations.isNotEmpty() ||
+        predecessor.authority.terminals.none {
+            it.finalRowId == predecessorFinal && it.safe
+        }
+    ) {
+        return null
+    }
+    val previous = raw.indexOfFirst { it.id?.toLong() == predecessorFinal && it.role == "assistant" }
+    val root = previous + 1
+    val end = root + 1
+    if (previous < 0 || end > raw.lastIndex || raw[root].role != "user" || raw[root].display_kind != null ||
+        raw[end].role != "assistant" || raw[end].display_kind != null ||
+        raw.getOrNull(end + 1)?.let { it.role != "user" || it.display_kind != null } == true
+    ) {
+        return null
+    }
+    val user = record.userIds.singleOrNull()?.let(messages::get) ?: return null
+    val reply = record.messageIds.singleOrNull()?.let(messages::get) ?: return null
+    val storedUser = displayedAt(root) ?: return null
+    val storedReply = displayedAt(end) ?: return null
+    return root.takeIf {
+        LIVE_BUBBLE_ID.matches(reply.id) && reply.finishTimestamp != null && !reply.isStreaming &&
+            user.displayKind == null && reply.displayKind == null && !storedReply.hasServerDisplayProjection &&
+            user.foldsLosslesslyInto(storedUser) && reply.foldsLosslesslyInto(storedReply)
+    }
+}
+
+private fun ChatMessage.isCoveredByStoredReply(server: ChatMessage): Boolean {
+    if (foldsLosslesslyInto(server)) return true
+    // History can include the suffix after the last token we received. For a plain live
+    // preview, verify the prefix first and then check that the rest of its payload is kept.
+    return isStreaming && content.isNotBlank() && sourceBody == null && server.sourceBody == null &&
+        server.content.trim().startsWith(content.trim()) && copy(content = server.content).foldsLosslesslyInto(server)
 }
 
 /**

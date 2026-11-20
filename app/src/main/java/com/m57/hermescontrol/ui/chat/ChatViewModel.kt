@@ -20,6 +20,7 @@ import com.m57.hermescontrol.data.model.ModelCapabilities
 import com.m57.hermescontrol.data.model.ModelProvider
 import com.m57.hermescontrol.data.model.PinnedModel
 import com.m57.hermescontrol.data.model.ProfileInfo
+import com.m57.hermescontrol.data.model.SessionMessage
 import com.m57.hermescontrol.data.model.parseContextBreakdown
 import com.m57.hermescontrol.data.model.parseUsageSnapshot
 import com.m57.hermescontrol.data.remote.ApiClient
@@ -1704,6 +1705,102 @@ class ChatViewModel(
         )
     }
 
+    private fun ResponseRecord.withTerminalRows(
+        event: WsEvent,
+        canonicalWindowAllowed: Boolean,
+    ): ResponseRecord {
+        val receipt = (event as? WsEvent.MessageComplete)?.persistedTurn
+        return copy(
+            canonicalRowIds =
+                if (receipt?.complete ==
+                    true
+                ) {
+                    receipt.rowIds
+                } else {
+                    (canonicalRowIds + receipt?.rowIds.orEmpty()).distinct()
+                },
+            canonicalFinalAssistantRowId = canonicalFinalAssistantRowId ?: receipt?.finalAssistantRowId,
+            canonicalWindowAllowed = this.canonicalWindowAllowed || canonicalWindowAllowed,
+            canonicalComplete = receipt?.complete ?: canonicalComplete,
+            userRowIds = (userRowIds + listOfNotNull(receipt?.userRowId) + receipt?.userRowIds.orEmpty()).distinct(),
+        )
+    }
+
+    private fun bindObservedFinal(
+        result: ReducerResult,
+        ownerId: String,
+        finalized: ChatMessage,
+        finalRow: Long,
+    ): ReducerResult {
+        val state = result.state
+        val ledger = state.responseLedger.revokeExclusiveClaims()
+        val owner = ledger.responses.singleOrNull { it.id == ownerId } ?: return result
+        val facts = owner.authority
+        val admission = facts.opening ?: facts.queued?.takeIf { owner.serverFollowUp } ?: return result
+        val scope = sessionScope ?: return result
+        if (admission.target != scope.draftTargetKey() || admission.session != state.currentSessionId ||
+            admission.connectionGeneration != scope.generation || admission.observationProcessId != scope.processId ||
+            facts.terminals.isEmpty() || facts.terminals.any { !it.safe } || facts.revocations.isNotEmpty()
+        ) {
+            return result
+        }
+        val key = finalRow.toString()
+        if (finalized.id !in owner.messageIds ||
+            state.messages.count { it.id == finalized.id && it.role == MessageRole.ASSISTANT } != 1 ||
+            ledger.responses.count { finalized.id in it.messageIds } != 1 ||
+            ledger.aliases[key]?.let { it != finalized.id } == true ||
+            ledger.aliases.any { (row, member) -> row != key && member == finalized.id } ||
+            ledger.responses.any { other ->
+                other.id != ownerId &&
+                    (
+                        finalRow in other.canonicalRowIds || other.canonicalFinalAssistantRowId == finalRow ||
+                            other.authority.terminals.any { finalRow in it.rowIds || it.finalRowId == finalRow }
+                    )
+            }
+        ) {
+            return result
+        }
+        val canonicalId = canonicalMessageId(admission.target, admission.session, finalRow)
+        val boundLedger = ledger.copy(aliases = ledger.aliases + (key to finalized.id))
+        if (canonicalId == finalized.id ||
+            (state.messages + state.stagedCanonicalMessages).none { it.id == canonicalId }
+        ) {
+            return result.copy(state = state.copy(responseLedger = boundLedger))
+        }
+        val fold =
+            foldPreviewedFinalCollision(
+                state.messages,
+                state.stagedCanonicalMessages,
+                ledger,
+                finalized.id,
+                canonicalId,
+            )
+                ?: return result
+        return result.copy(
+            state =
+                state.copy(
+                    messages = fold.messages,
+                    stagedCanonicalMessages = fold.stagedMessages,
+                    responseLedger = boundLedger,
+                ),
+            streamingState = result.streamingState.copy(finalizedMessage = fold.finalizedMessage),
+        )
+    }
+
+    private fun liveReplyMatching(
+        event: WsEvent.MessageComplete?,
+        allowPrefix: Boolean = false,
+    ): ChatMessage? {
+        if (event == null || event.responseReused == true || event.text.isBlank()) return null
+        streamingController.flushPendingReasoning()
+        streamingController.flushPendingTokens()
+        val live = _streamingState.value.streamingMessage ?: return null
+        if (live.role != MessageRole.ASSISTANT || live.displayKind != null) return null
+        val body = live.bodyForStorage().trim()
+        val terminal = event.text.trim()
+        return live.takeIf { terminal == body || (allowPrefix && body.isNotEmpty() && terminal.startsWith(body)) }
+    }
+
     private fun retryPendingTerminals() {
         val pending = pendingTerminals.toList()
         pendingTerminals.clear()
@@ -1837,6 +1934,11 @@ class ChatViewModel(
             event is WsEvent.MessageComplete && receipt?.finalAssistantRowId != null &&
                 event.partial != true && event.responseTransformed != true &&
                 (event.status == null || event.status == "complete")
+        val aliasableFinalRow =
+            receipt?.finalAssistantRowId?.takeIf {
+                canonicalWindowAllowed &&
+                    event.responseReused != true && it in receipt.rowIds
+            }
         if (!currentLedger.requiresCorrelation && freshOpening == null && correlated == null &&
             event is WsEvent.MessageComplete &&
             event.sessionId != null && sessionScope != null &&
@@ -1898,18 +2000,42 @@ class ChatViewModel(
                 )
                 return
             }
+            val complete = event as? WsEvent.MessageComplete
+            val matchingLive = liveReplyMatching(complete, allowPrefix = true)
+            val sealed =
+                matchingLive
+                    ?.takeIf { complete?.sessionId != null && it.bodyForStorage().trim() == complete.text.trim() }
+                    ?.copy(isStreaming = false, finishTimestamp = observedAt)
             val standaloneQueuedBody =
-                (event as? WsEvent.MessageComplete)
-                    ?.takeIf { complete ->
-                        complete.text.isNotBlank() && complete.responseReused != true &&
-                            currentLedger.responses.none { it.serverFollowUp && it.finishedAt == null } &&
-                            currentLedger.responses.any { it.authority.queued != null && it.authority.opening == null }
+                complete
+                    ?.takeIf {
+                        matchingLive == null && it.text.isNotBlank() && it.responseReused != true &&
+                            currentLedger.responses.none { record ->
+                                record.serverFollowUp && record.finishedAt == null
+                            } &&
+                            currentLedger.responses.any { record ->
+                                record.authority.queued != null && record.authority.opening == null
+                            }
                     }?.let { ChatMessage(role = MessageRole.ASSISTANT, content = it.text, timestamp = observedAt) }
+            if (sealed != null) {
+                // This confirms delivery of the visible body only. A later addressed terminal
+                // can still settle the response, and a different live answer remains untouched.
+                _streamingState.update {
+                    StreamingState(finalizedMessage = sealed, sealedOrphanIds = it.sealedOrphanIds)
+                }
+                streamingController.clearStreamingBuffers()
+            }
             _uiState.update {
+                val ledger = it.responseLedger.gap()
                 it.copy(
                     responseStatusUnknown = true,
-                    responseLedger = it.responseLedger.gap(),
-                    messages = it.messages + listOfNotNull(standaloneQueuedBody),
+                    responseLedger = if (sealed == null) ledger else ledger.observe(listOf(sealed.id)),
+                    messages =
+                        if (sealed == null) {
+                            it.messages + listOfNotNull(standaloneQueuedBody)
+                        } else {
+                            it.messages.filterNot { message -> message.id == sealed.id } + sealed
+                        },
                 )
             }
             persistTranscript()
@@ -1936,46 +2062,59 @@ class ChatViewModel(
                     terminalReplay.finishedAt != null
             )
         ) {
+            val earlyComplete =
+                (event as? WsEvent.MessageComplete)?.takeIf {
+                    terminalReplay.id != currentLedger.activeId && terminalReplay.finishedAt == null &&
+                        terminalReplay.serverFollowUp && it.text.isNotBlank() && it.responseReused != true
+                }
+            val live =
+                liveReplyMatching(earlyComplete)?.takeIf { candidate ->
+                    currentLedger.responses.none { candidate.id in it.messageIds } &&
+                        _uiState.value.messages.none { it.id == candidate.id }
+                }
             val earlyQueuedReply =
-                (event as? WsEvent.MessageComplete)
-                    ?.takeIf {
-                        terminalReplay.id != currentLedger.activeId &&
-                            terminalReplay.finishedAt == null &&
-                            terminalReplay.serverFollowUp &&
-                            it.text.isNotBlank() &&
-                            it.responseReused != true
-                    }?.let { complete ->
-                        ChatMessage(
-                            role = MessageRole.ASSISTANT,
-                            content = complete.text,
-                            timestamp = observedAt,
-                            finishTimestamp = observedAt,
-                        )
-                    }
-            // An attributed old terminal cannot finalize, flush or overwrite the current stream.
+                earlyComplete?.let {
+                    val reply =
+                        live ?: ChatMessage(role = MessageRole.ASSISTANT, content = it.text, timestamp = observedAt)
+                    reply
+                        .copy(isStreaming = false, finishTimestamp = observedAt)
+                }
+            // The early terminal identifies B's body. A stays active and keeps any distinct stream.
+            if (live != null) {
+                _streamingState.update { it.copy(streamingMessage = null, isWritingText = false) }
+                streamingController.resetStreaming()
+            }
             _uiState.update {
-                it.copy(
-                    messages = it.messages + listOfNotNull(earlyQueuedReply),
-                    responseLedger =
-                        it.responseLedger
-                            .update(terminalReplay.id) { old ->
-                                old.admitTerminal(terminalEvidence(event, observedAt, eventOrdinal)).copy(
-                                    messageIds = (old.messageIds + listOfNotNull(earlyQueuedReply?.id)).distinct(),
-                                    canonicalRowIds =
-                                        if (receipt?.complete ==
-                                            true
-                                        ) {
-                                            receipt.rowIds
-                                        } else {
-                                            (old.canonicalRowIds + receipt?.rowIds.orEmpty()).distinct()
-                                        },
-                                    canonicalFinalAssistantRowId =
-                                        old.canonicalFinalAssistantRowId ?: receipt?.finalAssistantRowId,
-                                    canonicalComplete = receipt?.complete ?: old.canonicalComplete,
-                                    canonicalWindowAllowed = old.canonicalWindowAllowed || canonicalWindowAllowed,
-                                )
-                            }.revokeExclusiveClaims(),
-                )
+                val next =
+                    it.copy(
+                        messages = it.messages + listOfNotNull(earlyQueuedReply),
+                        responseLedger =
+                            it.responseLedger
+                                .update(terminalReplay.id) { record ->
+                                    record
+                                        .copy(
+                                            messageIds =
+                                                (
+                                                    record.messageIds +
+                                                        listOfNotNull(
+                                                            earlyQueuedReply?.id,
+                                                        )
+                                                ).distinct(),
+                                        ).admitTerminal(terminalEvidence(event, observedAt, eventOrdinal))
+                                        .withTerminalRows(event, canonicalWindowAllowed)
+                                }.revokeExclusiveClaims(),
+                    )
+                if (earlyQueuedReply != null && aliasableFinalRow != null) {
+                    // Any collision fold updates the transcript only. The selected stream still belongs to A.
+                    bindObservedFinal(
+                        ReducerResult(next, _streamingState.value),
+                        terminalReplay.id,
+                        earlyQueuedReply,
+                        aliasableFinalRow,
+                    ).state
+                } else {
+                    next
+                }
             }
             persistTranscript()
             return
@@ -2066,9 +2205,7 @@ class ChatViewModel(
             ledger =
                 ledger.update(ledger.activeId) {
                     val finished =
-                        if (correlated != null ||
-                            compatibleFirstTerminal
-                        ) {
+                        if (correlated != null || compatibleFirstTerminal) {
                             it.admitTerminal(terminalEvidence(event, observedAt, eventOrdinal))
                         } else {
                             it.copy(
@@ -2077,109 +2214,33 @@ class ChatViewModel(
                                 authority = it.authority.copy(local = null, deliveryGap = true),
                             )
                         }
-                    if (orderedFollowUpTerminal && correlated == null) return@update finished
-                    finished.copy(
-                        canonicalRowIds =
-                            if (receipt?.complete ==
-                                true
-                            ) {
-                                receipt.rowIds
-                            } else {
-                                (it.canonicalRowIds + receipt?.rowIds.orEmpty()).distinct()
-                            },
-                        canonicalFinalAssistantRowId = it.canonicalFinalAssistantRowId ?: receipt?.finalAssistantRowId,
-                        canonicalWindowAllowed = it.canonicalWindowAllowed || canonicalWindowAllowed,
-                        canonicalComplete = receipt?.complete ?: it.canonicalComplete,
-                        userRowIds =
-                            (
-                                it.userRowIds +
-                                    listOfNotNull(
-                                        receipt?.userRowId,
-                                    ) + receipt?.userRowIds.orEmpty()
-                            ).distinct(),
-                    )
+                    if (orderedFollowUpTerminal && correlated == null) {
+                        finished
+                    } else {
+                        finished.withTerminalRows(event, canonicalWindowAllowed)
+                    }
                 }
         }
-        // A new member or an explicitly selected previewed interim can identify the terminal row.
-        // Fully sealed/reused prose without that delivery proof must remain unbound.
-        val finalRow = receipt?.finalAssistantRowId
-        val finalized = result.streamingState.finalizedMessage
-        val finalOwner = ledger.responses.singleOrNull { it.id == ledger.activeId }
-        val finalFacts = finalOwner?.authority
-        val finalOpening = finalFacts?.opening
-        // Selection differs; binding and lossless collision handling do not. An ordinary
-        // terminal must have created this member, whereas preview needs its observed identity.
-        val selectedFinal =
-            finalized != null &&
-                (
-                    finalized.id in ownedIds ||
-                        (
-                            event is WsEvent.MessageComplete && event.responsePreviewed == true &&
-                                finalized.id == _streamingState.value.previewedFinalCandidateId
-                        )
-                )
-        val safeFinalBinding =
-            selectedFinal && finalized != null && finalRow != null && finalRow in receipt?.rowIds.orEmpty() &&
-                finalOpening != null && finalFacts != null && sessionScope != null &&
-                finalized.id in finalOwner.messageIds &&
-                result.state.messages.count { it.id == finalized.id && it.role == MessageRole.ASSISTANT } == 1 &&
-                ledger.responses.count { finalized.id in it.messageIds } == 1 &&
-                finalOpening.target == sessionScope?.draftTargetKey() &&
-                finalOpening.session == _uiState.value.currentSessionId &&
-                finalOpening.connectionGeneration == sessionScope?.generation &&
-                finalOpening.observationProcessId == sessionScope?.processId &&
-                finalFacts.terminals.isNotEmpty() &&
-                finalFacts.terminals.all { it.safe } && finalFacts.revocations.isEmpty() &&
-                ledger
-                    .revokeExclusiveClaims()
-                    .responses
-                    .singleOrNull { it.id == finalOwner.id }
-                    ?.authority
-                    ?.revocations
-                    ?.isEmpty() == true &&
-                ledger.aliases.none { (row, member) -> row != finalRow.toString() && member == finalized.id } &&
-                ledger.responses.none { other ->
-                    other.id != finalOwner.id &&
-                        (
-                            finalRow in other.canonicalRowIds || other.canonicalFinalAssistantRowId == finalRow ||
-                                other.authority.terminals.any { finalRow in it.rowIds || it.finalRowId == finalRow }
-                        )
-                }
-        if (!lateFrame && canonicalWindowAllowed && event is WsEvent.MessageComplete &&
-            event.responseReused != true && correlated?.id == ledger.activeId && safeFinalBinding &&
-            finalRow != null && finalized != null && finalOpening != null &&
-            (ledger.aliases[finalRow.toString()] == null || ledger.aliases[finalRow.toString()] == finalized.id)
-        ) {
-            val canonicalFinalId = canonicalMessageId(finalOpening.target, finalOpening.session, finalRow)
-            val collision =
-                canonicalFinalId != finalized.id &&
-                    (result.state.messages + result.state.stagedCanonicalMessages).any { it.id == canonicalFinalId }
-            val fold =
-                if (collision) {
-                    foldPreviewedFinalCollision(
-                        result.state.messages,
-                        result.state.stagedCanonicalMessages,
-                        ledger,
-                        finalized.id,
-                        canonicalFinalId,
+        // Selection differs; binding and lossless collision handling are shared with early queued replies.
+        val finalized =
+            result.streamingState.finalizedMessage?.takeIf {
+                it.id in ownedIds ||
+                    (
+                        event is WsEvent.MessageComplete && event.responsePreviewed == true &&
+                            it.id == _streamingState.value.previewedFinalCandidateId
                     )
-                } else {
-                    null
-                }
-            if (!collision || fold != null) {
-                if (fold != null) {
-                    result =
-                        result.copy(
-                            state =
-                                result.state.copy(
-                                    messages = fold.messages,
-                                    stagedCanonicalMessages = fold.stagedMessages,
-                                ),
-                            streamingState = result.streamingState.copy(finalizedMessage = fold.finalizedMessage),
-                        )
-                }
-                ledger = ledger.copy(aliases = ledger.aliases + (finalRow.toString() to finalized.id))
             }
+        if (!lateFrame && aliasableFinalRow != null && correlated != null &&
+            correlated.id == ledger.activeId && finalized != null
+        ) {
+            result =
+                bindObservedFinal(
+                    result.copy(state = result.state.copy(responseLedger = ledger)),
+                    correlated.id,
+                    finalized,
+                    aliasableFinalRow,
+                )
+            ledger = result.state.responseLedger
         }
         if (!lateFrame && (event is WsEvent.MessageComplete || event is WsEvent.MessageDone)) {
             val fold = foldActiveApprovalFinal(result.state, ledger, result.streamingState.finalizedMessage)
@@ -5729,14 +5790,7 @@ class ChatViewModel(
                         // drop live WS bubbles (running tool call, streaming
                         // answer) the server hasn't persisted yet. Issue #771.
                         val reconciled =
-                            reconcileTranscript(
-                                state,
-                                submissionTransport.configuredScope()?.draftTargetKey() ?: return@update state,
-                                sessionId,
-                                chatMessages,
-                                serverOffset,
-                                latestPaging,
-                            )
+                            reconcileCurrentTranscript(state, sessionId, chatMessages, serverOffset, latestPaging)
                         val merged = reconciled.messages
                         val hasOlder =
                             if (latestPaging) {
@@ -5756,6 +5810,7 @@ class ChatViewModel(
                             isLoadingOlder = false,
                         )
                     }
+                    clearRecoveredLiveReply()
                     hydratedGeneration = generation
                     hydrateBrainstormsForSession(
                         sessionId = sessionId,
@@ -6363,6 +6418,33 @@ class ChatViewModel(
         }
     }
 
+    private fun reconcileCurrentTranscript(
+        state: ChatUiState,
+        session: String,
+        incoming: List<SessionMessage>,
+        offset: Int,
+        latest: Boolean,
+    ): ChatUiState {
+        val target = submissionTransport.configuredScope()?.draftTargetKey() ?: return state
+        val stream = _streamingState.value
+        val recoveringReply =
+            if (state.responseStatusUnknown) stream.streamingMessage ?: stream.finalizedMessage else null
+        return reconcileTranscript(state, target, session, incoming, offset, latest, recoveringReply = recoveringReply)
+    }
+
+    private fun clearRecoveredLiveReply() {
+        val stream = _streamingState.value
+        val liveId = stream.streamingMessage?.id ?: return
+        val recovered = _uiState.value.messages.singleOrNull { it.id == liveId && !it.isStreaming } ?: return
+        _streamingState.value =
+            stream.copy(
+                streamingMessage = null,
+                finalizedMessage = recovered,
+                isWritingText = false,
+            )
+        streamingController.resetStreaming()
+    }
+
     fun syncCurrentSession(includeSubagents: Boolean = true) {
         if (includeSubagents) refreshSubagents()
         // Issue #840: a session created but never prompted has no server row
@@ -6410,15 +6492,9 @@ class ChatViewModel(
                         if (incoming.isEmpty()) return@launch
                         _uiState.update { current ->
                             if (!isCurrentSessionRequest(sessionId, generation)) return@update current
-                            reconcileTranscript(
-                                current,
-                                submissionTransport.configuredScope()?.draftTargetKey() ?: return@update current,
-                                sessionId,
-                                incoming,
-                                nextOffset,
-                                latestPaging,
-                            )
+                            reconcileCurrentTranscript(current, sessionId, incoming, nextOffset, latestPaging)
                         }
+                        clearRecoveredLiveReply()
                     }
 
                     is NetworkResult.Failure -> {}
