@@ -7,12 +7,12 @@ It does not implement a proprietary ChatGPT component protocol or require an Ope
 
 ## Agent output contract
 
-Ordinary chat adds display instructions to normal prompt submissions. Drafts retain the
-original user text. Restored user messages remove only the exact generated instruction
-suffix. Slash commands and blank submissions are unchanged. Active-turn redirects
-also carry display context so a continued conversation receives current Mobile capabilities;
-the original user text, target session, redirect flag and acceptance/retry rules are preserved.
-No extra model request, tool execution, network connection, or model selection is added.
+Chat sends the `mobile-v3` client surface on capable gateways, including for queued
+prompts and attachments. The gateway supplies display instructions. Drafts keep
+the user's text and restored messages hide historical display instructions.
+Gateways that lack `mobile-v3` receive the legacy suffix on eligible text.
+On capable gateways, the `session.redirect` RPC carries clean text and preserves
+the explicit steer action. That RPC has no surface field.
 Other agent entry points can emit the same formats without additional Mobile configuration.
 
 Use `hermes-ui` fenced blocks for interactive answers. `intelligent-ui` and `liveui` are

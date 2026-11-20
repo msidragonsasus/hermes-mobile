@@ -101,6 +101,7 @@ import com.m57.hermescontrol.data.model.SessionTreeItem
 import com.m57.hermescontrol.data.model.flattenSessionTree
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.theme.LocalSpacing
+import com.m57.hermescontrol.ui.chat.RichAnswerPrompt
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesScaffold
@@ -204,7 +205,7 @@ private fun SessionSearchResult.toSessionInfo(): SessionInfo =
     SessionInfo(
         id = session_id,
         title = null,
-        preview = snippet,
+        preview = snippet?.let { cleanSearchSnippet(it, role) },
         source = source,
         model = model,
         started_at = session_started,
@@ -245,11 +246,20 @@ private val searchSnippetJson = Json { isLenient = true }
  * Makes a backend FTS snippet safe to present as prose. Some indexed messages are stored as
  * JSON, so prefer their human-readable text fields rather than rendering the entire payload.
  */
-internal fun cleanSearchSnippet(snippet: String): String {
+internal fun cleanSearchSnippet(
+    snippet: String,
+    role: String? = null,
+): String {
     val withoutHighlightMarkers = snippet.replace(">>>", "").replace("<<<", "").trim()
     val parsedSnippet =
         runCatching { searchSnippetJson.parseToJsonElement(withoutHighlightMarkers) }.getOrNull()
-    val displayText = parsedSnippet?.searchText() ?: withoutHighlightMarkers
+    val body = parsedSnippet?.searchText() ?: withoutHighlightMarkers
+    val displayText =
+        if (role == null || role.equals("user", ignoreCase = true)) {
+            RichAnswerPrompt.searchSnippetText(body)
+        } else {
+            body
+        }
     return displayText
         .replace(Regex("\\s+"), " ")
         .trim()
@@ -430,8 +440,8 @@ fun SessionsScreen(
                 ?.takeIf { it.isNotBlank() }
                 ?: state.searchResults
                     .find { it.session_id == sessionToDelete }
-                    ?.snippet
-                    ?.let(::cleanSearchSnippet)
+                    ?.let { match -> match.snippet?.let { cleanSearchSnippet(it, match.role) } }
+                    ?.takeIf { it.isNotBlank() }
                     ?.take(80)
                 ?: stringResource(R.string.history_untitled)
         AlertDialog(
@@ -1220,8 +1230,7 @@ private fun SearchResultCard(
     onDelete: () -> Unit,
 ) {
     val spacing = LocalSpacing.current
-    val snippet = session.preview?.takeIf { it.isNotBlank() } ?: stringResource(R.string.history_untitled)
-    val cleanSnippet = cleanSearchSnippet(snippet)
+    val cleanSnippet = session.preview?.takeIf { it.isNotBlank() } ?: stringResource(R.string.history_untitled)
     val playedAt = formatPlayedAt(session.started_at)
     var menuExpanded by remember { mutableStateOf(false) }
 

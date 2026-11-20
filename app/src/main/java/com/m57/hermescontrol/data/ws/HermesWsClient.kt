@@ -842,6 +842,7 @@ object HermesWsClient {
     )
 
     @Volatile private var terminalCapability: TerminalCapability? = null
+    private var capabilityProbe: Pair<TerminalCapability, CompletableDeferred<Any?>>? = null
 
     private fun currentCapability(capability: TerminalCapability): Boolean =
         capability.epoch % 2L == 0L && AuthManager.connectionEpoch.value == capability.epoch &&
@@ -859,7 +860,11 @@ object HermesWsClient {
         val candidate = TerminalCapability(scope, call.authenticationEpoch, socket, "")
         if (!currentCapability(candidate)) return
         terminalCapability = null
-        if (error != null) return
+        if (error != null) {
+            // A legacy gateway can reject the capabilities RPC itself.
+            if (error.code == -32601) terminalCapability = candidate
+            return
+        }
         val raw = (if (result is JsonElement) result.toAny() else result) as? Map<*, *> ?: return
         val surfaces = (raw["client_surfaces"] as? List<*>)?.filterIsInstance<String>()?.toSet().orEmpty()
         val feature = raw["terminal_acceptance"] as? Map<*, *>
@@ -875,12 +880,41 @@ object HermesWsClient {
     fun supportsClientSurface(
         scope: ConnectionScope,
         surface: String,
-    ): Boolean =
+    ): Boolean = cachedClientSurfaceSupport(scope, surface) == true
+
+    private fun cachedClientSurfaceSupport(
+        scope: ConnectionScope,
+        surface: String,
+    ): Boolean? =
         synchronized(outboundLock) {
-            terminalCapability?.let {
-                it.scope == scope && currentCapability(it) && surface in it.clientSurfaces
-            } == true
+            terminalCapability?.takeIf { it.scope == scope && currentCapability(it) }?.let {
+                surface in it.clientSurfaces
+            }
         }
+
+    private fun probeGatewayCapabilities(scope: ConnectionScope): CompletableDeferred<Any?>? =
+        synchronized(outboundLock) {
+            val socket = webSocket ?: return@synchronized null
+            val identity = TerminalCapability(scope, AuthManager.connectionEpoch.value, socket, "")
+            if (!currentCapability(identity)) return@synchronized null
+            capabilityProbe?.takeIf { it.first == identity }?.let { return@synchronized it.second }
+            requestFixedScope(scope, "gateway.capabilities", emptyMap(), 5_000L).also {
+                capabilityProbe = identity to it
+            }
+        }
+
+    suspend fun clientSurfaceSupport(
+        scope: ConnectionScope,
+        surface: String,
+    ): Boolean? {
+        cachedClientSurfaceSupport(scope, surface)?.let { return it }
+        try {
+            probeGatewayCapabilities(scope)?.await()
+        } catch (_: HermesRpcException) {
+            // The scoped cache distinguishes a legacy peer from an inconclusive read.
+        }
+        return cachedClientSurfaceSupport(scope, surface)
+    }
 
     private fun resolveTerminalProof(observation: ScopedWsEvent) {
         val event = observation.event as? WsEvent.MessageComplete ?: return
@@ -1322,6 +1356,7 @@ object HermesWsClient {
     ): Unit =
         synchronized(outboundLock) {
             terminalCapability = null
+            capabilityProbe = null
             if (pendingCalls.isEmpty()) return
             val snapshot = pendingCalls.toList()
             for ((id, call) in snapshot) {
@@ -1839,7 +1874,6 @@ object HermesWsClient {
         private val scope: ConnectionScope,
     ) : WebSocketListener() {
         private var advertisedServerRequests = false
-        private var requestedTerminalCapabilities = false
 
         private fun isCurrent(): Boolean = isCurrentGeneration(generation)
 
@@ -1931,12 +1965,11 @@ object HermesWsClient {
                                 ),
                             )
                     }
-                    if (!requestedTerminalCapabilities && rpc.method == "event" &&
-                        rpc.params?.get("type") == "gateway.ready".toJsonElement() && matchesCurrentScope(scope)
+                    if (rpc.method == "event" &&
+                        rpc.params?.get("type") == "gateway.ready".toJsonElement()
                     ) {
-                        requestedTerminalCapabilities = true
-                        // Existing read-only method, once per accepted socket; no submit-time polling/reconnect.
-                        requestFixedScope(scope, "gateway.capabilities", emptyMap(), 5_000L)
+                        // Share this read with submissions that arrive before the advertisement.
+                        probeGatewayCapabilities(scope)
                     }
                     // Resolve pending request() calls with the RAW JsonElement from
                     // rpc.result, BEFORE EventParser.parse() converts it via toAny().

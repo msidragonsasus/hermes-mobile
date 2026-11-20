@@ -18,16 +18,19 @@ internal class RichAnswerSubmissionTransport(
         queued: Boolean,
         surface: String?,
     ): SubmissionResult<PromptAcceptance> {
-        val useSurface =
-            !redirect && text.isNotBlank() && !text.trimStart().startsWith("/") &&
-                delegate.supportsClientSurface(scope, NativeUiInstructions.SURFACE)
+        val requestedSurface = surface ?: NativeUiInstructions.SURFACE
+        // Image-only prompts have empty text. Their bytes are staged separately on the session.
+        val supported =
+            if (text.trimStart().startsWith("/")) null else delegate.clientSurfaceSupport(scope, requestedSurface)
+        // session.redirect has no per-turn surface field. Keep its steer semantics and send clean
+        // text on modern servers. Only confirmed legacy servers need the inline display descriptor.
         return delegate.submitPrompt(
             scope,
             session,
-            if (useSurface) text else RichAnswerPrompt.append(text),
+            if (supported == false) RichAnswerPrompt.append(text) else text,
             redirect,
             queued,
-            if (useSurface) NativeUiInstructions.SURFACE else null,
+            requestedSurface.takeIf { supported == true && !redirect },
         )
     }
 }

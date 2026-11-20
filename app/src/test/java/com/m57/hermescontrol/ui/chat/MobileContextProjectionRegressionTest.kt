@@ -4,6 +4,9 @@ import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.local.ChatMessageEntity
 import com.m57.hermescontrol.data.local.toUiModel
 import com.m57.hermescontrol.data.model.SessionMessage
+import com.m57.hermescontrol.ui.chat.components.conversationHistoryTitle
+import com.m57.hermescontrol.ui.chat.components.messageActionText
+import com.m57.hermescontrol.ui.chat.components.quotedReplyDraft
 import io.mockk.every
 import io.mockk.mockkObject
 import io.mockk.unmockkObject
@@ -20,10 +23,76 @@ class MobileContextProjectionRegressionTest {
     private val path = "/var/lib/hermes/.hermes/images/upload_18drbm3w.jpg"
     private val raw = "$block\n@image:$path\n\n\n$ask\n\n$block"
 
+    private fun recordedImageTurn(): String =
+        requireNotNull(javaClass.getResource("/mobile-context/raw-user-51060.txt")).readText().replace("\r\n", "\n")
+
+    @Test fun multimodalHistoryHidesTheLegacyTextEnvelopeBeforeTheImagePart() {
+        val fixture =
+            requireNotNull(javaClass.getResource("/mobile-context/multimodal-user-with-generated-context.json"))
+        val row = Json.decodeFromString<SessionMessage>(fixture.readText())
+        val caption = "画像を確認して"
+        val image = "![Image](<data:image/png;base64,AA==>)"
+        val expected = "$caption\n\n$image"
+        assertTrue(row.contentText.contains("</hermes-mobile-display-context>\n\n$image"))
+        assertEquals(DisplayedUserText(expected, emptyList()), RichAnswerPrompt.displayText(row.contentText))
+        assertEquals(expected, mapServerMessages("s", listOf(row), 0, false, emptyList()).single().content)
+        val cached =
+            ChatMessageEntity(id = "u", sessionId = "s", role = "USER", content = row.contentText, timestamp = 1)
+        assertEquals(expected, cached.toUiModel().content)
+        val loaded = ChatMessage(role = MessageRole.USER, content = row.contentText)
+        assertEquals(expected, messageActionText(loaded))
+        assertEquals("> $caption\n> \n> $image\n\n続き", quotedReplyDraft(loaded, "続き"))
+        assertEquals(
+            0,
+            ChatSearchController().findMatches(listOf(loaded), "hermes-mobile-generated-context").totalMatches,
+        )
+        assertEquals(1, ChatSearchController().findMatches(listOf(loaded), caption).totalMatches)
+        val truncated = row.contentText.substringBefore("<hermes-mobile-display-context>").trimEnd()
+        assertEquals(caption, RichAnswerPrompt.previewText(truncated))
+        assertEquals(caption, conversationHistoryTitle(truncated.replace("\n\n", " "), null, "Untitled"))
+    }
+
+    @Test fun crlfRefsWarningsAndRepeatedEnvelopesCanSurroundTheCaption() {
+        val caption = "この画像を確認して\r\n  2行目  "
+        val file = "/var/lib/hermes/.hermes/attachments/report.txt"
+        val wire =
+            RichAnswerPrompt.append("@file:$file\n\n$caption") +
+                "\n\n--- Attached Context ---\n\n📎 @file:$file (text file)\n\n" +
+                RichAnswerPrompt.append("--- Context Warnings ---\n- @file:missing.md: file not found") +
+                "\n\n@image:$path"
+        val crlf = wire.replace("\r\n", "\n").replace("\n", "\r\n")
+        assertEquals(DisplayedUserText(caption, listOf(file, path)), RichAnswerPrompt.displayText(crlf))
+    }
+
+    @Test fun generatedPrefixWithAnImageRefAndTrailingEnvelopeStillShowsTheCaption() {
+        val generated = RichAnswerPrompt.append("ignored").substringAfter("ignored\n\n")
+        val wire = "$generated\n@image:$path\n\n$ask\n\n$generated"
+        assertEquals(DisplayedUserText(ask, listOf(path)), RichAnswerPrompt.displayText(wire))
+    }
+
+    @Test fun captionFirstImageRefsSurviveLegacyAndCleanHistory() {
+        val quotedPath = "/srv/profiles/bot/images/upload_a space.png"
+        val imageRef = "@image:\"$quotedPath\""
+        val expected = DisplayedUserText(ask, listOf(quotedPath))
+        assertEquals(expected, RichAnswerPrompt.displayText(RichAnswerPrompt.append(ask) + "\n" + imageRef))
+        assertEquals(expected, RichAnswerPrompt.displayText("$ask\n$imageRef"))
+        assertEquals(expected, RichAnswerPrompt.displayText("$ask\n$imageRef\n[screenshot]"))
+        assertEquals(
+            expected,
+            RichAnswerPrompt.displayText("$ask\n$imageRef\n\n![Image](<data:image/png;base64,AA==>)"),
+        )
+        assertEquals(DisplayedUserText("", listOf(quotedPath)), RichAnswerPrompt.displayText(imageRef))
+        val typed = "$ask\n@image:my-image.png"
+        assertEquals(DisplayedUserText(typed, emptyList()), RichAnswerPrompt.displayText(typed))
+    }
+
+    @Test fun mergedAttachmentTurnHidesEarlierMarkedBlocksToo() {
+        val wire = RichAnswerPrompt.append("1通目") + "\n\n" + RichAnswerPrompt.append("2通目") + "\n@image:$path"
+        assertEquals(DisplayedUserText("1通目\n\n2通目", listOf(path)), RichAnswerPrompt.displayText(wire))
+    }
+
     @Test fun exactStoredLeadingImageAndTrailingDescriptorProjectToHumanAskAndMedia() {
-        val captured = requireNotNull(javaClass.getResource("/mobile-context/raw-user-51060.txt")).readText()
-        assertEquals(raw, captured)
-        val shown = RichAnswerPrompt.displayText(captured)
+        val shown = RichAnswerPrompt.displayText(recordedImageTurn())
         assertEquals("\n$ask", shown.text)
         assertEquals(listOf(path), shown.fileRefs)
     }
@@ -120,7 +189,7 @@ class MobileContextProjectionRegressionTest {
             val serialized = requireNotNull(javaClass.getResource("/mobile-context/api-user-51060.json")).readText()
             assertTrue(serialized.contains("Current response client: Hermes Mobile"))
             val row = Json { ignoreUnknownKeys = true }.decodeFromString(SessionMessage.serializer(), serialized)
-            assertEquals(raw, row.contentText)
+            assertEquals(recordedImageTurn(), row.contentText)
             val mapped = mapServerMessages("s", listOf(row), 0, false, emptyList()).single()
             assertEquals("\n$ask", mapped.content)
             assertEquals(1, mapped.attachments!!.size)

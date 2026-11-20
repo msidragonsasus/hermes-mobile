@@ -108,9 +108,10 @@ fun ChatBubble(
         enter = fadeIn() + expandVertically(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)),
     ) {
         val statusColors = LocalHermesStatusColors.current
+        val content = remember(message.content) { RichAnswerPrompt.visibleText(message.content) }
         val reply =
-            remember(message.content, personalStyle) { if (personalStyle) parseQuotedReply(message.content) else null }
-        val body = reply?.body ?: message.content
+            remember(content, personalStyle) { if (personalStyle) parseQuotedReply(content) else null }
+        val body = reply?.body ?: content
         val highlightedText =
             remember(body, searchQuery, isCurrentMatch, statusColors) {
                 if (searchQuery.isNotBlank()) {

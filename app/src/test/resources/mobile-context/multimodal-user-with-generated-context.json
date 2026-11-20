@@ -1,0 +1,14 @@
+{
+  "id": 42,
+  "role": "user",
+  "content": [
+    {
+      "type": "text",
+      "text": "画像を確認して\n\n<!--hermes-mobile-generated-context:v1-->\n\n<hermes-mobile-display-context>\nThe user is reading this conversation in Hermes Mobile, which can render interactive visual answers.\nNative catalog hermes.native/3. Use hermes-ui-v2.\n</hermes-mobile-display-context>"
+    },
+    {
+      "type": "image_url",
+      "image_url": {"url": "data:image/png;base64,AA=="}
+    }
+  ]
+}

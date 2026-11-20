@@ -98,6 +98,17 @@ class SessionsViewModelTest {
         )
     }
 
+    @Test
+    fun `search snippets hide generated user context and keep assistant examples`() {
+        val marked =
+            "添付を確認して\n\n<!-->>>hermes-mobile-generated-context<<<:v1-->\n\n" +
+                "<hermes-mobile-display-context>\nThe user is reading this conversation..."
+        assertEquals("添付を確認して", cleanSearchSnippet(marked, "user"))
+        val inner = "...which can render interactive visual >>>answers<<<. When it helps explain..."
+        assertEquals("", cleanSearchSnippet(inner, "user"))
+        assertEquals(inner.replace(">>>", "").replace("<<<", ""), cleanSearchSnippet(inner, "assistant"))
+    }
+
     // ── Pagination (fluid load-more) ──────────────────────────────────────
 
     @Test

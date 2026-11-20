@@ -2,12 +2,17 @@ package com.m57.hermescontrol.ui.chat
 
 /** Add display capabilities without changing the stored user text or slash commands. */
 internal object RichAnswerPrompt {
-    private const val MARKER = "\n\n<hermes-mobile-display-context>\n"
-    private const val END = "\n</hermes-mobile-display-context>"
+    private const val OPEN_TAG = "<hermes-mobile-display-context>"
+    private const val CLOSE_TAG = "</hermes-mobile-display-context>"
+    private const val MARKER = "\n\n$OPEN_TAG\n"
+    private const val END = "\n$CLOSE_TAG"
 
     // Reserved wire provenance, not authentication; keep the descriptor and core suffix intact.
-    private const val GENERATED = "\n\n<!--hermes-mobile-generated-context:v1-->"
-    private val contextStart = Regex("\\r?\\n\\r?\\n<hermes-mobile-display-context>\\r?\\n")
+    private const val PROVENANCE = "<!--hermes-mobile-generated-context:v1-->"
+    private const val GENERATED = "\n\n$PROVENANCE"
+    private val generatedPrefix = Regex("(?:\\r?\\n){0,2}$PROVENANCE(?:\\r?\\n){1,2}")
+    private val contextStart =
+        Regex("(?:(?:\\r?\\n){1,2}($PROVENANCE)(?:\\r?\\n){1,2}|(?:\\r?\\n){2})$OPEN_TAG\\r?\\n")
 
     // Keep this identifying preamble stable so changes to the appended guides do not expose old history.
     private val legacyInstructions =
@@ -53,27 +58,78 @@ internal object RichAnswerPrompt {
     fun visibleText(text: String): String = displayText(text).text
 
     /**
-     * Removes what the app and server add around a user message: the server's trailing
-     * "--- Attached Context ---" section, the app's display-context block (any catalog version),
-     * and the leading attachment reference lines the app prefixes. Returns those references
-     * so history rows can show them as attachment cards. Anything else stays as typed.
+     * Projects the typed message and its attachments out of historical app/server wrappers.
      */
     fun displayText(text: String): DisplayedUserText {
+        if (OPEN_TAG !in text && "--- " !in text && "@image:" !in text) return DisplayedUserText(text, emptyList())
         var body = stripLeadingDisplayContexts(text)
-        val hadLeadingContext = body != text
-        var attachedRefs = emptySet<String>()
-        val serverSections = stripServerSections(body)
-        serverSections?.let { (rest, refs) ->
+        var projected = body != text
+        val attachedRefs = mutableSetOf<String>()
+        val trailingMedia = mutableListOf<String>()
+        val trailingRefs = mutableListOf<String>()
+        while (true) {
+            val withoutContext = stripTrailingDisplayContext(body)
+            if (withoutContext != null) {
+                body = withoutContext
+                projected = true
+                continue
+            }
+            // A multimodal row is flattened to Markdown for history. An image part can sit
+            // after the text part's display context, so look behind it and preserve the image.
+            val mediaStart = trailingMediaStart(body)
+            if (mediaStart != null) {
+                val media = body.substring(mediaStart)
+                val ref = leadingRef.matchEntire(media.trim())
+                if (ref == null) {
+                    trailingMedia += media
+                } else {
+                    trailingRefs += ref.attachmentPath()
+                    projected = projected || isStagedImageRef(ref)
+                }
+                body = body.substring(0, mediaStart)
+                continue
+            }
+            val (rest, refs) = stripServerSections(body) ?: break
             body = rest
-            attachedRefs = refs
+            attachedRefs += refs
+            projected = true
         }
-        val withoutContext = stripDisplayContext(body)
-        // Without the app's block or the server's section this is plain user text: keep it whole.
-        if (withoutContext == null && serverSections == null && !hadLeadingContext) {
-            return DisplayedUserText(text, emptyList())
+        val shown = stripLeadingRefs(body, attachedRefs, stagedImagesOnly = !projected)
+        if (!projected && shown.fileRefs.isEmpty()) return DisplayedUserText(text, emptyList())
+        val human = stripEmbeddedGeneratedContexts(stripLeadingDisplayContexts(shown.text))
+        // Some gateways expose both staged refs and a placeholder/inline copy for each image.
+        val redundantImages =
+            trailingRefs.size == trailingMedia.size &&
+                trailingMedia.all {
+                    val media = it.trim()
+                    media == "[screenshot]" || media == "[image]" || media.startsWith("![Image](<data:image/")
+                }
+        val images = if (redundantImages) "" else trailingMedia.asReversed().joinToString("")
+        return DisplayedUserText(
+            if (human.isEmpty()) images.trimStart('\r', '\n') else human + images,
+            shown.fileRefs + trailingRefs.asReversed(),
+        )
+    }
+
+    private fun trailingMediaStart(text: String): Int? {
+        val end = text.indexOfLast { !it.isWhitespace() } + 1
+        if (end == 0) return null
+        val start = text.lastIndexOf('\n', end - 1) + 1
+        val line = text.substring(start, end)
+        val ref = leadingRef.matchEntire(line)
+        if (line != "[image]" && line != "[screenshot]" && !(line.startsWith("![") && markdownImage.matches(line)) &&
+            !(ref != null && (isStagedImageRef(ref) || isHostRef(ref.attachmentPath())))
+        ) {
+            return null
         }
-        if (withoutContext != null) body = withoutContext
-        return stripLeadingRefs(body, attachedRefs)
+        var boundary = start
+        repeat(2) {
+            if (boundary > 0 && text[boundary - 1] == '\n') {
+                boundary--
+                if (boundary > 0 && text[boundary - 1] == '\r') boundary--
+            }
+        }
+        return boundary.takeUnless { ref != null && insideCodeFence(text.substring(0, it)) }
     }
 
     /**
@@ -102,6 +158,17 @@ internal object RichAnswerPrompt {
         return previewRef.replace(stripLeadingRefs(head, emptySet()).text, "")
     }
 
+    /** FTS excerpts can start inside the descriptor and omit its opening marker. */
+    fun searchSnippetText(text: String): String {
+        val preview = previewText(text)
+        if (!preview.startsWith("...")) return preview
+        if (CLOSE_TAG in preview && OPEN_TAG !in preview) return preview.substringAfter(CLOSE_TAG).trimStart()
+        val fragment = snippetWhitespace.replace(preview.removePrefix("...").removeSuffix("...").trim(), " ")
+        val insideReleasedDescriptor =
+            fragment.isNotBlank() && searchableDescriptors.any { fragment in it }
+        return if (insideReleasedDescriptor) "" else preview
+    }
+
     private fun isTruncatedLeadingContext(text: String): Boolean {
         val normalized = text.replace("\r\n", "\n")
         val opening = "<hermes-mobile-display-context>\n"
@@ -114,18 +181,27 @@ internal object RichAnswerPrompt {
     // Preview-only reserved-envelope convention, including truncation inside the delimiter.
     private fun truncatedGeneratedStart(text: String): Int? {
         val normalized = text.replace("\r\n", "\n")
-        val full = normalized.lastIndexOf(GENERATED)
+        val full = normalized.lastIndexOf(PROVENANCE)
+        val completeMarker =
+            full.takeIf { it >= 0 }?.let {
+                val tail = normalized.substring(it)
+                when {
+                    CLOSE_TAG in tail && !flattenedContextStart.containsMatchIn(tail) -> null
+                    normalized.startsWith(GENERATED, it - 2) -> it - 2
+                    it > 0 && normalized[it - 1].isWhitespace() -> it - 1
+                    else -> it
+                }
+            }
         val start =
-            if (full >= 0) {
-                full
-            } else {
-                (GENERATED.length - 1 downTo 3).firstNotNullOfOrNull { length ->
-                    (normalized.length - length).takeIf {
-                        it >= 0 && normalized.endsWith(GENERATED.take(length))
+            completeMarker ?: listOf(GENERATED, "\n$PROVENANCE", " $PROVENANCE", PROVENANCE)
+                .firstNotNullOfOrNull { delimiter ->
+                    val minimum = if (delimiter == GENERATED) 3 else 8
+                    (delimiter.length - 1 downTo minimum).firstNotNullOfOrNull { length ->
+                        (normalized.length - length).takeIf {
+                            it >= 0 && normalized.endsWith(delimiter.take(length))
+                        }
                     }
                 } ?: return null
-            }
-        if ("</hermes-mobile-display-context>" in normalized.substring(start)) return null
         // Map normalized character offsets back without changing any human CRLF or whitespace.
         var offset = 0
         var count = 0
@@ -137,37 +213,29 @@ internal object RichAnswerPrompt {
         return offset
     }
 
-    private fun stripDisplayContext(text: String): String? {
-        var body = text
-        while (true) {
-            val stripped = stripTrailingDisplayContext(body) ?: break
-            body = stripped
-        }
-        return body.takeIf { it != text }
-    }
-
-    // Prefixes have no preceding human text to establish an app suffix boundary. Require a
-    // complete released descriptor, not just the identifying sentence or a tag-shaped quote.
+    // Prefixes need a complete released descriptor or an attachment boundary with provenance.
     private fun stripLeadingDisplayContexts(text: String): String {
         var rest = text
-        while (rest.startsWith("<hermes-mobile-display-context>\n") ||
-            rest.startsWith("<hermes-mobile-display-context>\r\n")
-        ) {
-            val close = rest.indexOf("</hermes-mobile-display-context>")
+        while (true) {
+            val generated = generatedPrefix.matchAt(rest, 0)
+            val opening = rest.substring(generated?.range?.last?.plus(1) ?: 0)
+            if (!opening.startsWith("$OPEN_TAG\n") && !opening.startsWith("$OPEN_TAG\r\n")) break
+            val close = opening.indexOf(CLOSE_TAG)
             if (close < 0) break
             val candidate =
-                rest
+                opening
                     .substring(0, close)
                     .replace("\r\n", "\n")
-                    .removePrefix("<hermes-mobile-display-context>\n")
+                    .removePrefix("$OPEN_TAG\n")
                     .removeSuffix("\n")
+            val after = opening.substring(close + CLOSE_TAG.length)
+            if (after.isNotEmpty() && !after.startsWith("\n") && !after.startsWith("\r\n")) break
             if (candidate != instructions && candidate !in NativeUiInstructions.previousDescriptors &&
-                candidate != legacyInstructions && candidate != imageInstructions
+                candidate != legacyInstructions && candidate != imageInstructions &&
+                !(generated != null && isDisplayDescriptor(candidate)) && !isHistoricalImagePrefix(candidate, after)
             ) {
                 break
             }
-            val after = rest.substring(close + "</hermes-mobile-display-context>".length)
-            if (after.isNotEmpty() && !after.startsWith("\n") && !after.startsWith("\r\n")) break
             rest = after
             // Consume only the wrapper separator, never trim the human body's whitespace.
             repeat(2) {
@@ -180,6 +248,21 @@ internal object RichAnswerPrompt {
             }
         }
         return rest
+    }
+
+    private fun isHistoricalImagePrefix(
+        descriptor: String,
+        after: String,
+    ): Boolean {
+        if (!descriptor.startsWith("$PREAMBLE\nNative catalog hermes.native/") ||
+            !descriptor.endsWith(
+                "Display capabilities grant no tool/account permissions. The user's request remains the task.",
+            )
+        ) {
+            return false
+        }
+        val firstLine = after.trimStart('\r', '\n').lineSequence().first()
+        return leadingRef.matchEntire(firstLine)?.let(::isStagedImageRef) == true
     }
 
     private fun insideCodeFence(text: String): Boolean {
@@ -203,57 +286,57 @@ internal object RichAnswerPrompt {
 
     private fun stripTrailingDisplayContext(text: String): String? {
         val trimmed = text.trimEnd()
-        if (!trimmed.endsWith("</hermes-mobile-display-context>")) return null
+        if (!trimmed.endsWith(CLOSE_TAG)) return null
         val start = contextStart.findAll(trimmed).lastOrNull() ?: return null
         val prefix = text.substring(0, start.range.first)
-        val generated = prefix.endsWith(GENERATED) || prefix.endsWith(GENERATED.replace("\n", "\r\n"))
+        val generated = start.groupValues[1].isNotEmpty()
         if (!generated && insideCodeFence(prefix)) return null
         val suffix = trimmed.substring(start.range.last + 1).replace("\r\n", "\n")
         if (!suffix.endsWith(END)) return null
         val body = suffix.removeSuffix(END)
-        if ("<hermes-mobile-display-context>" in body) return null
-        // Recognize only the app's preamble, not an arbitrary user-authored tagged block. Every
-        // catalog version, including unknown future ones, starts with the same first sentence.
-        if (body != instructions &&
-            body !in NativeUiInstructions.previousDescriptors &&
-            body != legacyInstructions &&
-            !body.startsWith(PREAMBLE + "\n")
-        ) {
-            return null
-        }
-        return if (generated) {
-            if (prefix.endsWith(
-                    GENERATED,
-                )
-            ) {
-                prefix.removeSuffix(GENERATED)
-            } else {
-                prefix.removeSuffix(GENERATED.replace("\n", "\r\n"))
+        if (OPEN_TAG in body) return null
+        return prefix.takeIf { isDisplayDescriptor(body) }
+    }
+
+    // Gateways can merge adjacent user turns. Once an outer wrapper establishes that this is
+    // decorated history, also remove complete marked envelopes between the merged captions.
+    private fun stripEmbeddedGeneratedContexts(text: String): String {
+        if (PROVENANCE !in text) return text
+        return buildString {
+            var cursor = 0
+            for (start in contextStart.findAll(text)) {
+                if (start.groupValues[1].isEmpty() || start.range.first < cursor) continue
+                val contentStart = start.range.last + 1
+                val close = text.indexOf(CLOSE_TAG, contentStart)
+                if (close < 0) break
+                val end = close + CLOSE_TAG.length
+                if (lineBreakLength(text, end) == 0 || insideCodeFence(text.substring(0, start.range.first))) continue
+                val descriptor = text.substring(contentStart, close).replace("\r\n", "\n")
+                if (!descriptor.endsWith('\n') || !isDisplayDescriptor(descriptor.dropLast(1))) continue
+                append(text, cursor, start.range.first)
+                cursor = end
             }
-        } else {
-            prefix
+            append(text, cursor, text.length)
         }
     }
 
+    private fun isDisplayDescriptor(text: String): Boolean =
+        OPEN_TAG !in text && (
+            text == instructions || text in NativeUiInstructions.previousDescriptors ||
+                text == legacyInstructions || text.startsWith(PREAMBLE + "\n")
+        )
+
     /**
-     * The Hermes core's @-reference expansion appends "--- Context Warnings ---" and then
-     * "--- Attached Context ---" to the stored message. Each is removed from the end only when
-     * it describes @-references, so a heading the user typed stays.
+     * The core appends warnings and attachment sections for @-references.
+     * Peel one section at a time to support legacy rows with interleaved app descriptors.
      */
     private fun stripServerSections(text: String): Pair<String, Set<String>>? {
-        var body = text
-        val refs = mutableSetOf<String>()
-        var stripped = false
-        for (marker in listOf(attachedContextStart, contextWarningsStart)) {
-            val start = marker.findAll(body).lastOrNull() ?: continue
-            val section = body.substring(start.range.last + 1)
-            val found = sectionRef.findAll(section).map { it.value }.toSet()
-            if (found.isEmpty() && "@ context injection" !in section) continue
-            refs += found
-            body = body.substring(0, start.range.first)
-            stripped = true
-        }
-        return if (stripped) body to refs else null
+        val start = serverSectionStart.findAll(text).lastOrNull() ?: return null
+        val prefix = text.substring(0, start.range.first)
+        if (insideCodeFence(prefix)) return null
+        val section = text.substring(start.range.last + 1)
+        val refs = sectionRef.findAll(section).map { it.value }.toSet()
+        return (prefix to refs).takeIf { refs.isNotEmpty() || "@ context injection" in section }
     }
 
     /**
@@ -264,32 +347,69 @@ internal object RichAnswerPrompt {
     private fun stripLeadingRefs(
         text: String,
         attachedRefs: Set<String>,
+        stagedImagesOnly: Boolean = false,
     ): DisplayedUserText {
-        val lines = text.replace("\r\n", "\n").split('\n')
         val refs = mutableListOf<String>()
-        for (line in lines) {
+        var offset = 0
+        for (line in text.lineSequence()) {
             val ref = leadingRef.matchEntire(line) ?: break
-            val path = ref.groupValues[2]
-            if (line !in attachedRefs && !(path.startsWith("/") && "/.hermes/" in path)) break
-            refs += line
+            val path = ref.attachmentPath()
+            if (!isStagedImageRef(ref) && (stagedImagesOnly || (line !in attachedRefs && !isHostRef(path)))) break
+            refs += path
+            offset += line.length
+            offset += lineBreakLength(text, offset)
         }
         if (refs.isEmpty()) return DisplayedUserText(text, emptyList())
-        val rest = lines.drop(refs.size)
-        if (rest.isNotEmpty() && rest.first().isNotEmpty()) return DisplayedUserText(text, emptyList())
-        return DisplayedUserText(rest.drop(1).joinToString("\n"), refs.map { it.substringAfter(':') })
+        val separator = lineBreakLength(text, offset)
+        if (offset < text.length && separator == 0) return DisplayedUserText(text, emptyList())
+        return DisplayedUserText(text.substring(offset + separator), refs)
     }
+
+    private fun lineBreakLength(
+        text: String,
+        offset: Int,
+    ): Int =
+        when {
+            text.startsWith("\r\n", offset) -> 2
+            text.startsWith("\n", offset) -> 1
+            else -> 0
+        }
+
+    private fun isHostRef(path: String): Boolean = path.startsWith("/") && "/.hermes/" in path
+
+    private fun isStagedImageRef(ref: MatchResult): Boolean {
+        val path = ref.attachmentPath()
+        return ref.groupValues[1] == "image" && path.startsWith("/") &&
+            path.substringBeforeLast('/').endsWith("/images") &&
+            (isHostRef(path) || path.substringAfterLast('/').startsWith("upload_"))
+    }
+
+    private fun MatchResult.attachmentPath(): String =
+        groupValues[2].let { path ->
+            if (path.length > 1 && path.first() in "\"'`" && path.first() == path.last()) {
+                path.substring(1, path.lastIndex)
+            } else {
+                path
+            }
+        }
 
     private const val PREAMBLE =
         "The user is reading this conversation in Hermes Mobile, which can render interactive visual answers."
-    private val attachedContextStart = Regex("\\r?\\n\\r?\\n--- Attached Context ---\\r?\\n")
-    private val contextWarningsStart = Regex("\\r?\\n\\r?\\n--- Context Warnings ---\\r?\\n")
+    private val serverSectionStart = Regex("\\r?\\n\\r?\\n--- (?:Attached Context|Context Warnings) ---\\r?\\n")
 
     // Reference kinds the core expands (file, folder, git, url, diff, staged) plus app image refs.
     private val sectionRef = Regex("@(?:(?:file|folder|git|url|image):[^\\s—]+|diff\\b|staged\\b)")
-    private val leadingRef = Regex("@(file|image):(\\S+)")
+    private val leadingRef = Regex("""@(file|image):("[^"]+"|'[^']+'|`[^`]+`|\S+)""")
+    private val markdownImage = Regex("""!\[[^\]]*]\((?:<[^<>]+>|.+)\)""")
     private val previewBlockStart = Regex("\\r?\\n\\s*<hermes-mobile-display-con")
+    private val flattenedContextStart = Regex("$PROVENANCE[ \\t]+$OPEN_TAG\\s+" + Regex.escape(PREAMBLE))
     private val previewSectionStart = Regex("\\r?\\n\\s*--- (?:Attached Context|Context Warnings) ---")
     private val previewRef = Regex("^(?:@(?:file|image):/\\S*/\\.hermes/\\S+\\s+)+")
+    private val snippetWhitespace = Regex("\\s+")
+    private val searchableDescriptors by lazy {
+        (NativeUiInstructions.previousDescriptors + listOf(instructions, legacyInstructions, imageInstructions))
+            .map { snippetWhitespace.replace("$PROVENANCE $OPEN_TAG $it $CLOSE_TAG", " ") }
+    }
 }
 
 /** A user message as shown: typed text plus the attachment paths the app had prefixed. */

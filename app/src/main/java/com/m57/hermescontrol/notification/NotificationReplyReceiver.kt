@@ -14,6 +14,7 @@ import com.m57.hermescontrol.data.local.HermesDatabase
 import com.m57.hermescontrol.data.local.OutgoingDraftRepository
 import com.m57.hermescontrol.data.transport.DashboardRpcTransport
 import com.m57.hermescontrol.domain.hermes.ConnectionScope
+import com.m57.hermescontrol.ui.chat.RichAnswerSubmissionTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -69,7 +70,7 @@ open class NotificationReplyReceiver : BroadcastReceiver() {
         val db = HermesDatabase.get(context)
         return NotificationReplySender(
             OutgoingDraftRepository(db.outgoingDraftDao()),
-            DashboardRpcTransport(),
+            RichAnswerSubmissionTransport(DashboardRpcTransport()),
             db.chatMessageDao(),
         )
     }

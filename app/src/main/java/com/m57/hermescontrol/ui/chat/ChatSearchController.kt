@@ -60,9 +60,11 @@ class ChatSearchController {
         for ((idx, message) in messages.withIndex()) {
             if (message.role != MessageRole.USER && message.role != MessageRole.ASSISTANT) continue
             if (mainChatOnly && !message.isMainChatSearchable()) continue
+            val text =
+                if (message.role == MessageRole.USER) RichAnswerPrompt.visibleText(message.content) else message.content
             var from = 0
             while (true) {
-                val hit = message.content.indexOf(query, from, ignoreCase = true)
+                val hit = text.indexOf(query, from, ignoreCase = true)
                 if (hit < 0) break
                 total++
                 if (result.size < MAX_SEARCH_MATCHES) {

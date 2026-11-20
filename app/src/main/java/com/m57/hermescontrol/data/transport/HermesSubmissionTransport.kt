@@ -12,10 +12,11 @@ interface HermesSubmissionTransport {
 
     fun isReady(scope: ConnectionScope): Boolean
 
-    fun supportsClientSurface(
+    /** Null when support could not be established for the current connection. */
+    suspend fun clientSurfaceSupport(
         scope: ConnectionScope,
         surface: String,
-    ): Boolean = false
+    ): Boolean? = null
 
     suspend fun submitPrompt(
         scope: ConnectionScope,

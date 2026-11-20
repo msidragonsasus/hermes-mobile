@@ -2,8 +2,11 @@ package com.m57.hermescontrol.data.ws
 
 import android.util.Log
 import com.m57.hermescontrol.data.local.AuthManager
+import com.m57.hermescontrol.data.model.Attachment
 import com.m57.hermescontrol.data.transport.DashboardRpcTransport
 import com.m57.hermescontrol.domain.hermes.*
+import com.m57.hermescontrol.ui.chat.RichAnswerSubmissionTransport
+import com.m57.hermescontrol.ui.chat.components.quotedReplyMessage
 import io.mockk.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -151,7 +154,9 @@ class TerminalAcceptanceTransportTest {
             negotiate("""{"client_surfaces":["hud","mobile-v3"]}""")
             assertTrue(HermesWsClient.supportsClientSurface(scope, "mobile-v3"))
             duringSend = { r -> if (r["method"]?.jsonPrimitive?.content == WsMethods.PROMPT_SUBMIT) ack(r) }
-            val adapter = com.m57.hermescontrol.ui.chat.RichAnswerSubmissionTransport(DashboardRpcTransport())
+            val adapter =
+                com.m57.hermescontrol.ui.chat
+                    .RichAnswerSubmissionTransport(DashboardRpcTransport())
             val result = adapter.submitPrompt(scope, session, "図で説明して")
             assertTrue(result is SubmissionResult.Confirmed)
             val params = request()["params"]!!.jsonObject
@@ -164,11 +169,80 @@ class TerminalAcceptanceTransportTest {
         runBlocking {
             negotiate("""{"client_surfaces":["mobile-v1","mobile-v2"]}""")
             duringSend = { r -> if (r["method"]?.jsonPrimitive?.content == WsMethods.PROMPT_SUBMIT) ack(r) }
-            val adapter = com.m57.hermescontrol.ui.chat.RichAnswerSubmissionTransport(DashboardRpcTransport())
+            val adapter =
+                com.m57.hermescontrol.ui.chat
+                    .RichAnswerSubmissionTransport(DashboardRpcTransport())
             adapter.submitPrompt(scope, session, "図で説明して")
             val params = request()["params"]!!.jsonObject
             assertTrue(params["text"]!!.jsonPrimitive.content.contains("<hermes-mobile-display-context>"))
             assertFalse(params.containsKey("surface"))
+        }
+
+    @Test fun attachmentPromptWaitsForInFlightNegotiationAndKeepsTheImageOnTheSameSession() =
+        runBlocking {
+            val adapter = RichAnswerSubmissionTransport(DashboardRpcTransport())
+            val photo = Attachment(uri = "content://test/photo", name = "photo.jpg", mimeType = "image/jpeg", size = 16)
+            duringSend = { r ->
+                when (r["method"]?.jsonPrimitive?.content) {
+                    WsMethods.IMAGE_ATTACH_BYTES -> response(r, """{"attached":true}""")
+                    WsMethods.PROMPT_SUBMIT -> ack(r)
+                }
+            }
+            listener.onMessage(socket, """{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready"}}""")
+            for (caption in listOf("画像を確認して", "")) {
+                assertTrue(
+                    adapter.attach(scope, session, photo, "data:image/jpeg;base64,AA==") is SubmissionResult.Confirmed,
+                )
+                val photoRequest = sent.last()
+                assertEquals(
+                    session.runtimeId,
+                    photoRequest["params"]!!.jsonObject["session_id"]!!.jsonPrimitive.content,
+                )
+                val submitted =
+                    async(start = CoroutineStart.UNDISPATCHED) {
+                        adapter.submitPrompt(scope, session, caption)
+                    }
+                if (caption.isNotEmpty()) {
+                    assertFalse(submitted.isCompleted)
+                    assertEquals(photoRequest, sent.last())
+                    val capabilityRequest =
+                        sent.single {
+                            it["method"]?.jsonPrimitive?.content == "gateway.capabilities"
+                        }
+                    response(capabilityRequest, """{"client_surfaces":["mobile-v3"]}""")
+                }
+                assertTrue(submitted.await() is SubmissionResult.Confirmed)
+                val params = request()["params"]!!.jsonObject
+                assertEquals(session.runtimeId, params["session_id"]!!.jsonPrimitive.content)
+                assertEquals(caption, params["text"]!!.jsonPrimitive.content)
+                assertEquals("mobile-v3", params["surface"]!!.jsonPrimitive.content)
+            }
+        }
+
+    @Test fun quotedFileFollowUpUsesTheSpecialistScopeAndPreservesQueueFlagAndText() =
+        runBlocking {
+            val adapter = RichAnswerSubmissionTransport(DashboardRpcTransport())
+            val attachment =
+                Attachment(uri = "content://test/report", name = "report.txt", mimeType = "text/plain", size = 16)
+            val ref = "@file:/srv/.hermes/attachments/report.txt"
+            duringSend = { r ->
+                when (r["method"]?.jsonPrimitive?.content) {
+                    "gateway.capabilities" -> response(r, """{"client_surfaces":["mobile-v3"]}""")
+                    WsMethods.FILE_ATTACH -> response(r, """{"attached":true,"ref_text":"$ref"}""")
+                    WsMethods.PROMPT_SUBMIT -> response(r, """{"status":"queued"}""")
+                }
+            }
+            val uploaded = adapter.attach(scope, session, attachment, "data:text/plain;base64,AA==")
+            assertEquals(ref, (uploaded as SubmissionResult.Confirmed).value)
+            val text = "$ref\n\n" + quotedReplyMessage("前回の内容", "ファイルも確認して")
+            val result = adapter.submitPrompt(scope, session, text, queued = true)
+            assertEquals(PromptAcceptance.QUEUED, (result as SubmissionResult.Confirmed).value)
+            val params = request()["params"]!!.jsonObject
+            assertEquals(scope.serverProfileId, params["profile"]!!.jsonPrimitive.content)
+            assertEquals(session.runtimeId, params["session_id"]!!.jsonPrimitive.content)
+            assertEquals(text, params["text"]!!.jsonPrimitive.content)
+            assertEquals("mobile-v3", params["surface"]!!.jsonPrimitive.content)
+            assertTrue(params["queued"]!!.jsonPrimitive.boolean)
         }
 
     @Test fun surfaceAdvertisementExpiresWithAuthenticationProfileAndSocket() =

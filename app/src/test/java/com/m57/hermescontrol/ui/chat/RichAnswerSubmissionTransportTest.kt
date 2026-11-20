@@ -6,7 +6,6 @@ import com.m57.hermescontrol.domain.hermes.SessionRef
 import com.m57.hermescontrol.domain.hermes.SubmissionResult
 import io.mockk.coEvery
 import io.mockk.coVerify
-import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.test.runTest
@@ -22,7 +21,7 @@ class RichAnswerSubmissionTransportTest {
     fun advertisedCurrentSurfacePreservesExactTextAndQueueFlags() =
         runTest {
             val delegate = mockk<HermesSubmissionTransport>()
-            every { delegate.supportsClientSurface(scope, "mobile-v3") } returns true
+            coEvery { delegate.clientSurfaceSupport(scope, "mobile-v3") } returns true
             val text = "  図で説明して\n"
             coEvery { delegate.submitPrompt(scope, session, text, false, true, "mobile-v3") } returns
                 SubmissionResult.Unknown
@@ -34,10 +33,10 @@ class RichAnswerSubmissionTransportTest {
         }
 
     @Test
-    fun blankAndSlashInputNeverCarrySurfaceOrSuffix() =
+    fun slashInputNeverCarriesSurfaceOrSuffix() =
         runTest {
             val delegate = mockk<HermesSubmissionTransport>()
-            for (text in listOf("", "  ", "  /help")) {
+            for (text in listOf("/steer child revise", "  /help")) {
                 coEvery { delegate.submitPrompt(scope, session, text, false, false, null) } returns
                     SubmissionResult.NotSent
                 RichAnswerSubmissionTransport(delegate).submitPrompt(scope, session, text)
@@ -49,7 +48,7 @@ class RichAnswerSubmissionTransportTest {
     fun normalSubmissionAddsDisplayHintsOnceAndPreservesUnknownAndQueueFlags() =
         runTest {
             val delegate = mockk<HermesSubmissionTransport>()
-            every { delegate.supportsClientSurface(any(), any()) } returns false
+            coEvery { delegate.clientSurfaceSupport(any(), any()) } returns false
             val wire = slot<String>()
             coEvery { delegate.submitPrompt(scope, session, capture(wire), false, true) } returns
                 SubmissionResult.Unknown
@@ -61,10 +60,10 @@ class RichAnswerSubmissionTransportTest {
         }
 
     @Test
-    fun steerAdvertisesMobileImagesWithoutChangingTheSessionOrResending() =
+    fun legacySteerKeepsItsRedirectWithoutResending() =
         runTest {
             val delegate = mockk<HermesSubmissionTransport>()
-            every { delegate.supportsClientSurface(any(), any()) } returns false
+            coEvery { delegate.clientSurfaceSupport(any(), any()) } returns false
             val wire = slot<String>()
             coEvery { delegate.submitPrompt(scope, session, capture(wire), true, false) } returns
                 SubmissionResult.NotSent
@@ -73,5 +72,29 @@ class RichAnswerSubmissionTransportTest {
             assertEquals("スクショ見せて", RichAnswerPrompt.visibleText(wire.captured))
             assertTrue(wire.captured.contains("TUI cannot display images"))
             coVerify(exactly = 1) { delegate.submitPrompt(scope, session, any(), true, false) }
+        }
+
+    @Test
+    fun capableGatewayGetsCleanExplicitRedirectAndNoUnsupportedParameter() =
+        runTest {
+            val delegate = mockk<HermesSubmissionTransport>()
+            val text = "スクショ見せて"
+            coEvery { delegate.clientSurfaceSupport(scope, "mobile-v3") } returns true
+            coEvery { delegate.submitPrompt(scope, session, text, true, false, null) } returns SubmissionResult.Unknown
+            val result = RichAnswerSubmissionTransport(delegate).submitPrompt(scope, session, text, redirect = true)
+            assertEquals(SubmissionResult.Unknown, result)
+            coVerify(exactly = 1) { delegate.submitPrompt(scope, session, text, true, false, null) }
+        }
+
+    @Test
+    fun failedNegotiationDoesNotTreatTheServerAsLegacy() =
+        runTest {
+            val delegate = mockk<HermesSubmissionTransport>()
+            val text = "画像を確認して"
+            coEvery { delegate.clientSurfaceSupport(scope, "mobile-v3") } returns null
+            coEvery { delegate.submitPrompt(scope, session, text, false, false, null) } returns SubmissionResult.Unknown
+            val result = RichAnswerSubmissionTransport(delegate).submitPrompt(scope, session, text)
+            assertEquals(SubmissionResult.Unknown, result)
+            coVerify(exactly = 1) { delegate.submitPrompt(scope, session, text, false, false, null) }
         }
 }
