@@ -296,14 +296,23 @@ fun <T> FilterChipRow(
     ) {
         items(chips, key = { it.toString() }) { chip ->
             // DESIGN.md "Filter chips": no outline; selection is the filled state.
-            FilterChip(
+            QuietFilterChip(
                 selected = chip == selectedChip,
                 onClick = { onChipSelected(chip) },
                 label = { chipLabel(chip) },
-                border = null,
             )
         }
     }
+}
+
+/** A filter whose filled state indicates selection, with no decorative outline. */
+@Composable
+fun QuietFilterChip(
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: @Composable () -> Unit,
+) {
+    FilterChip(selected = selected, onClick = onClick, label = label, border = null)
 }
 
 // ── StatCard — metric display card for dashboard screens ───────────────
@@ -363,13 +372,14 @@ fun InfoRow(
     label: String,
     value: String,
     modifier: Modifier = Modifier,
+    horizontalPadding: Dp = LocalSpacing.current.md,
 ) {
     val spacing = LocalSpacing.current
     Row(
         modifier =
             modifier
                 .fillMaxWidth()
-                .padding(horizontal = spacing.md, vertical = spacing.sm),
+                .padding(horizontal = horizontalPadding, vertical = spacing.sm),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -377,8 +387,9 @@ fun InfoRow(
             text = label,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f, fill = false),
         )
-        // Long values wrap inside their own column instead of squeezing the label.
+        // Each side can wrap within its own column at larger font sizes.
         Text(
             text = value,
             style = MaterialTheme.typography.bodyLarge,

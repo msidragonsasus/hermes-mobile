@@ -1,9 +1,11 @@
 package com.m57.hermescontrol.career
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -21,10 +23,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.initializer
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.HermesTextField
+import com.m57.hermescontrol.ui.common.InfoRow
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -39,35 +43,55 @@ import java.util.UUID
 internal fun CareerCompanyOverview(
     detail: CareerCompanyDetail,
     accounts: List<ShukatsuLoginAccount>,
+    showFullName: Boolean,
+    onOffers: () -> Unit,
     select: (CareerEntity) -> Unit,
 ) {
     val uri = LocalUriHandler.current
-    Column(verticalArrangement = Arrangement.spacedBy(LocalSpacing.current.md)) {
+    val spacing = LocalSpacing.current
+    Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
+        if (showFullName) Text(detail.company.title, style = MaterialTheme.typography.titleMedium)
         CompanyPortalActions(
             detail,
             accounts,
         ) { NavigationController.navigateTo(CareerCompanySettingsKey(detail.company.id)) }
-        Text(detail.company.title, style = MaterialTheme.typography.headlineSmall)
-        Text("募集中 ${detail.current_offer_count}件")
-        detail.offers
-            .mapNotNull { it.data.text("deadline") }
-            .minOrNull()
-            ?.let { Text("次の募集締切 $it") }
-        detail.records
-            .filter {
-                it.kind == "applications"
-            }.forEach { Text("${it.title} · ${careerStatus(it.data.text("status"))}") }
+        Column {
+            InfoRow(
+                "募集中",
+                "${detail.current_offer_count}件",
+                Modifier.heightIn(min = 48.dp).clickable(onClick = onOffers),
+                horizontalPadding = 0.dp,
+            )
+            detail.offers
+                .mapNotNull { it.data.text("deadline") }
+                .minOrNull()
+                ?.let { InfoRow("次の募集締切", it, horizontalPadding = 0.dp) }
+            detail.records.filter { it.kind == "applications" }.forEach { application ->
+                InfoRow(
+                    application.title,
+                    careerStatus(application.data.text("status")),
+                    Modifier.heightIn(min = 48.dp).clickable { select(application) },
+                    horizontalPadding = 0.dp,
+                )
+            }
+            val documentCount = detail.documents.size
+            InfoRow("関連するES・資料", if (documentCount == 0) "なし" else "${documentCount}件", horizontalPadding = 0.dp)
+            detail.documents.forEach { document -> TextButton(onClick = { select(document) }) { Text(document.title) } }
+            if (detail.documents.isEmpty()) {
+                Text(
+                    "保存済みの資料はありません。募集・締切からESを開けます。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         val urls =
             (detail.company.data["official_urls"] as? JsonArray).orEmpty().mapNotNull {
-                (it as? JsonPrimitive)
-                    ?.content
+                (it as? JsonPrimitive)?.content
             }
         urls.filter { it.startsWith("https://") }.forEach { url ->
             TextButton(onClick = { uri.openUri(url) }, shapes = ButtonDefaults.shapes()) { Text("公式サイトを開く") }
         }
-        Text("関連するES・資料", style = MaterialTheme.typography.titleMedium)
-        detail.documents.forEach { document -> TextButton(onClick = { select(document) }) { Text(document.title) } }
-        if (detail.documents.isEmpty()) Text("保存済みの資料はありません。募集・締切からESを開けます。")
     }
 }
 

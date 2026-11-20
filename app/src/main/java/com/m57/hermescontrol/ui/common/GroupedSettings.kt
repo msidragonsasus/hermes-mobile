@@ -14,12 +14,16 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.CornerSize
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -27,9 +31,11 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,6 +49,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -130,7 +137,7 @@ fun SettingsGroup(
 }
 
 @Composable
-private fun SettingsDivider(inset: Dp) {
+fun SettingsDivider(inset: Dp = SettingsDividerInset) {
     HorizontalDivider(
         modifier = Modifier.padding(horizontal = inset),
         color = MaterialTheme.colorScheme.outlineVariant,
@@ -216,6 +223,7 @@ fun SettingsRow(
     actions: List<SettingsMenuItem> = emptyList(),
     actionsEnabled: Boolean = true,
     onClick: (() -> Unit)? = null,
+    wrapValue: Boolean = false,
     trailing: (@Composable RowScope.() -> Unit)? = null,
 ) {
     val rowToggles = checked != null && onClick == null && onCheckedChange != null
@@ -281,7 +289,9 @@ fun SettingsRow(
                 it,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
+                modifier = if (wrapValue) Modifier.weight(1f, fill = false) else Modifier,
+                maxLines = if (wrapValue) Int.MAX_VALUE else 1,
+                textAlign = TextAlign.End,
                 overflow = TextOverflow.Ellipsis,
             )
         }
@@ -313,6 +323,41 @@ fun SettingsRow(
     }
 }
 
+/** A scrollable picker for settings destinations, with the same row grammar as the page. */
+@Composable
+fun SettingsPickerDialog(
+    title: String,
+    onDismiss: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Column(Modifier.verticalScroll(rememberScrollState()), content = content) },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("閉じる") } },
+    )
+}
+
+@Composable
+fun SettingsChoiceRow(
+    title: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    enabled: Boolean = true,
+) {
+    SettingsRow(
+        title = title,
+        modifier = modifier.selectable(selected, enabled = enabled, role = Role.RadioButton, onClick = onClick),
+        subtitle = subtitle,
+        enabled = enabled,
+        maxLines = Int.MAX_VALUE,
+        subtitleMaxLines = Int.MAX_VALUE,
+        leading = { RadioButton(selected = selected, onClick = null, enabled = enabled) },
+    )
+}
+
 /** Last row of a compound form group: one right-aligned primary pill that submits the form. */
 @Composable
 fun SettingsFormSubmit(
@@ -321,12 +366,13 @@ fun SettingsFormSubmit(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     busy: Boolean = false,
+    buttonModifier: Modifier = Modifier,
 ) {
     Row(
         modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.End,
     ) {
-        PrimaryPillButton(onClick = onClick, enabled = enabled) {
+        PrimaryPillButton(onClick = onClick, modifier = buttonModifier, enabled = enabled) {
             if (busy) {
                 CircularProgressIndicator(
                     Modifier.size(16.dp),

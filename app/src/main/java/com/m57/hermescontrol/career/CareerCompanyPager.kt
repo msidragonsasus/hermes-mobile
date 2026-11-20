@@ -20,17 +20,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.QuestionAnswer
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.SecondaryScrollableTabRow
 import androidx.compose.material3.Tab
@@ -58,6 +57,7 @@ import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.HermesSecondaryIndicator
 import com.m57.hermescontrol.ui.common.HermesTextField
 import com.m57.hermescontrol.ui.common.NavIcon
+import com.m57.hermescontrol.ui.common.QuietFilterChip
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -182,25 +182,24 @@ internal fun CareerCompanyPager(
             ),
         )
     }
+    val screenTitle = if (settingsOnly) "企業設定" else detail?.company?.title ?: "企業詳細"
+    var titleEllipsized by remember(screenTitle) { mutableStateOf(false) }
     HermesScaffold(
         title = {
             Text(
-                if (settingsOnly) "企業設定" else detail?.company?.title ?: "企業詳細",
-                maxLines = 2,
+                screenTitle,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                onTextLayout = { titleEllipsized = it.lineCount > 0 && it.isLineEllipsized(0) },
             )
         },
         actions = {
             if (!settingsOnly && detail != null) {
-                TextButton(onClick = {
+                IconButton(onClick = {
                     NavigationController.navigateTo(CareerThreadsKey(detail.company.id, selectedOffer))
-                }) { Text("AI相談") }
-                TextButton(
-                    onClick = { NavigationController.navigateTo(CareerCompanySettingsKey(detail.company.id)) },
-                    shapes = ButtonDefaults.shapes(),
-                ) {
-                    Icon(Icons.Outlined.Settings, contentDescription = null)
-                    Text("企業設定")
+                }) { Icon(Icons.Outlined.QuestionAnswer, contentDescription = "AI相談") }
+                IconButton(onClick = { NavigationController.navigateTo(CareerCompanySettingsKey(detail.company.id)) }) {
+                    Icon(Icons.Outlined.Settings, contentDescription = "企業設定")
                 }
             }
         },
@@ -257,23 +256,21 @@ internal fun CareerCompanyPager(
                             item {
                                 detail?.let {
                                     CareerCompanyOverview(
-                                        it,
-                                        state.loginAccounts,
-                                    ) { selectedEntity = it }
+                                        detail = it,
+                                        accounts = state.loginAccounts,
+                                        showFullName = titleEllipsized,
+                                        onOffers = { scope.launch { pager.animateScrollToPage(1) } },
+                                        select = { selectedEntity = it },
+                                    )
                                 }
                             }
-                            // Additive: the native MyPage browser and settings stay where they are.
                             item {
                                 detail?.let {
-                                    OutlinedButton(
+                                    TextButton(
                                         onClick = {
                                             NavigationController.navigateTo(CareerMyPageSduiKey(it.company.id))
                                         },
-                                        modifier =
-                                            Modifier
-                                                .fillMaxWidth()
-                                                .heightIn(min = 48.dp)
-                                                .testTag("company_mypage_sdui"),
+                                        modifier = Modifier.testTag("company_mypage_sdui"),
                                         shapes = ButtonDefaults.shapes(),
                                     ) { Text("マイページの状況を見る") }
                                 }
@@ -456,7 +453,7 @@ internal fun CareerCompanyPager(
                                         style = MaterialTheme.typography.labelLarge,
                                     )
                                 }
-                                FilterChip(unreadOnly, { unreadOnly = !unreadOnly }, label = { Text("未読のみ") })
+                                QuietFilterChip(unreadOnly, { unreadOnly = !unreadOnly }, label = { Text("未読のみ") })
                                 if (detail?.mail_senders.orEmpty().none { it.enabled }) {
                                     Text("送信元メールアドレスが未設定です。")
                                     TextButton(

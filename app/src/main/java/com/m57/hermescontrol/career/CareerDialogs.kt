@@ -10,7 +10,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -27,6 +26,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.HermesTextField
+import com.m57.hermescontrol.ui.common.SettingsPickerDialog
+import com.m57.hermescontrol.ui.common.SettingsRow
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -401,35 +402,47 @@ internal fun CareerDiff(
 }
 
 @Composable
-internal fun CareerConflictCard(
+internal fun CareerConflictSettingsRow(
     conflict: JsonObject,
     snapshot: CareerSnapshot,
     canWrite: Boolean,
     onSend: (String, JsonObject) -> Unit,
 ) {
     var review by remember { mutableStateOf(false) }
-    Card(Modifier.fillMaxWidth()) {
-        Text("同期の競合: ${conflict.text("entity_id")}")
-        TextButton(onClick = { review = !review }, shapes = ButtonDefaults.shapes()) { Text("差分を確認") }
-        if (review) {
+    val entity =
+        snapshot.entities.firstOrNull {
+            it.id == conflict.text("entity_id") && it.kind == conflict.text("kind")
+        }
+    SettingsRow(
+        "差分を確認",
+        subtitle = entity?.title ?: conflict.text("entity_id"),
+        subtitleMaxLines = Int.MAX_VALUE,
+        chevron = true,
+        onClick = { review = true },
+    )
+    if (review) {
+        SettingsPickerDialog("同期の競合", onDismiss = { review = false }) {
             Text("端末・サーバー側: ${readable(conflict["local"] ?: JsonNull)}")
             Text("GitHub側: ${readable(conflict["remote"] ?: JsonNull)}")
-            val entity =
-                snapshot.entities.firstOrNull {
-                    it.id == conflict.text("entity_id") &&
-                        it.kind == conflict.text("kind")
-                }
             listOf("local" to "サーバー側を残す", "remote" to "GitHub側を使う").forEach { (choice, label) ->
-                TextButton(onClick = {
-                    onSend(
-                        "resolve",
-                        buildJsonObject {
-                            put("id", conflict.getValue("id"))
-                            put("expected_version", conflict["expected_version"] ?: JsonPrimitive(entity?.version ?: 0))
-                            put("choice", choice)
-                        },
-                    )
-                }, enabled = canWrite) { Text(label) }
+                SettingsRow(
+                    title = label,
+                    maxLines = Int.MAX_VALUE,
+                    enabled = canWrite,
+                    onClick = {
+                        onSend(
+                            "resolve",
+                            buildJsonObject {
+                                put("id", conflict.getValue("id"))
+                                put(
+                                    "expected_version",
+                                    conflict["expected_version"] ?: JsonPrimitive(entity?.version ?: 0),
+                                )
+                                put("choice", choice)
+                            },
+                        )
+                    },
+                )
             }
         }
     }

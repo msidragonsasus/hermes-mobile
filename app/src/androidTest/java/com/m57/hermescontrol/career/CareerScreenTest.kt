@@ -17,6 +17,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -373,10 +374,9 @@ class CareerScreenTest {
                 )
             }
         }
-        compose.onNodeWithTag("career_settings").performScrollToNode(hasText("自動調査の設定"))
+        compose.onNodeWithTag("career_settings").performScrollToNode(hasTestTag("career_自動調査_model"))
         compose.onNodeWithTag("career_自動調査_model").performClick()
-        compose.onNodeWithText("anthropic").assertIsDisplayed()
-        compose.onNodeWithText("test-claude").performClick()
+        compose.onNode(hasText("Test Claude") and hasText("Anthropic")).assertIsDisplayed().performClick()
         compose.onNodeWithTag("career_effort_default").performClick()
         compose.runOnIdle {
             assertEquals(listOf(CareerExecution("anthropic", "test-claude", "default")), chosen)

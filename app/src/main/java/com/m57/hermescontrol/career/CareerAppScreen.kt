@@ -1,6 +1,5 @@
 package com.m57.hermescontrol.career
 
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,14 +8,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -48,6 +45,7 @@ import com.m57.hermescontrol.home.HomeDetailKey
 import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.ErrorState
+import com.m57.hermescontrol.ui.common.FilterChipRow
 import com.m57.hermescontrol.ui.common.FlatListRow
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.LoadingState
@@ -291,11 +289,11 @@ internal fun CareerLibraryContent(
     var category by rememberSaveable { mutableStateOf("自己分析") }
     val snapshot = state.snapshot
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = spacing.md)) {
-            listOf("自己分析", "ES", "本人情報", "経験").forEach { label ->
-                FilterChip(category == label, { category = label }, label = { Text(label) })
-            }
-        }
+        FilterChipRow(
+            chips = listOf("自己分析", "ES", "本人情報", "経験"),
+            selectedChip = category,
+            onChipSelected = { category = it },
+        )
         when {
             snapshot == null && state.loading -> {
                 LoadingState()

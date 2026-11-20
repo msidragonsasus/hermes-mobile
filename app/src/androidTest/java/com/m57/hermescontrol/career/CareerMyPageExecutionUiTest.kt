@@ -51,9 +51,9 @@ class CareerMyPageExecutionUiTest {
                 }
             }
         }
-        compose.onNodeWithText("モデルを選択（未設定）").performScrollTo().performClick()
-        compose.onNodeWithText("個別案内の送信が許可されていません。").assertExists()
-        compose.onNodeWithText("標準").assertIsNotEnabled()
+        compose.onNodeWithTag("career_mypage_本文の整理_model").performScrollTo().performClick()
+        compose.onNodeWithText("個別案内の送信が許可されていません。", substring = true).assertExists()
+        compose.onNodeWithText("禁止された無料接続").assertIsNotEnabled()
         assertEquals(0, selections)
     }
 

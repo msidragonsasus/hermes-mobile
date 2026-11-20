@@ -20,7 +20,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -55,6 +54,7 @@ import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.LoadingState
 import com.m57.hermescontrol.ui.common.NavIcon
+import com.m57.hermescontrol.ui.common.QuietFilterChip
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -183,7 +183,7 @@ internal fun CareerEsList(
             state.cache.lastQuestion?.takeIf { id -> questions.any { it.text("id") == id } }?.let { id ->
                 Button(onClick = { onOpen(id) }, shapes = ButtonDefaults.shapes()) { Text("前回の続き") }
             }
-            FilterChip(
+            QuietFilterChip(
                 selected = originalOrder,
                 onClick = { originalOrder = !originalOrder },
                 label = { Text("原順で確認") },

@@ -6,12 +6,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -38,10 +36,11 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.HermesControlApp
+import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.theme.LocalSpacing
+import com.m57.hermescontrol.ui.common.PrimaryPillButton
 import kotlinx.coroutines.launch
 import java.net.URI
 
@@ -90,31 +89,29 @@ internal fun CompanyPortalActions(
             }
     Column(verticalArrangement = Arrangement.spacedBy(LocalSpacing.current.sm)) {
         if (links.isEmpty()) {
-            Button(
-                onClick = onSettings,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
-                shapes = ButtonDefaults.shapes(),
-            ) { Text("マイページURLを設定") }
+            PrimaryPillButton(onClick = onSettings) { Text("マイページURLを設定") }
         }
-        links.forEach { (label, url) ->
-            Button(onClick = {
-                com.m57.hermescontrol.NavigationController.navigateTo(
+        links.forEachIndexed { index, (label, url) ->
+            val open = {
+                NavigationController.navigateTo(
                     CareerMyPageBrowserKey(
                         detail.company.id,
                         detail.links.firstOrNull { it.data.text("type") == "MyPage" && it.data.text("url") == url }?.id,
                     ),
                 )
-            }, modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp).testTag("company_open_mypage")) {
-                Column(Modifier.padding(vertical = LocalSpacing.current.sm)) {
-                    Text("マイページを開く", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        listOf(label, URI(url).host)
-                            .filter {
-                                it.isNotBlank()
-                            }.joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+            }
+            Column {
+                val action = Modifier.testTag("company_open_mypage")
+                if (index == 0) {
+                    PrimaryPillButton(onClick = open, modifier = action) { Text("マイページを開く") }
+                } else {
+                    TextButton(onClick = open, modifier = action) { Text("マイページを開く") }
                 }
+                Text(
+                    listOf(label, URI(url).host).filter { it.isNotBlank() }.joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
         accounts.forEach { account ->

@@ -15,7 +15,10 @@ data class CareerMyPageModelOption(
     val selectable: Boolean = false,
     val reason: String? = null,
     val endpoint: String? = null,
-)
+) {
+    internal val canSelect: Boolean
+        get() = selectable && private_content_allowed && connection_state in setOf("available", "connected")
+}
 
 @Serializable
 data class CareerMyPageModelConnection(
@@ -36,8 +39,7 @@ data class CareerMyPageCapabilities(
 ) {
     fun supports(execution: CareerExecution): Boolean =
         models.any {
-            it.selectable && it.private_content_allowed && it.connection_state in setOf("available", "connected") &&
-                it.provider == execution.provider && it.id == execution.model &&
+            it.canSelect && it.provider == execution.provider && it.id == execution.model &&
                 execution.reasoning_effort in it.reasoning_efforts
         }
 }

@@ -62,6 +62,7 @@ fun ModelPickerDialog(
     onPinToggle: ((provider: String, model: String) -> Unit)? = null,
     currentModel: MainModelAssignment? = null,
     selectionEnabled: Boolean = true,
+    showModelIdentifiers: Boolean = true,
     onSelect: (provider: String, model: String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -131,6 +132,7 @@ fun ModelPickerDialog(
                         ModelCatalogRow(
                             model = current.model,
                             providerLabel = providerBySlug[current.provider]?.name ?: current.provider,
+                            showModelIdentifier = showModelIdentifiers,
                             status =
                                 stringResource(
                                     if (providers.any {
@@ -188,6 +190,7 @@ fun ModelPickerDialog(
                             current = current,
                             pinned = true,
                             enabled = selectionEnabled,
+                            showModelIdentifier = showModelIdentifiers,
                             onPinToggle = onPinToggle,
                             onSelect = onSelect,
                         )
@@ -205,6 +208,7 @@ fun ModelPickerDialog(
                             current = current,
                             pinned = PinnedModel(provider.slug, model) in visiblePinned,
                             enabled = selectionEnabled,
+                            showModelIdentifier = showModelIdentifiers,
                             onPinToggle = onPinToggle,
                             onSelect = onSelect,
                         )
@@ -277,6 +281,7 @@ private fun ModelChoiceRow(
     onPinToggle: ((String, String) -> Unit)?,
     onSelect: (String, String) -> Unit,
     providerLabel: String? = null,
+    showModelIdentifier: Boolean = true,
 ) {
     val selected = current?.provider == provider && current.model == model
     val pinTint = if (pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
@@ -301,6 +306,7 @@ private fun ModelChoiceRow(
             ) { onSelect(provider, model) },
         providerLabel = providerLabel,
         status = status.ifEmpty { null },
+        showModelIdentifier = showModelIdentifier,
         trailing = {
             if (selected) Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             if (onPinToggle != null) {
@@ -325,6 +331,7 @@ internal fun ModelCatalogRow(
     modifier: Modifier = Modifier,
     providerLabel: String? = null,
     status: String? = null,
+    showModelIdentifier: Boolean = true,
     trailing: (@Composable () -> Unit)? = null,
 ) {
     CompactListRow(
@@ -332,11 +339,20 @@ internal fun ModelCatalogRow(
         trailing = { trailing?.invoke() },
     ) {
         Text(modelDisplayName(model), style = MaterialTheme.typography.bodyLarge)
-        Text(
-            if (providerLabel == null) model else "$providerLabel · $model",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        val source =
+            if (showModelIdentifier) {
+                model
+            } else {
+                model.substringBeforeLast('/', "").takeIf { it.isNotBlank() }?.let(::modelDisplayName)
+            }
+        val subtitle = listOfNotNull(providerLabel, source).joinToString(" · ")
+        if (subtitle.isNotEmpty()) {
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         status?.let {
             Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -375,7 +391,7 @@ private fun matchesModel(
 
 private val modelWordSeparator = Regex("[-_]+")
 
-private fun modelDisplayName(model: String): String =
+internal fun modelDisplayName(model: String): String =
     model
         .substringAfterLast('/')
         .split(modelWordSeparator)

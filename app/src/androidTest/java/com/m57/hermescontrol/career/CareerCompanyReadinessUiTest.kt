@@ -38,7 +38,8 @@ class CareerCompanyReadinessUiTest {
                                             CareerCompanyRow(
                                                 id = "missing",
                                                 name = "設定が必要な企業",
-                                                next_action = "マイページのログイン設定を確認",
+                                                next_action = "マイページ取得状況を確認",
+                                                new_count = 120,
                                                 mypage_readiness =
                                                     CareerMyPageReadiness(
                                                         credential_state = "not_configured",
@@ -63,6 +64,8 @@ class CareerCompanyReadinessUiTest {
             ).performScrollTo()
             .assertIsDisplayed()
         compose.onNodeWithText("マイページ：ログインID・パスワード未設定", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithText("マイページ取得状況を確認", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithText("新着 99+", useUnmergedTree = true).assertIsDisplayed()
         compose
             .onNodeWithTag("company_login_settings_missing")
             .performScrollTo()

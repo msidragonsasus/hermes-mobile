@@ -23,11 +23,9 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.SwapVert
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -50,6 +48,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.Lifecycle
@@ -67,6 +68,7 @@ import com.m57.hermescontrol.ui.common.ErrorState
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.LoadingState
 import com.m57.hermescontrol.ui.common.NavIcon
+import com.m57.hermescontrol.ui.common.QuietFilterChip
 import com.m57.hermescontrol.ui.common.SearchBar
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -385,11 +387,15 @@ internal fun CareerCompanyContent(
                             horizontalArrangement = Arrangement.spacedBy(spacing.sm),
                         ) {
                             careerApplicationFilters.forEach { (value, label) ->
-                                FilterChip(filter == value, { filter = value }, label = { Text(label) })
+                                QuietFilterChip(filter == value, { filter = value }, label = { Text(label) })
                             }
-                            FilterChip(selected = onlyNew, onClick = { onlyNew = !onlyNew }, label = { Text("新着あり") })
+                            QuietFilterChip(
+                                selected = onlyNew,
+                                onClick = { onlyNew = !onlyNew },
+                                label = { Text("新着あり") },
+                            )
                             careerConnectionFilters.forEach { (value, label) ->
-                                FilterChip(filter == value, { filter = value }, label = { Text(label) })
+                                QuietFilterChip(filter == value, { filter = value }, label = { Text(label) })
                             }
                         }
                         if (draftOrder == null) {
@@ -495,15 +501,20 @@ internal fun CareerCompanyContent(
                                 }
                                 val readiness = company.mypage_readiness
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        company.name,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        modifier = Modifier.weight(1f),
-                                    )
+                                    Column(
+                                        Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    ) {
+                                        Text(company.name, style = MaterialTheme.typography.titleSmall)
+                                        CompanyListMeta(company)
+                                    }
                                     if (company.new_count > 0) {
-                                        Badge(containerColor = MaterialTheme.colorScheme.primary) {
-                                            Text("新着 ${careerCount(company.new_count)}")
-                                        }
+                                        Text(
+                                            "新着 ${careerCount(company.new_count)}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(start = spacing.sm),
+                                        )
                                     }
                                     if (readiness?.next_action != null && draftOrder == null) {
                                         IconButton(
@@ -523,39 +534,6 @@ internal fun CareerCompanyContent(
                                         }
                                     }
                                 }
-                                Text(
-                                    company.next_action,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                val facts =
-                                    buildList {
-                                        // The next action already names a missing login; only add the state otherwise.
-                                        if (readiness != null &&
-                                            readiness.next_action == null
-                                        ) {
-                                            add("マイページ：${readiness.label}")
-                                        }
-                                        readiness?.last_success_at?.let { add("最終取得 ${careerReadableTime(it)}") }
-                                        company.application_counts.forEach { (status, count) ->
-                                            add("${careerApplicationFilters[status] ?: "要確認"} $count")
-                                        }
-                                        company.deadline?.let { add("締切 $it") }
-                                        if (company.offer_count > 1) add("${company.offer_count}件の募集")
-                                    }
-                                if (facts.isNotEmpty()) {
-                                    Text(
-                                        facts.joinToString(" · "),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier =
-                                            if (readiness != null) {
-                                                Modifier.testTag("company_login_status_${company.id}")
-                                            } else {
-                                                Modifier
-                                            },
-                                    )
-                                }
                             }
                         }
                     }
@@ -563,6 +541,66 @@ internal fun CareerCompanyContent(
             }
         }
     }
+}
+
+private val genericCompanyActions =
+    setOf(
+        "企業情報を確認・相談",
+        "マイページ取得状況を確認",
+        "マイページの取得状況を確認",
+        "メール取得状況を確認",
+        "必要な対応を確認",
+        "募集中の情報と締切を確認",
+        "届いた案内を確認",
+        "現在の募集情報を確認",
+    )
+
+@Composable
+private fun CompanyListMeta(company: CareerCompanyRow) {
+    val readiness = company.mypage_readiness
+    val loginWarning =
+        readiness?.login_state == "needs_attention" ||
+            readiness?.collection_state == "auth_required" ||
+            readiness?.credential_state == "not_configured"
+    val lastSuccess = readiness?.last_success_at ?: company.last_success_at
+    val readinessLabel =
+        readiness?.label?.takeUnless {
+            readiness.login_state == "previously_confirmed" &&
+                lastSuccess != null
+        }
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val warning = LocalHermesStatusColors.current.warning
+    val facts =
+        buildList {
+            company.next_action
+                .takeIf {
+                    it.isNotBlank() && it !in genericCompanyActions && it != readiness?.next_action &&
+                        (!loginWarning || it !in setOf("マイページ接続を確認", "マイページのログイン設定を確認"))
+                }?.let(::add)
+            lastSuccess?.let { add("最終取得 ${careerReadableTime(it)}") }
+            company.application_counts.forEach { (status, count) ->
+                add("${careerApplicationFilters[status] ?: "要確認"} $count")
+            }
+            company.deadline?.let { add("締切 $it") }
+            if (company.offer_count > 1) add("${company.offer_count}件の募集")
+        }
+    if (readiness == null && facts.isEmpty()) return
+    val meta =
+        buildAnnotatedString {
+            if (readinessLabel != null) {
+                withStyle(SpanStyle(color = if (loginWarning) warning else muted)) {
+                    append("マイページ：$readinessLabel")
+                }
+                if (facts.isNotEmpty()) append(" · ")
+            }
+            append(facts.joinToString(" · "))
+        }
+    Text(
+        meta,
+        style = MaterialTheme.typography.bodySmall,
+        color = muted,
+        modifier = if (readiness == null) Modifier else Modifier.testTag("company_login_status_${company.id}"),
+    )
 }
 
 /** Server instants become "今日 14:05" style text; unparseable values are shown as given. */
