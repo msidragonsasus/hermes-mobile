@@ -132,6 +132,7 @@ import com.m57.hermescontrol.ui.settings.AppUpdateViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -443,21 +444,22 @@ fun ChatScreen(
             }
         }
     }
-    // Arm + trigger older-message paging when the user scrolls near the top.
-    // Before prepending, capture the anchor (first visible message id + offset)
-    // so the same content stays under the reader's eye after the insert
-    // (issue #682). Restored in a LaunchedEffect once the page actually lands.
+    // The main timeline's stable row keys keep the anchor across prepends. The
+    // specialist list also retains its existing message-based restore (issue #682).
     val pagingAnchor = remember { mutableStateOf<Pair<String, Int>?>(null) }
     LaunchedEffect(listState, state.currentSessionId, state.hasOlderMessages, state.isLoadingOlder, mainChat) {
         if (!state.hasOlderMessages || state.isLoadingOlder) return@LaunchedEffect
-        snapshotFlow { listState.firstVisibleItemIndex }
+        snapshotFlow {
+            val layout = listState.layoutInfo
+            val count = if (mainChat) layout.totalItemsCount else state.messages.size
+            // The unmeasured list reports zero items, including on navigation re-entry.
+            if (mainChat && layout.viewportSize.height == 0) null else listState.firstVisibleItemIndex to count
+        }.filterNotNull()
             .distinctUntilChanged()
-            .collectLatest { firstVisibleIndex ->
+            .collectLatest { (firstVisibleIndex, count) ->
                 if (firstVisibleIndex > 2) {
                     isOlderPagingArmed = true
-                } else if (isOlderPagingArmed ||
-                    (if (mainChat) listState.layoutInfo.totalItemsCount else state.messages.size) <= 3
-                ) {
+                } else if (isOlderPagingArmed || count <= 3) {
                     val anchorId = if (mainChat) null else state.messages.getOrNull(firstVisibleIndex)?.id
                     val offset = scrollController.captureAnchorOffset()
                     pagingAnchor.value = if (anchorId != null) anchorId to offset else null

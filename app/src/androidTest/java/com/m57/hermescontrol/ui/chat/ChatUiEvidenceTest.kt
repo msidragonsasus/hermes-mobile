@@ -20,10 +20,12 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -34,6 +36,7 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.unit.Density
 import androidx.test.espresso.Espresso
 import androidx.test.platform.app.InstrumentationRegistry
@@ -49,9 +52,11 @@ import com.m57.hermescontrol.ui.common.ShellBottomBar
 import com.m57.hermescontrol.ui.sessions.SessionsUiState
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import java.io.File
@@ -326,6 +331,90 @@ class ChatUiEvidenceTest {
         capture("02-google-symbols-attachment-picker")
         Espresso.pressBack()
         compose.onNodeWithTag("chat_attachment_menu").assertDoesNotExist()
+    }
+
+    @Test
+    fun mainChatReturnsToLatestAndKeepsTheHistoryAnchorWhenPaging() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            instrumentation.uiAutomation.grantRuntimePermission(
+                instrumentation.targetContext.packageName,
+                Manifest.permission.POST_NOTIFICATIONS,
+            )
+        }
+        val messages =
+            (1..60).map { index ->
+                ChatMessage(id = "fixture-$index", role = MessageRole.USER, content = "Transcript message $index")
+            }
+        val fixture =
+            MutableStateFlow(
+                ChatUiState(
+                    currentSessionId = "fixture-session",
+                    messages = messages,
+                    hasOlderMessages = true,
+                    connectionStatus = ConnectionStatus.CONNECTED,
+                ),
+            )
+        val model = mockk<ChatViewModel>(relaxed = true)
+        every { model.specialistChat } returns
+            mockk { every { state } returns MutableStateFlow(SpecialistChatState()) }
+        every { model.uiState } returns fixture
+        every { model.streamingState } returns MutableStateFlow(StreamingState())
+        every { model.searchState } returns ChatSearchState()
+        every { model.actionProgress } returns ActionProgressController(CoroutineScope(Dispatchers.Main))
+        every { model.loadOlderMessages() } answers { fixture.value = fixture.value.copy(isLoadingOlder = true) }
+        val inChat = mutableStateOf(true)
+        compose.setContent {
+            JapaneseTheme {
+                val stateHolder = rememberSaveableStateHolder()
+                if (inChat.value) {
+                    stateHolder.SaveableStateProvider("chat") { ChatScreen(viewModel = model, onOpenDrawer = {}) }
+                } else {
+                    Text("Other screen")
+                }
+            }
+        }
+
+        val latest = compose.onNodeWithText("Transcript message 60", useUnmergedTree = true)
+        latest.assertIsDisplayed()
+        compose.runOnIdle { inChat.value = false }
+        latest.assertDoesNotExist()
+        val updatedMessages =
+            messages + ChatMessage(id = "fixture-61", role = MessageRole.USER, content = "Transcript message 61")
+        compose.runOnIdle {
+            fixture.value = fixture.value.copy(messages = updatedMessages)
+            inChat.value = true
+        }
+        compose.onNodeWithText("Transcript message 61", useUnmergedTree = true).assertIsDisplayed()
+        verify(exactly = 0) { model.loadOlderMessages() }
+
+        compose.onNodeWithTag("main_chat_timeline").performScrollToIndex(2)
+        val anchor = compose.onNodeWithText("Transcript message 3", useUnmergedTree = true)
+
+        fun anchorTop(): Float =
+            anchor
+                .assertIsDisplayed()
+                .fetchSemanticsNode()
+                .boundsInRoot.top
+        val beforePaging = anchorTop()
+        verify(exactly = 1) { model.loadOlderMessages() }
+        compose.runOnIdle {
+            val older =
+                (1..20).map { index ->
+                    ChatMessage(id = "older-$index", role = MessageRole.USER, content = "Older message $index")
+                }
+            fixture.value =
+                fixture.value.copy(
+                    messages = older + updatedMessages,
+                    isLoadingOlder = false,
+                    hasOlderMessages = false,
+                )
+        }
+        assertEquals(beforePaging, anchorTop(), 1f)
+        compose.runOnIdle { inChat.value = false }
+        anchor.assertDoesNotExist()
+        compose.runOnIdle { inChat.value = true }
+        assertEquals(beforePaging, anchorTop(), 1f)
     }
 
     @Test

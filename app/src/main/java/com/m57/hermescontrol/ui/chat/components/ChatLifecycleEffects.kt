@@ -10,7 +10,11 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -66,9 +70,11 @@ fun ChatLifecycleEffects(
         }
     }
 
-    // Land instantly at the bottom on a session switch (issue #682).
+    // A new session opens at the latest message. Re-entering a saved session restores its reader position.
+    var positionedSessionId by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(currentSessionId) {
-        if (currentSessionId != null) {
+        if (currentSessionId != null && currentSessionId != positionedSessionId) {
+            positionedSessionId = currentSessionId
             scrollController.jumpToBottom(animated = false)
         }
     }

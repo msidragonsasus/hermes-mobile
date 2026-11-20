@@ -4,18 +4,20 @@ import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Owns all chat scroll behavior (issue #682):
@@ -46,9 +48,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 class ChatScrollController(
     private val listState: LazyListState,
     internal val scope: CoroutineScope,
+    followIntent: MutableState<Boolean> = mutableStateOf(true),
 ) {
     /** True while the reader is pinned at (or within tolerance of) the bottom. */
-    var isFollowingBottom by mutableStateOf(true)
+    var isFollowingBottom by followIntent
         private set
 
     /**
@@ -62,15 +65,6 @@ class ChatScrollController(
     private var lastMessageCount: Int = 0
     private var tailFollowJob: Job? = null
     private var tailFollowPending = false
-
-    /**
-     * Guard flag: true while a programmatic scroll-to-bottom is in flight.
-     * Prevents [observeUserScrollPosition] from flipping [isFollowingBottom]
-     * to false during the layout race — the scroll targets the old last item,
-     * Compose lays out the new item below, and [isAtBottom] momentarily
-     * returns false before the second scroll pass catches it.
-     */
-    private var isProgrammaticScroll by mutableStateOf(false)
 
     /**
      * Pixel tolerance for "at bottom" detection. Covers the LazyColumn's
@@ -92,30 +86,34 @@ class ChatScrollController(
      */
     fun observeUserScrollPosition() {
         scope.launch {
-            var previousHeight = 0
+            var previousHeight: Int? = null
             snapshotFlow {
-                Triple(
-                    listState.isAtBottom(bottomPixelTolerance),
-                    listState.layoutInfo.viewportSize.height,
-                    listState.isScrollInProgress,
-                )
-            }.distinctUntilChanged()
+                val layout = listState.layoutInfo
+                if (layout.visibleItemsInfo.isEmpty()) {
+                    null
+                } else {
+                    Triple(
+                        listState.isAtBottom(bottomPixelTolerance),
+                        layout.viewportSize.height,
+                        listState.isScrollInProgress,
+                    )
+                }
+            }.filterNotNull()
+                .distinctUntilChanged()
                 .collect { (atBottom, height, scrolling) ->
-                    val resized = previousHeight > 0 && height != previousHeight
+                    val firstLayout = previousHeight == null
+                    val resized = previousHeight != height
                     previousHeight = height
-                    if (resized && isFollowingBottom && !scrolling) {
+                    if (tailFollowJob?.isActive == true) return@collect
+                    if (resized && isFollowingBottom && !scrolling && (!firstLayout || !atBottom)) {
                         // IME, attachments and a growing composer resize the viewport without
-                        // a reader gesture. Preserve follow intent; an older-history reader
-                        // keeps their existing LazyColumn anchor instead.
+                        // a reader gesture. The first layout also needs to honor saved follow intent.
                         scheduleTailFollow()
                     } else if (atBottom) {
                         isFollowingBottom = true
                         // Reaching the bottom means the reader caught up.
                         pendingCount = 0
-                    } else if (!isProgrammaticScroll) {
-                        // Only break follow on USER-initiated scrolls.
-                        // During programmatic scrolls the viewport is
-                        // transiently not-at-bottom while new items lay out.
+                    } else {
                         isFollowingBottom = false
                     }
                 }
@@ -141,7 +139,7 @@ class ChatScrollController(
             lastMessageCount = messageCount
             return
         }
-        val newMessages = (messageCount - lastMessageCount).coerceAtLeast(0)
+        val newMessages = if (lastTailKey == null) 0 else (messageCount - lastMessageCount).coerceAtLeast(0)
         lastMessageCount = messageCount
         lastTailKey = tailKey
         if (isFollowingBottom) {
@@ -151,29 +149,26 @@ class ChatScrollController(
         }
     }
 
-    private fun scheduleTailFollow() {
+    private fun scheduleTailFollow(animated: Boolean = false) {
         tailFollowPending = true
         if (tailFollowJob?.isActive == true) return
         tailFollowJob =
             scope.launch {
-                isProgrammaticScroll = true
-                try {
-                    while (tailFollowPending && isFollowingBottom) {
-                        tailFollowPending = false
-                        scrollToBottomAwaitingLayout()
-                    }
-                } finally {
-                    isProgrammaticScroll = false
+                var animate = animated
+                while (tailFollowPending && isFollowingBottom) {
+                    tailFollowPending = false
+                    scrollToBottomAwaitingLayout(animate)
+                    animate = false
                 }
             }
     }
 
     private suspend fun scrollToBottomAwaitingLayout(animated: Boolean = false) {
-        if (listState.layoutInfo.totalItemsCount == 0) {
-            withTimeoutOrNull(150L) { snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 } } ?: return
-        }
-        // Layout-info observers can resume during LazyColumn subcomposition. Snap only on a later frame.
-        withFrameNanos { }
+        do {
+            snapshotFlow { listState.layoutInfo.visibleItemsInfo.isNotEmpty() }.first { it }
+            // Layout-info observers can resume during LazyColumn subcomposition.
+            withFrameNanos { }
+        } while (listState.layoutInfo.visibleItemsInfo.isEmpty())
         listState.scrollToBottom(animated)
         if (!listState.isAtBottom(bottomPixelTolerance)) {
             withFrameNanos { }
@@ -183,20 +178,10 @@ class ChatScrollController(
 
     /** Force-follow to the bottom (session switch / explicit send). Clears unread. */
     fun jumpToBottom(animated: Boolean = false) {
-        val previousFollow = tailFollowJob
-        previousFollow?.cancel()
-        tailFollowPending = false
+        tailFollowJob?.cancel()
         pendingCount = 0
         isFollowingBottom = true
-        scope.launch {
-            previousFollow?.join()
-            isProgrammaticScroll = true
-            try {
-                scrollToBottomAwaitingLayout(animated)
-            } finally {
-                isProgrammaticScroll = false
-            }
-        }
+        scheduleTailFollow(animated)
     }
 
     /** FAB tap: resume following + clear unread. */
@@ -243,6 +228,8 @@ class ChatScrollController(
         obscuredTopPx: Int = 0,
     ) {
         // Runs in the caller's search effect: a changed query cancels stale positioning.
+        tailFollowJob?.cancel()
+        isFollowingBottom = false
         listState.animateScrollToItem(index)
         val info = listState.layoutInfo
         val item = info.visibleItemsInfo.firstOrNull { it.index == index } ?: return
@@ -326,4 +313,7 @@ suspend fun LazyListState.scrollToBottom(animated: Boolean) {
 fun rememberChatScrollController(
     listState: LazyListState,
     scope: CoroutineScope,
-): ChatScrollController = remember(listState, scope) { ChatScrollController(listState, scope) }
+): ChatScrollController {
+    val followIntent = rememberSaveable { mutableStateOf(true) }
+    return remember(listState, scope, followIntent) { ChatScrollController(listState, scope, followIntent) }
+}
