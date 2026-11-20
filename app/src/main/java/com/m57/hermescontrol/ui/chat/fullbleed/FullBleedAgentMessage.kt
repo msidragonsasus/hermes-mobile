@@ -89,7 +89,12 @@ internal fun FullBleedAgentMessage(
         } else {
             Modifier.fillMaxWidth().padding(horizontal = 16.dp)
         }
-    MessageActionHost(message = actionMessage, modifier = modifier, useDialog = personalStyle) {
+    MessageActionHost(
+        message = actionMessage,
+        modifier = modifier,
+        directSelection = personalStyle,
+        selectable = !message.isStreaming && message.content.isNotBlank(),
+    ) {
         Column(
             modifier =
                 bodyModifier.testTag(if (personalStyle) "chat_assistant_bubble" else "fullbleed_agent_message"),

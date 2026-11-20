@@ -1,12 +1,17 @@
 package com.m57.hermescontrol.ui.chat
 
 import android.Manifest
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.os.Build
 import android.os.Debug
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
+import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivityResultRegistryOwner
@@ -30,21 +35,31 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.swipeUp
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -52,6 +67,7 @@ import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.test.espresso.Espresso
 import androidx.test.platform.app.InstrumentationRegistry
 import com.m57.hermescontrol.NavigationController
+import com.m57.hermescontrol.R
 import com.m57.hermescontrol.agents.BotConversations
 import com.m57.hermescontrol.agents.BotSettingsKey
 import com.m57.hermescontrol.data.local.AuthManager
@@ -59,6 +75,7 @@ import com.m57.hermescontrol.data.model.ProfileInfo
 import com.m57.hermescontrol.data.model.SessionInfo
 import com.m57.hermescontrol.data.model.SpecialistAppConnection
 import com.m57.hermescontrol.data.model.SpecialistCapabilitiesResponse
+import com.m57.hermescontrol.data.model.SpecialistPendingTurn
 import com.m57.hermescontrol.data.model.SpecialistSetupDraft
 import com.m57.hermescontrol.data.model.SpecialistSetupMessage
 import com.m57.hermescontrol.data.model.SpecialistSetupSnapshot
@@ -711,6 +728,293 @@ class ChatUiEvidenceTest {
                 }
             }
         ViewModelProvider(checkNotNull(LocalViewModelStoreOwner.current), factory)[BotsViewModel::class.java]
+    }
+
+    @Test
+    fun mainChatLongPressShowsNativeHandlesAndCopiesOnlyTheSelectedWord() =
+        withTouchChat { _, _, _ -> assertNativeMessageSelection() }
+
+    @Test
+    fun setupChatLongPressShowsNativeHandlesAndCopiesOnlyTheSelectedWord() =
+        withTouchChat(setupChat = true) { _, _, _ -> assertNativeMessageSelection() }
+
+    private fun assertNativeMessageSelection() {
+        val text = compose.onNodeWithText("Select this exact word", useUnmergedTree = true)
+        val layouts = mutableListOf<TextLayoutResult>()
+        text.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        val before = text.fetchSemanticsNode().boundsInRoot
+        text.performTouchInput { longClick(layouts.single().getBoundingBox(13).center) }
+        val handles =
+            SemanticsMatcher("Compose selection handle") { node ->
+                node.config.any { it.key.name == "SelectionHandleInfo" }
+            }
+        compose.onAllNodes(handles, useUnmergedTree = true).assertCountEquals(2)
+        assertEquals(before, text.fetchSemanticsNode().boundsInRoot)
+        compose.onNodeWithTag("message_action_menu").assertDoesNotExist()
+
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val automation = instrumentation.uiAutomation
+        val service = automation.serviceInfo
+        val originalFlags = service.flags
+        try {
+            service.flags = originalFlags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+            automation.serviceInfo = service
+            val copy = compose.activity.getString(android.R.string.copy)
+            var copyBounds: Rect? = null
+            compose.waitUntil(5_000) {
+                copyBounds =
+                    automation.windows
+                        .asSequence()
+                        .flatMap {
+                            it.root
+                                ?.findAccessibilityNodeInfosByText(copy)
+                                .orEmpty()
+                                .asSequence()
+                        }.firstOrNull {
+                            it.isVisibleToUser &&
+                                (it.text?.toString() == copy || it.contentDescription?.toString() == copy)
+                        }?.let { node -> Rect().also(node::getBoundsInScreen) }
+                copyBounds != null
+            }
+            val bounds = checkNotNull(copyBounds)
+            val downTime = SystemClock.uptimeMillis()
+            for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+                val event =
+                    MotionEvent.obtain(
+                        downTime,
+                        SystemClock.uptimeMillis(),
+                        action,
+                        bounds.exactCenterX(),
+                        bounds.exactCenterY(),
+                        0,
+                    )
+                try {
+                    assertTrue(automation.injectInputEvent(event, true))
+                } finally {
+                    event.recycle()
+                }
+            }
+            compose.waitUntil(
+                5_000,
+            ) { compose.onAllNodes(handles, useUnmergedTree = true).fetchSemanticsNodes().isEmpty() }
+            compose.runOnIdle {
+                val clipboard = compose.activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                assertEquals(
+                    "exact",
+                    clipboard.primaryClip
+                        ?.getItemAt(0)
+                        ?.text
+                        ?.toString(),
+                )
+            }
+        } finally {
+            service.flags = originalFlags
+            automation.serviceInfo = service
+        }
+    }
+
+    @Test
+    fun mainChatReplyPreviewCancelsCollapsesReopensAndSendsMarkdownQuote() =
+        withTouchChat { model, _, _ ->
+            val input = compose.onNodeWithTag("chat_input")
+            val draft = "A long draft first line that overflows the collapsed pill\nThis second line must survive"
+            val quote = "Previous topic\nFollow-up detail"
+            val composer = compose.onNodeWithTag("chat_composer_surface")
+            val collapsedHeight = composer.fetchSemanticsNode().boundsInRoot.height
+
+            fun reply() {
+                compose.onNodeWithTag("message_actions_topic").performTouchInput { click() }
+                compose.onNodeWithTag("message_action_reply").performTouchInput { click() }
+                waitForChatTag("chat_reply_preview")
+            }
+
+            reply()
+            input.assertTextEquals("").performTextInput(draft)
+            compose.onNodeWithTag("chat_reply_cancel").performTouchInput { click() }
+            compose.onNodeWithTag("chat_reply_preview").assertDoesNotExist()
+            input.assertTextEquals(draft)
+            reply()
+            input.assertTextEquals(draft)
+            compose
+                .onNode(
+                    hasText(quote) and hasAnyAncestor(hasTestTag("chat_reply_preview")),
+                    useUnmergedTree = true,
+                ).assertIsDisplayed()
+            compose.onNodeWithTag("model_chip").assertIsDisplayed()
+            assertTrue(composer.fetchSemanticsNode().boundsInRoot.height > collapsedHeight)
+            capture("reply-preview-expanded")
+
+            Espresso.pressBack()
+            waitForChatTag("chat_composer_toolbar", present = false)
+            compose.onNodeWithTag("chat_reply_preview").assertDoesNotExist()
+            compose.onNodeWithTag("model_chip").assertDoesNotExist()
+            assertEquals(collapsedHeight, composer.fetchSemanticsNode().boundsInRoot.height, 1f)
+            capture("reply-preview-collapsed")
+            input.assertTextEquals(draft).performTouchInput { click() }
+            waitForChatTag("chat_reply_preview")
+            input.assertTextEquals(draft)
+            compose.onNodeWithTag("send_button").performTouchInput { click() }
+            verify(exactly = 1) { model.sendMessage("> Previous topic\n> Follow-up detail\n\n$draft", steer = false) }
+            compose.onNodeWithTag("chat_reply_preview").assertDoesNotExist()
+            input.assertTextEquals("")
+        }
+
+    @Test
+    fun mainChatBusyShowsOneSendForDraftAndStopWhenEmpty() = assertBusyComposer(specialist = false)
+
+    @Test
+    fun specialistChatBusyShowsOneSendForDraftAndStopWhenEmpty() = assertBusyComposer(specialist = true)
+
+    private fun assertBusyComposer(specialist: Boolean) =
+        withTouchChat(specialist = specialist) { model, fixture, _ ->
+            compose.runOnIdle { fixture.value = fixture.value.copy(isAgentTyping = true) }
+            compose.onNodeWithTag(MAIN_CHAT_WAITING_KEY).assertIsDisplayed()
+            val input = compose.onNodeWithTag("chat_input")
+            val stop = compose.onNodeWithTag("chat_stop_button")
+            stop.assertIsDisplayed()
+            input.performTouchInput { click() }
+            waitForChatTag("chat_composer_toolbar")
+            input.performTextInput("Send during the active turn")
+            val sendButton = compose.onNodeWithTag("send_button")
+            compose.onAllNodesWithTag("send_button").assertCountEquals(1)
+            compose.onNodeWithTag("chat_steer_button").assertDoesNotExist()
+            stop.assertDoesNotExist()
+            compose
+                .onNodeWithContentDescription(
+                    compose.activity.getString(R.string.draft_add_queue),
+                ).assertDoesNotExist()
+            sendButton.performTouchInput { click() }
+            verify(exactly = 1) { model.sendMessage("Send during the active turn", steer = specialist) }
+            stop.performTouchInput { click() }
+            verify(exactly = 1) { model.interruptSession() }
+        }
+
+    @Test
+    fun setupChatTouchReplySubmitsQuotedTextAndDisplaysTheSharedDots() =
+        withTouchChat(setupChat = true) { _, _, controller ->
+            compose.onNodeWithTag(MAIN_CHAT_WAITING_KEY).assertDoesNotExist()
+            compose.onNodeWithTag("message_actions_specialist:answer").performTouchInput { click() }
+            compose.onNodeWithTag("message_action_reply").performTouchInput { click() }
+            waitForChatTag("chat_reply_preview")
+            val input = compose.onNodeWithTag("chat_input")
+            input.assertTextEquals("").performTextInput("Setup reply")
+            compose.onNodeWithTag("send_button").performTouchInput { click() }
+            verify(exactly = 1) { controller.submit("> Select this exact word\n\nSetup reply") }
+            compose.onNodeWithTag(MAIN_CHAT_WAITING_KEY).assertIsDisplayed()
+            compose.onNodeWithTag("specialist_chat_actions").assertDoesNotExist()
+            compose.onNodeWithText("返信を考え中…").assertDoesNotExist()
+            compose.onNodeWithTag("chat_reply_preview").assertDoesNotExist()
+            capture("specialist-setup-waiting")
+        }
+
+    private fun waitForChatTag(
+        tag: String,
+        present: Boolean = true,
+    ) {
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty() == present }
+    }
+
+    private fun withTouchChat(
+        specialist: Boolean = false,
+        setupChat: Boolean = false,
+        test: (ChatViewModel, MutableStateFlow<ChatUiState>, SpecialistChatController) -> Unit,
+    ) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            instrumentation.uiAutomation.grantRuntimePermission(
+                instrumentation.targetContext.packageName,
+                Manifest.permission.POST_NOTIFICATIONS,
+            )
+        }
+        compose.runOnUiThread {
+            compose.activity.enableEdgeToEdge()
+            compose.activity.window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        }
+        val profile = if (specialist || setupChat) "bot-touch" else "default"
+        val scope = "touch-chat-controls"
+        val session = "chat-controls-$profile"
+        val epoch = 20L
+        val topic = ChatMessage(id = "topic", role = MessageRole.USER, content = "Previous topic\nFollow-up detail")
+        val answer = ChatMessage(id = "answer", role = MessageRole.ASSISTANT, content = "Select this exact word")
+        val setup =
+            SpecialistChatState(
+                target = SpecialistChatTarget(scope, epoch, profile),
+                sessionId = session,
+                capabilities = SpecialistCapabilitiesResponse(setup_conversation = true, setup_apply = true),
+                snapshot =
+                    SpecialistSetupSnapshot(
+                        name = profile,
+                        setup_completed = !setupChat,
+                        conversation_turns =
+                            if (setupChat) {
+                                listOf(
+                                    SpecialistSetupTurn(
+                                        request_id = "prior-turn",
+                                        session_id = session,
+                                        conversation_revision = 1,
+                                        revision = 1,
+                                        user = SpecialistSetupMessage(topic.id, "user", topic.content),
+                                        assistant = SpecialistSetupMessage(answer.id, "assistant", answer.content),
+                                    ),
+                                )
+                            } else {
+                                emptyList()
+                            },
+                    ),
+            )
+        val setupState = MutableStateFlow(setup)
+        val controller = mockk<SpecialistChatController>(relaxed = true)
+        every { controller.state } returns setupState
+        every { controller.submit(any()) } answers {
+            setupState.value =
+                setup.copy(
+                    snapshot =
+                        setup.snapshot?.copy(
+                            pending_turn = SpecialistPendingTurn("submitted", firstArg(), Double.MAX_VALUE),
+                        ),
+                )
+            true
+        }
+        val fixture =
+            MutableStateFlow(
+                ChatUiState(
+                    currentSessionId = session,
+                    canonicalBotChatId = session,
+                    canonicalBotChatEpoch = epoch,
+                    messages = if (setupChat) emptyList() else listOf(topic, answer),
+                    connectionStatus = ConnectionStatus.CONNECTED,
+                    currentSessionModel = "gpt-6.2-astra",
+                    reasoningLevel = "medium",
+                ),
+            )
+        val model = mockk<ChatViewModel>(relaxed = true)
+        every { model.specialistChat } returns controller
+        every { model.uiState } returns fixture
+        every { model.streamingState } returns MutableStateFlow(StreamingState())
+        every { model.searchState } returns ChatSearchState()
+        every { model.actionProgress } returns ActionProgressController(CoroutineScope(Dispatchers.Main))
+        val roster = mockk<BotsViewModel>(relaxed = true)
+        every { roster.getCloseable<AutoCloseable>(any()) } returns null
+        every { roster.uiState } returns MutableStateFlow(BotsUiState())
+        mockkObject(AuthManager)
+        try {
+            every { AuthManager.activeProfileId } returns MutableStateFlow<String?>(profile)
+            every { AuthManager.connectionEpoch } returns MutableStateFlow(epoch)
+            every { AuthManager.uiPreferenceScope() } returns scope
+            compose.setContent {
+                InstallTestRoster(roster)
+                JapaneseTheme(if (setupChat) ThemePreference.LIGHT else ThemePreference.DARK) {
+                    val density = LocalDensity.current
+                    val fontScale = if (setupChat) 1.4f else density.fontScale
+                    CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale)) {
+                        ChatScreen(viewModel = model, onOpenDrawer = {})
+                    }
+                }
+            }
+            test(model, fixture, controller)
+        } finally {
+            unmockkObject(AuthManager)
+        }
     }
 
     @Test

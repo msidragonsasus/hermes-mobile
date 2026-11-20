@@ -46,6 +46,7 @@ import com.m57.hermescontrol.domain.hermes.DraftState
 import com.m57.hermescontrol.domain.hermes.OutgoingDraft
 import com.m57.hermescontrol.domain.hermes.SubmissionResult
 import com.m57.hermescontrol.domain.hermes.draftTargetKey
+import com.m57.hermescontrol.ui.chat.components.quotedReplyMessage
 import com.m57.hermescontrol.ui.chat.fakes.FakeChatPersistenceRepository
 import com.m57.hermescontrol.ui.chat.fakes.FakeOutgoingDraftStore
 import com.m57.hermescontrol.ui.chat.fakes.FakeSlashUsageStore
@@ -8811,6 +8812,25 @@ class ChatViewModelTest {
             assertEquals(sessionId, ActiveSessionHolder.resolveStoredSessionId(sessionId))
 
             verify { HermesWsClient.sendMessage(sessionId, "Hello Hermes", any()) }
+        }
+
+    @Test
+    fun testSendMessagePreservesQuotedReplyWireText() =
+        runTest {
+            val (viewModel, sessionId) = createViewModelWithSession()
+            val reply = quotedReplyMessage("Original\nSecond line", "Follow-up")
+            val expected = "> Original\n> Second line\n\nFollow-up"
+
+            viewModel.sendMessage(reply)
+            advanceUntilIdle()
+
+            assertEquals(
+                expected,
+                viewModel.uiState.value.messages
+                    .last()
+                    .content,
+            )
+            verify { HermesWsClient.sendMessage(sessionId, expected, any()) }
         }
 
     @Test

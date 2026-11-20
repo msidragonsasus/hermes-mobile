@@ -125,7 +125,7 @@ fun ChatBubble(
             contentAlignment = Alignment.CenterEnd,
         ) {
             val maxBubbleWidth = maxWidth * if (personalStyle) 0.88f else 0.80f
-            MessageActionHost(message = message, useDialog = personalStyle) {
+            MessageActionHost(message = message, directSelection = personalStyle, actionsAtStart = true) {
                 CompositionLocalProvider(LocalLayoutDirection provides direction) {
                     Column(
                         Modifier.widthIn(max = maxBubbleWidth).testTag("chat_bubble_user"),

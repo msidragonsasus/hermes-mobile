@@ -16,13 +16,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalWindowInfo
 import com.m57.hermescontrol.theme.LocalConversationStyle
 import com.m57.hermescontrol.ui.chat.ChatMessage
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -41,13 +44,16 @@ internal fun ConversationLayout(
     val style = LocalConversationStyle.current
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
+    val windowInfo = LocalWindowInfo.current
     val scope = rememberCoroutineScope()
     val reply: ((ChatMessage) -> Unit)? =
         onReply?.let { action ->
             { message ->
                 action(message)
                 scope.launch {
+                    // The message menu owns window focus until its popup dismisses.
                     withFrameNanos { }
+                    snapshotFlow { windowInfo.isWindowFocused }.first { it }
                     focus.requestFocus()
                     keyboard?.show()
                 }

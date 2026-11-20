@@ -130,11 +130,7 @@ class SpecialistChatUiTest {
         rule.onNodeWithText("X APIの認証", substring = true).assertIsDisplayed()
         val confirm = rule.onNodeWithText(resources.getString(R.string.specialist_chat_confirm))
         confirm.performScrollTo().assertIsNotEnabled()
-        rule
-            .onNodeWithText(
-                resources.getString(R.string.specialist_chat_thinking),
-            ).performScrollTo()
-            .assertIsDisplayed()
+        rule.onNodeWithText(resources.getString(R.string.specialist_chat_thinking)).assertDoesNotExist()
 
         rule.runOnIdle {
             useDarkTheme = true

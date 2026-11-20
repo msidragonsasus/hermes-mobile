@@ -1,15 +1,11 @@
 package com.m57.hermescontrol.ui.chat.components
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,6 +32,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
@@ -51,6 +48,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,6 +66,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -143,9 +142,8 @@ fun ChatComposer(
 }
 
 /**
- * The chat input bar. Idle it is a single slim pill — attach, text, mic. With the keyboard up
- * (or a draft) it opens into a rounded panel whose bottom row holds attach, the model and
- * thinking-depth controls, mic and send.
+ * The conversation input is a slim pill until the keyboard opens. The expanded panel
+ * has room for the reply preview and the model and thinking-depth controls.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -188,12 +186,14 @@ fun ChatInputBar(
     reasoningDisplayName: String? = null,
     queueOnSend: Boolean = false,
     allowOfflineQueue: Boolean = false,
-    onSteer: (() -> Unit)? = null,
     inputEnabled: Boolean = isConnected,
     inputModifier: Modifier = Modifier,
     inputPlaceholder: String? = null,
     showAttachmentButton: Boolean = true,
     showSendWhenEmpty: Boolean = false,
+    collapseDraftWhenImeCloses: Boolean = false,
+    replyQuote: String? = null,
+    onCancelReply: () -> Unit = {},
     keyboardOptions: KeyboardOptions? = null,
     visualTransformation: VisualTransformation = VisualTransformation.None,
 ) {
@@ -206,9 +206,17 @@ fun ChatInputBar(
     // Attachment menu state
     var showAttachmentMenu by remember { mutableStateOf(false) }
     var isFocused by remember { mutableStateOf(false) }
+    // Collapse as soon as the IME starts closing. The text field keeps its focus and draft.
+    val imeVisible = WindowInsets.imeAnimationTarget.getBottom(LocalDensity.current) > 0
+    val expanded =
+        (isFocused && imeVisible) ||
+            (!collapseDraftWhenImeCloses && (inputFieldValue.text.isNotEmpty() || pendingAttachments.isNotEmpty()))
 
     var showReasoning by remember { mutableStateOf(false) }
     var reasoningDismissedAt by remember { mutableStateOf(0L) }
+    LaunchedEffect(expanded) {
+        if (!expanded) showReasoning = false
+    }
 
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
         Column(
@@ -220,7 +228,7 @@ fun ChatInputBar(
             // Floating reasoning slider above the composer. A popup so that any tap outside it
             // closes it; it is not focusable, so the keyboard stays up while it is open.
             Box(Modifier.fillMaxWidth()) {
-                if (showReasoning) {
+                if (expanded && showReasoning) {
                     Popup(
                         alignment = Alignment.BottomCenter,
                         onDismissRequest = {
@@ -252,7 +260,8 @@ fun ChatInputBar(
 
             androidx.compose.animation.AnimatedVisibility(
                 visible =
-                    showCommandSuggestions && inputFieldValue.text.startsWith("/") &&
+                    (expanded || !collapseDraftWhenImeCloses) &&
+                        showCommandSuggestions && inputFieldValue.text.startsWith("/") &&
                         !inputFieldValue.text.contains(" "),
                 enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(),
                 exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically(),
@@ -314,15 +323,6 @@ fun ChatInputBar(
                 }
             }
 
-            // Idle (no keyboard, nothing typed) the composer is one slim pill: attach, text, mic.
-            // While typing it opens into a rounded panel: the text spans the width and the
-            // attach, model, thinking-depth, mic and send controls share the row beneath it.
-            // Follow where the keyboard is GOING, not where it is: switching when the close
-            // animation starts avoids a second jump after the keyboard has already gone.
-            val imeTargetVisible = WindowInsets.imeAnimationTarget.getBottom(LocalDensity.current) > 0
-            val expanded =
-                (isFocused && imeTargetVisible) || inputFieldValue.text.isNotEmpty() ||
-                    pendingAttachments.isNotEmpty()
             val attachControl: @Composable () -> Unit = {
                 if (showAttachmentButton) {
                     Box {
@@ -362,106 +362,78 @@ fun ChatInputBar(
                 }
             }
             val trailingControls: @Composable () -> Unit = {
-                // Send replaces the mic as soon as a send is possible — text typed OR an
-                // attachment pending (issue #956).
-                if (canSend && onSteer != null) {
-                    IconButton(
-                        onClick = onSteer,
-                        enabled = sendEnabled,
+                if (!canSend && isAgentTyping && onStop != null) {
+                    FilledIconButton(
+                        onClick = onStop,
+                        shapes = IconButtonDefaults.shapes(),
                         modifier =
                             Modifier
                                 .padding(
                                     vertical = actionPadding,
                                 ).size(style.actionSize)
-                                .testTag("chat_steer_button"),
+                                .testTag(stopTestTag),
                     ) {
                         Icon(
-                            Icons.AutoMirrored.Filled.Send,
-                            contentDescription = stringResource(R.string.draft_steer),
+                            Icons.Default.Stop,
+                            contentDescription = stringResource(R.string.group_chat_action_stop),
                         )
                     }
-                }
-                AnimatedContent(
-                    targetState = canSend || showSendWhenEmpty,
-                    transitionSpec = {
-                        (scaleIn(initialScale = 0.8f) + fadeIn())
-                            .togetherWith(scaleOut(targetScale = 0.8f) + fadeOut())
-                    },
-                    label = "send_toggle",
-                ) { showSend ->
-                    if (isAgentTyping && onStop != null) {
-                        FilledIconButton(
-                            onClick = onStop,
-                            shapes = IconButtonDefaults.shapes(),
-                            modifier =
-                                Modifier
-                                    .padding(
-                                        vertical = actionPadding,
-                                    ).size(style.actionSize)
-                                    .testTag(stopTestTag),
-                        ) {
-                            Icon(
-                                Icons.Default.Stop,
-                                contentDescription = stringResource(R.string.group_chat_action_stop),
-                            )
-                        }
-                    } else if (showSend) {
-                        FilledIconButton(
-                            onClick = onSend,
-                            enabled = canSend && sendEnabled,
-                            shapes = IconButtonDefaults.shapes(),
-                            modifier =
-                                Modifier
-                                    .padding(
-                                        vertical = actionPadding,
-                                    ).size(style.actionSize)
-                                    .testTag(sendTestTag),
-                        ) {
-                            Icon(
-                                imageVector =
-                                    if (queueOnSend) Icons.Default.Schedule else Icons.AutoMirrored.Filled.Send,
-                                contentDescription =
-                                    stringResource(
-                                        if (queueOnSend) R.string.draft_add_queue else R.string.chat_send_desc,
-                                    ),
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
-                    } else if (isListening) {
-                        FilledIconButton(
-                            onClick = onMicTap,
-                            shapes = IconButtonDefaults.shapes(),
-                            colors =
-                                IconButtonDefaults.filledIconButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.error,
-                                    contentColor = MaterialTheme.colorScheme.onError,
+                } else if (canSend || showSendWhenEmpty) {
+                    FilledIconButton(
+                        onClick = onSend,
+                        enabled = canSend && sendEnabled,
+                        shapes = IconButtonDefaults.shapes(),
+                        modifier =
+                            Modifier
+                                .padding(
+                                    vertical = actionPadding,
+                                ).size(style.actionSize)
+                                .testTag(sendTestTag),
+                    ) {
+                        Icon(
+                            imageVector =
+                                if (queueOnSend) Icons.Default.Schedule else Icons.AutoMirrored.Filled.Send,
+                            contentDescription =
+                                stringResource(
+                                    if (queueOnSend) R.string.draft_add_queue else R.string.chat_send_desc,
                                 ),
-                            modifier =
-                                Modifier
-                                    .padding(
-                                        vertical = actionPadding,
-                                    ).size(style.actionSize)
-                                    .testTag("mic_stop_button"),
-                        ) {
-                            Icon(Icons.Default.Stop, contentDescription = "Stop listening")
-                        }
-                    } else {
-                        IconButton(
-                            onClick = onMicTap,
-                            enabled = isConnected && microphoneEnabled,
-                            modifier =
-                                Modifier
-                                    .padding(
-                                        vertical = actionPadding,
-                                    ).size(style.actionSize)
-                                    .testTag("mic_button"),
-                        ) {
-                            Icon(
-                                Icons.Default.Mic,
-                                contentDescription = "Mic",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                } else if (isListening) {
+                    FilledIconButton(
+                        onClick = onMicTap,
+                        shapes = IconButtonDefaults.shapes(),
+                        colors =
+                            IconButtonDefaults.filledIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
+                            ),
+                        modifier =
+                            Modifier
+                                .padding(
+                                    vertical = actionPadding,
+                                ).size(style.actionSize)
+                                .testTag("mic_stop_button"),
+                    ) {
+                        Icon(Icons.Default.Stop, contentDescription = "Stop listening")
+                    }
+                } else {
+                    IconButton(
+                        onClick = onMicTap,
+                        enabled = isConnected && microphoneEnabled,
+                        modifier =
+                            Modifier
+                                .padding(
+                                    vertical = actionPadding,
+                                ).size(style.actionSize)
+                                .testTag("mic_button"),
+                    ) {
+                        Icon(
+                            Icons.Default.Mic,
+                            contentDescription = "Mic",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
@@ -471,6 +443,9 @@ fun ChatInputBar(
                 color = MaterialTheme.colorScheme.surfaceContainer,
             ) {
                 Column {
+                    if (expanded && replyQuote != null) {
+                        ComposerReplyPreview(replyQuote, onCancelReply)
+                    }
                     Row(
                         modifier =
                             Modifier
@@ -497,7 +472,7 @@ fun ChatInputBar(
                                     stringResource(R.string.chat_input_placeholder_not_connected)
                                 }
 
-                                onStop == null &&
+                                !collapseDraftWhenImeCloses && onStop == null &&
                                     ChatInputPolicy.showQueuePlaceholder(inputFieldValue.text, isAgentTyping) -> {
                                     stringResource(R.string.chat_input_placeholder_queue)
                                 }
@@ -522,6 +497,12 @@ fun ChatInputBar(
                         val isInputRtl = inputLayoutDirection == LayoutDirection.Rtl
 
                         CompositionLocalProvider(LocalLayoutDirection provides inputLayoutDirection) {
+                            val previewText =
+                                if (!expanded && inputFieldValue.text.isNotEmpty()) {
+                                    visualTransformation.filter(AnnotatedString(inputFieldValue.text)).text
+                                } else {
+                                    null
+                                }
                             BasicTextField(
                                 value = inputFieldValue,
                                 onValueChange = onInputChange,
@@ -557,13 +538,29 @@ fun ChatInputBar(
                                     },
                                 textStyle =
                                     MaterialTheme.typography.bodyLarge.copy(
-                                        color = MaterialTheme.colorScheme.onSurface,
+                                        color =
+                                            if (previewText ==
+                                                null
+                                            ) {
+                                                MaterialTheme.colorScheme.onSurface
+                                            } else {
+                                                Color.Transparent
+                                            },
                                         textAlign = if (isInputRtl) TextAlign.Right else TextAlign.Left,
                                         textDirection = if (isInputRtl) TextDirection.Rtl else TextDirection.Ltr,
                                     ),
                                 singleLine = false,
-                                maxLines = 5,
-                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                maxLines = if (expanded || !collapseDraftWhenImeCloses) 5 else 1,
+                                cursorBrush =
+                                    SolidColor(
+                                        if (previewText ==
+                                            null
+                                        ) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            Color.Transparent
+                                        },
+                                    ),
                                 decorationBox = { innerTextField ->
                                     Box(
                                         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 10.dp),
@@ -582,6 +579,17 @@ fun ChatInputBar(
                                             )
                                         }
                                         innerTextField()
+                                        if (previewText != null) {
+                                            Text(
+                                                text = previewText,
+                                                style = MaterialTheme.typography.bodyLarge,
+                                                textAlign = if (isInputRtl) TextAlign.Right else TextAlign.Left,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.fillMaxWidth().clearAndSetSemantics { },
+                                            )
+                                        }
                                     }
                                 },
                             )
@@ -627,6 +635,41 @@ fun ChatInputBar(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComposerReplyPreview(
+    quote: String,
+    onCancel: () -> Unit,
+) {
+    val spacing = LocalSpacing.current
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(start = spacing.sm, end = spacing.sm, top = spacing.sm),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    ) {
+        Row(
+            modifier = Modifier.padding(start = spacing.md).testTag("chat_reply_preview"),
+            horizontalArrangement = Arrangement.spacedBy(spacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.AutoMirrored.Outlined.Reply, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text(
+                text = quote,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            IconButton(
+                onClick = onCancel,
+                modifier = Modifier.size(LocalConversationStyle.current.actionSize).testTag("chat_reply_cancel"),
+            ) {
+                Icon(Icons.Default.Close, contentDescription = stringResource(R.string.chat_reply_cancel))
             }
         }
     }

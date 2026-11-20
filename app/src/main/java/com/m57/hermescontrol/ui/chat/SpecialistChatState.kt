@@ -107,9 +107,11 @@ internal data class SpecialistChatState(
     val canAct: Boolean get() = ready && !loading && !busy && request == null && pendingTurn == null
     val needsSessionResolution: Boolean get() = !legacy && snapshot != null && sessionId == null
     val showsFooterActions: Boolean
-        get() =
-            pendingApply || editing || request != null || pendingTurn != null || error != null ||
-                busy || (loading && snapshot == null) || needsSessionResolution
+        get() {
+            if (pendingApply || editing || error != null || needsSessionResolution) return true
+            if (hasInFlightTurn()) return request?.rejected == true
+            return request != null || pendingTurn != null || busy || (loading && snapshot == null)
+        }
     val showsFooter: Boolean get() = showsFooterActions || activeDraft?.kind == "edit"
 
     fun hasInFlightTurn(nowSeconds: Double = System.currentTimeMillis() / 1000.0): Boolean =

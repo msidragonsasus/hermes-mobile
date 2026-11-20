@@ -295,15 +295,14 @@ reasoning controls sit below it on the page. Configured controls remain reachabl
 with an empty draft. Normal chat, groups, OpenClaw and Career conversations reuse
 this layout and composer while retaining their own sending/authentication rules.
 
-Message actions use the shared `MessageActionHost`: long-press settled text to
-open an anchored, rounded icon-and-label menu. Reply quotes visible text into the
-existing draft without sending; Copy and Select are available to both roles.
-Selection stays in the original message, preserving its rendered layout and links;
-never open a dialog or duplicate text surface for selection (2026-11-17 user decision). Expose the same menu through
-the accessibility long-click action. Do not add permanent per-message copy
-footers or unsupported operations (individual-message deletion has no API).
-Embedded links and controls retain their own tap handling; streaming text does
-not open actions. Menu colors, shape and spacing use host theme tokens.
+In main and specialist chat, long-press settled text in `MessageActionHost` to
+select it in place using the system handles and copy toolbar. The adjacent
+message actions button opens the shared rounded menu for Reply and Copy whole
+message. Embedded links and controls retain their own tap handling, and actions
+remain unavailable during streaming. A reply previews the quoted text above
+the editable draft and adds the markdown quote when the user sends. With the
+keyboard closed, the composer shows its one-line draft preview and hides the
+reply preview and model controls. All surfaces use host theme tokens.
 
 Pending photos use an 88dp image strip above the composer, with a small circular
 remove affordance inside a 48dp target. Photos have no visible filename chip.

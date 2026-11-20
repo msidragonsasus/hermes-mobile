@@ -93,6 +93,7 @@ internal fun MainChatTimeline(
     specialistReview: (@Composable () -> Unit)? = null,
     specialistFooter: (@Composable () -> Unit)? = null,
     specialistCardsState: SpecialistChatState? = null,
+    specialistWaiting: Boolean = false,
 ) {
     val listState = scrollPosition.listState
     val slot by remember(streaming) {
@@ -120,9 +121,9 @@ internal fun MainChatTimeline(
         }
     val canWait =
         state.isAgentTyping && state.isConnected && !state.responseStatusUnknown && !awaitingInput && !activeHasText
-    val waiting by remember(streaming, canWait) {
+    val waiting by remember(streaming, canWait, specialistWaiting) {
         derivedStateOf(structuralEqualityPolicy()) {
-            canWait && !streaming.value.turnEnded && streaming.value.sealedOrphanIds.isEmpty()
+            specialistWaiting || (canWait && !streaming.value.turnEnded && streaming.value.sealedOrphanIds.isEmpty())
         }
     }
     val rows =
@@ -294,7 +295,7 @@ internal fun MainChatTimeline(
                                 FullBleedAgentMessage(
                                     message = message,
                                     actionMessage =
-                                        if (row.live) {
+                                        if (row.live || message.isSpecialistSetupText()) {
                                             message
                                         } else {
                                             message.copy(

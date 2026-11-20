@@ -98,7 +98,8 @@ import com.m57.hermescontrol.ui.chat.components.SearchBarRow
 import com.m57.hermescontrol.ui.chat.components.SideQuestionSheet
 import com.m57.hermescontrol.ui.chat.components.SubagentInspectionSheet
 import com.m57.hermescontrol.ui.chat.components.TaskProgressChip
-import com.m57.hermescontrol.ui.chat.components.quotedReplyField
+import com.m57.hermescontrol.ui.chat.components.messageActionText
+import com.m57.hermescontrol.ui.chat.components.quotedReplyMessage
 import com.m57.hermescontrol.ui.chat.components.rememberChatScrollController
 import com.m57.hermescontrol.ui.chat.components.shouldShowProgressChip
 import com.m57.hermescontrol.ui.chat.fullbleed.MainChatTimeline
@@ -458,6 +459,15 @@ fun ChatScreen(
         inSpecialistBotChat && !setupUnsupported &&
             (specialist?.blocksNormalInput != false || (specialistKnown && specialist.missing))
     val readyForSetup = state.isConnected && !state.isLoading && specialist?.sessionId != null
+    var replyQuote by rememberSaveable(scrollKey, setupComposer) { mutableStateOf<String?>(null) }
+    val canSendSetup = readyForSetup && specialist.canAct && specialist.turnMode != null
+    val busyWithKnownResponse =
+        !setupComposer && state.isConnected && state.isAgentTyping && !state.responseStatusUnknown
+    val canStop =
+        busyWithKnownResponse &&
+            state.responseLedger.responses.none {
+                it.id != state.responseLedger.activeId && it.serverFollowUp && it.finishedAt == null
+            }
     val canChangeSetup = readyForSetup && !state.isAgentTyping && !state.responseStatusUnknown
     val visibleMessages =
         remember(state.messages, specialist, specialistKnown) {
@@ -535,8 +545,8 @@ fun ChatScreen(
                     .background(MaterialTheme.colorScheme.background)
                     .statusBarsPadding(),
             onReply =
-                if (state.isConnected) {
-                    { message -> inputFieldValue = quotedReplyField(message, inputFieldValue) }
+                if (if (setupComposer) canSendSetup else state.isConnected) {
+                    { message -> replyQuote = messageActionText(message) }
                 } else {
                     null
                 },
@@ -553,13 +563,19 @@ fun ChatScreen(
                     },
                     onSend = {
                         if (setupComposer) {
-                            if (readyForSetup && setupController.submit(specialDrafts[setupKey]?.text.orEmpty())) {
+                            val text = quotedReplyMessage(replyQuote, specialDrafts[setupKey]?.text.orEmpty())
+                            if (canSendSetup && setupController.submit(text)) {
                                 specialDrafts.remove(setupKey)
+                                replyQuote = null
                                 scrollController.jumpToBottom(animated = true)
                             }
                         } else if (!viewModel.blocksSpecialistRegularPrompt(showFeedback = true)) {
-                            viewModel.sendMessage(inputFieldValue.text)
+                            viewModel.sendMessage(
+                                quotedReplyMessage(replyQuote, inputFieldValue.text),
+                                steer = !isMainProfile && busyWithKnownResponse && state.pendingAttachments.isEmpty(),
+                            )
                             inputFieldValue = TextFieldValue("")
+                            replyQuote = null
                             scrollController.jumpToBottom(animated = true)
                         }
                     },
@@ -596,12 +612,7 @@ fun ChatScreen(
                             }
                         }
                     },
-                    queueOnSend =
-                        !setupComposer &&
-                            (
-                                (!isMainProfile && state.isAgentTyping) || state.responseStatusUnknown ||
-                                    !state.isConnected
-                            ),
+                    queueOnSend = !setupComposer && (state.responseStatusUnknown || !state.isConnected),
                     allowOfflineQueue = !setupComposer,
                     attachmentsEnabled = !setupComposer,
                     microphoneEnabled = !setupComposer,
@@ -609,26 +620,15 @@ fun ChatScreen(
                     showModelControls = !setupComposer,
                     showCommandSuggestions = !setupComposer,
                     showSendWhenEmpty = setupComposer,
+                    collapseDraftWhenImeCloses = true,
                     inputEnabled = if (setupComposer) specialist?.turnMode != null else state.isConnected,
-                    sendEnabled =
-                        !setupComposer || (readyForSetup && specialist?.canAct == true && specialist.turnMode != null),
+                    sendEnabled = !setupComposer || canSendSetup,
+                    replyQuote = replyQuote,
+                    onCancelReply = { replyQuote = null },
+                    onStop = if (canStop) viewModel::interruptSession else null,
                     inputPlaceholder =
                         if (setupComposer && specialist?.turnMode == "edit") {
                             stringResource(R.string.specialist_chat_edit_prompt)
-                        } else {
-                            null
-                        },
-                    onSteer =
-                        if (!setupComposer && state.isConnected && state.isAgentTyping &&
-                            !state.responseStatusUnknown && state.pendingAttachments.isEmpty()
-                        ) {
-                            {
-                                if (!viewModel.blocksSpecialistRegularPrompt(showFeedback = true)) {
-                                    viewModel.sendMessage(inputFieldValue.text, steer = true)
-                                    inputFieldValue = TextFieldValue("")
-                                    scrollController.jumpToBottom(animated = true)
-                                }
-                            }
                         } else {
                             null
                         },
@@ -880,6 +880,7 @@ fun ChatScreen(
                                 null
                             },
                         specialistCardsState = specialist?.takeIf { hasSetupFooter || it.activeDraft?.kind == "setup" },
+                        specialistWaiting = state.isConnected && specialist?.hasInFlightTurn() == true,
                     )
                 }
 

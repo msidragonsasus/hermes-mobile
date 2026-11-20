@@ -238,9 +238,7 @@ internal fun SpecialistChatActions(
                     style = MaterialTheme.typography.labelLarge,
                 )
             }
-            if (waiting) {
-                Text(stringResource(R.string.specialist_chat_thinking), style = MaterialTheme.typography.bodySmall)
-            } else if (state.busy || (state.loading && snapshot == null)) {
+            if (!waiting && (state.busy || (state.loading && snapshot == null))) {
                 Text(stringResource(R.string.specialist_chat_waiting), style = MaterialTheme.typography.bodySmall)
             }
             state.error?.let { error ->

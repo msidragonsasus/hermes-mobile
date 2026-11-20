@@ -13,12 +13,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.Density
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -95,32 +97,26 @@ class ChatQueueUiTest {
     }
 
     @Test
-    fun busyComposerSeparatesQueueFromSteer() {
-        var queued = 0
-        var steered = 0
+    fun busyComposerUsesTheSingleSendAction() {
+        var sent = 0
         compose.setContent {
             Fixture(dark = true) {
                 ChatInputBar(
                     inputFieldValue = TextFieldValue("終わったら次の作業をお願い"),
                     onInputChange = {},
-                    onSend = { queued++ },
+                    onSend = { sent++ },
                     onMicTap = {},
                     isListening = false,
                     isAgentTyping = true,
                     isConnected = true,
                     commandCatalog = CommandCatalog(),
-                    queueOnSend = true,
-                    onSteer = { steered++ },
                 )
             }
         }
-        compose.onNodeWithContentDescription("キューに追加").performClick()
-        compose.onNodeWithContentDescription("今の実行に追加").performClick()
-        compose.runOnIdle {
-            assertEquals(1, queued)
-            assertEquals(1, steered)
-        }
-        screenshot("queue-composer-ja-dark.png")
+        compose.onNodeWithContentDescription("キューに追加").assertDoesNotExist()
+        compose.onNodeWithContentDescription("今の実行に追加").assertDoesNotExist()
+        compose.onNodeWithTag("send_button").performTouchInput { click() }
+        compose.runOnIdle { assertEquals(1, sent) }
     }
 
     @Test
