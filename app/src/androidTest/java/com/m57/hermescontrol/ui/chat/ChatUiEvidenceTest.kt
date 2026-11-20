@@ -30,8 +30,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -39,6 +42,9 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.unit.Density
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -54,7 +60,9 @@ import com.m57.hermescontrol.data.model.SessionInfo
 import com.m57.hermescontrol.data.model.SpecialistAppConnection
 import com.m57.hermescontrol.data.model.SpecialistCapabilitiesResponse
 import com.m57.hermescontrol.data.model.SpecialistSetupDraft
+import com.m57.hermescontrol.data.model.SpecialistSetupMessage
 import com.m57.hermescontrol.data.model.SpecialistSetupSnapshot
+import com.m57.hermescontrol.data.model.SpecialistSetupTurn
 import com.m57.hermescontrol.data.ws.ConnectionStatus
 import com.m57.hermescontrol.navigation.ShellTab
 import com.m57.hermescontrol.theme.HermesControlTheme
@@ -512,6 +520,23 @@ class ChatUiEvidenceTest {
         compose.onNodeWithText(newMessage.content).assertIsDisplayed()
         latestFab.assertDoesNotExist()
 
+        val heldAnchor = compose.onNodeWithText(newMessage.content)
+        val heldPosition = heldAnchor.fetchSemanticsNode().boundsInRoot
+        val arrivingMessage = newMessage.copy(id = "fixture-64", content = "Transcript message 64")
+        timeline.performTouchInput { down(center) }
+        try {
+            compose.runOnIdle {
+                fixture.value =
+                    fixture.value.copy(
+                        messages = fixture.value.messages + arrivingMessage,
+                    )
+            }
+            assertEquals(heldPosition, heldAnchor.assertIsDisplayed().fetchSemanticsNode().boundsInRoot)
+            latestFab.assertIsDisplayed()
+        } finally {
+            timeline.performTouchInput { up() }
+        }
+
         compose.runOnIdle {
             search.isActive = true
             search.query = "message 20"
@@ -525,6 +550,170 @@ class ChatUiEvidenceTest {
     }
 
     @Test
+    fun mainTimelineRespondsToTouchWhileIdleWaitingAndStreaming() = assertTimelineRespondsToTouch("default")
+
+    @Test
+    fun specialistTimelineRespondsToTouchWithDraftAndFooter() = assertTimelineRespondsToTouch("bot-31b01926d35d41da")
+
+    private fun assertTimelineRespondsToTouch(profile: String) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            instrumentation.uiAutomation.grantRuntimePermission(
+                instrumentation.targetContext.packageName,
+                Manifest.permission.POST_NOTIFICATIONS,
+            )
+        }
+        val scope = "touch-test"
+        val epoch = 20L
+        val session = "touch-$profile"
+        val isSpecialist = profile != "default"
+        val messages =
+            List(100) { index ->
+                ChatMessage(id = "history-$index", role = MessageRole.USER, content = "History message $index")
+            }
+        val setup =
+            if (isSpecialist) {
+                SpecialistChatState(
+                    target = SpecialistChatTarget(scope, epoch, profile),
+                    sessionId = session,
+                    capabilities = SpecialistCapabilitiesResponse(setup_conversation = true, setup_apply = true),
+                    error = "unavailable",
+                    snapshot =
+                        SpecialistSetupSnapshot(
+                            name = profile,
+                            draft = SpecialistSetupDraft("touch-draft"),
+                            conversation_turns =
+                                messages.chunked(2).mapIndexed { index, pair ->
+                                    SpecialistSetupTurn(
+                                        request_id = "turn-$index",
+                                        session_id = session,
+                                        conversation_revision = index,
+                                        revision = index,
+                                        user = SpecialistSetupMessage(pair[0].id, "user", pair[0].content),
+                                        assistant = SpecialistSetupMessage(pair[1].id, "assistant", pair[1].content),
+                                    )
+                                },
+                        ),
+                )
+            } else {
+                SpecialistChatState()
+            }
+        val fixture =
+            MutableStateFlow(
+                ChatUiState(
+                    currentSessionId = session,
+                    canonicalBotChatId = session,
+                    canonicalBotChatEpoch = epoch,
+                    messages = if (isSpecialist) emptyList() else messages,
+                    connectionStatus = ConnectionStatus.CONNECTED,
+                ),
+            )
+        val streaming = MutableStateFlow(StreamingState())
+        val reply =
+            ChatMessage(id = "touch-stream", role = MessageRole.ASSISTANT, content = "Live answer", isStreaming = true)
+        val model = mockk<ChatViewModel>(relaxed = true)
+        every { model.specialistChat } returns mockk { every { state } returns MutableStateFlow(setup) }
+        every { model.uiState } returns fixture
+        every { model.streamingState } returns streaming
+        every { model.searchState } returns ChatSearchState()
+        every { model.actionProgress } returns ActionProgressController(CoroutineScope(Dispatchers.Main))
+        val roster = mockk<BotsViewModel>(relaxed = true)
+        every { roster.getCloseable<AutoCloseable>(any()) } returns null
+        every { roster.uiState } returns MutableStateFlow(BotsUiState())
+        mockkObject(AuthManager)
+        try {
+            every { AuthManager.activeProfileId } returns MutableStateFlow<String?>(profile)
+            every { AuthManager.connectionEpoch } returns MutableStateFlow(epoch)
+            every { AuthManager.uiPreferenceScope() } returns scope
+            compose.setContent {
+                InstallTestRoster(roster)
+                JapaneseTheme { ChatScreen(viewModel = model, onOpenDrawer = {}) }
+            }
+            val timeline = compose.onNodeWithTag("main_chat_timeline")
+            val latest = compose.onNodeWithContentDescription("最新のメッセージへ移動")
+
+            fun scrollOffset(): Float =
+                timeline.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+
+            fun firstVisibleMessageNumber(): Int {
+                // The latest-first list puts its first visible transcript message at the bottom.
+                val node =
+                    compose
+                        .onAllNodes(hasText("History message ", substring = true), useUnmergedTree = true)
+                        .fetchSemanticsNodes()
+                        .filter { it.boundsInRoot.height > 0f }
+                        .maxBy { it.boundsInRoot.bottom }
+                return node.config[SemanticsProperties.Text]
+                    .first()
+                    .text
+                    .substringAfterLast(' ')
+                    .toInt()
+            }
+
+            val failedSwipes = mutableListOf<String>()
+            for (phase in listOf("idle", "waiting", "streaming")) {
+                compose.runOnIdle {
+                    fixture.value = fixture.value.copy(isAgentTyping = phase != "idle")
+                    if (phase == "streaming") {
+                        streaming.value = StreamingState(streamingMessage = reply, isWritingText = true)
+                    }
+                }
+                if (isSpecialist) {
+                    compose.onNodeWithTag("specialist_chat_review").assertIsDisplayed()
+                    compose.onNodeWithTag("specialist_chat_actions").assertIsDisplayed()
+                }
+                if (phase == "waiting") compose.onNodeWithTag(MAIN_CHAT_WAITING_KEY).assertIsDisplayed()
+                if (phase == "streaming") compose.onNodeWithText(reply.content).assertIsDisplayed()
+                if (phase == "streaming") {
+                    val beforeDrag = scrollOffset()
+                    timeline.performTouchInput {
+                        down(percentOffset(0.5f, 0.35f))
+                        moveTo(percentOffset(0.5f, 0.65f), delayMillis = 160)
+                    }
+                    val beforeUpdate = scrollOffset()
+                    compose.runOnIdle {
+                        streaming.value =
+                            streaming.value.copy(streamingMessage = reply.copy(content = "Live answer with more text"))
+                    }
+                    val afterUpdate = scrollOffset()
+                    timeline.performTouchInput { moveTo(percentOffset(0.5f, 0.88f), delayMillis = 160) }
+                    val afterDrag = scrollOffset()
+                    timeline.performTouchInput { up() }
+                    if (beforeUpdate <= beforeDrag || afterDrag <= afterUpdate || afterUpdate < beforeUpdate) {
+                        failedSwipes += "streaming drag ($beforeDrag → $beforeUpdate → $afterUpdate → $afterDrag)"
+                    }
+                }
+                // A short drag can move within the draft card. A full swipe must reach older transcript rows.
+                val before = firstVisibleMessageNumber()
+                timeline.performTouchInput { swipeDown(startY = height * 0.35f, endY = height * 0.88f) }
+                val after = firstVisibleMessageNumber()
+                if (after >= before) {
+                    failedSwipes += "$phase down ($before → $after)"
+                } else {
+                    timeline.performTouchInput { swipeUp(startY = height * 0.84f, endY = height * 0.35f) }
+                    val returned = firstVisibleMessageNumber()
+                    if (returned <= after) failedSwipes += "$phase up ($after → $returned)"
+                }
+                if (latest.isDisplayed()) latest.performClick()
+            }
+            assertTrue("Swipes that left the same item visible: $failedSwipes", failedSwipes.isEmpty())
+        } finally {
+            unmockkObject(AuthManager)
+        }
+    }
+
+    @Composable
+    private fun InstallTestRoster(roster: BotsViewModel) {
+        val factory =
+            remember(roster) {
+                object : ViewModelProvider.Factory {
+                    override fun <T : ViewModel> create(modelClass: Class<T>): T = modelClass.cast(roster)!!
+                }
+            }
+        ViewModelProvider(checkNotNull(LocalViewModelStoreOwner.current), factory)[BotsViewModel::class.java]
+    }
+
+    @Test
     fun specialistUsesSharedTimelineAndKeepsSetupAndBotSettings() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -533,7 +722,7 @@ class ChatUiEvidenceTest {
                 Manifest.permission.POST_NOTIFICATIONS,
             )
         }
-        val profile = "research"
+        val profile = "bot-31b01926d35d41da"
         val botTitle = "Research bot"
         val epoch = 20L
         val scope = "synthetic-scope"
@@ -587,9 +776,29 @@ class ChatUiEvidenceTest {
             every { AuthManager.connectionEpoch } returns MutableStateFlow(epoch)
             every { AuthManager.uiPreferenceScope() } returns scope
             every { NavigationController.navigateTo(any()) } returns Unit
-            every { roster.uiState } returns
-                MutableStateFlow(
-                    BotsUiState(
+            val rosterState = MutableStateFlow(BotsUiState(rosterScope = BotConversations.serverScope()))
+            every { roster.uiState } returns rosterState
+            val inChat = mutableStateOf(true)
+            compose.setContent {
+                InstallTestRoster(roster)
+                JapaneseTheme {
+                    val stateHolder = rememberSaveableStateHolder()
+                    if (inChat.value) {
+                        stateHolder.SaveableStateProvider(
+                            "specialist",
+                        ) { ChatScreen(viewModel = model, onOpenDrawer = {}) }
+                    } else {
+                        Text("Other screen")
+                    }
+                }
+            }
+
+            compose.onNodeWithText("専門ボット").assertIsDisplayed()
+            compose.onNodeWithText(profile, useUnmergedTree = true).assertDoesNotExist()
+            compose.onNodeWithContentDescription(profile, useUnmergedTree = true).assertDoesNotExist()
+            compose.runOnIdle {
+                rosterState.value =
+                    rosterState.value.copy(
                         profiles =
                             listOf(
                                 ProfileInfo(
@@ -607,29 +816,7 @@ class ChatUiEvidenceTest {
                                         ),
                                 ),
                             ),
-                        rosterScope = BotConversations.serverScope(),
-                    ),
-                )
-            val inChat = mutableStateOf(true)
-            val rosterFactory =
-                object : ViewModelProvider.Factory {
-                    override fun <T : ViewModel> create(modelClass: Class<T>): T = modelClass.cast(roster)!!
-                }
-            compose.setContent {
-                ViewModelProvider(
-                    checkNotNull(LocalViewModelStoreOwner.current),
-                    rosterFactory,
-                )[BotsViewModel::class.java]
-                JapaneseTheme {
-                    val stateHolder = rememberSaveableStateHolder()
-                    if (inChat.value) {
-                        stateHolder.SaveableStateProvider(
-                            "specialist",
-                        ) { ChatScreen(viewModel = model, onOpenDrawer = {}) }
-                    } else {
-                        Text("Other screen")
-                    }
-                }
+                    )
             }
 
             compose.onNodeWithTag("menu_button", useUnmergedTree = true).assertIsDisplayed()

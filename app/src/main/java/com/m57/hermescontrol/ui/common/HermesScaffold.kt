@@ -180,19 +180,21 @@ fun HermesScaffold(
     // Management screens pin the bar: with enterAlways, a scroll gesture on a page whose content
     // cannot scroll back (empty tab, pager) hid the back button with no way to bring it back.
     val scrollBehavior =
-        if (pinTopBar || inManagement) {
-            TopAppBarDefaults.pinnedScrollBehavior()
-        } else {
-            TopAppBarDefaults.enterAlwaysScrollBehavior()
+        when {
+            !showTopBar -> null
+            pinTopBar || inManagement -> TopAppBarDefaults.pinnedScrollBehavior()
+            else -> TopAppBarDefaults.enterAlwaysScrollBehavior()
         }
+    // An unmeasured app bar's nested scroll connection can consume the content's drag.
+    val topBarScroll = scrollBehavior?.let { Modifier.nestedScroll(it.nestedScrollConnection) } ?: Modifier
 
     Box(modifier) {
         Scaffold(
-            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
+            modifier = Modifier.fillMaxSize().then(topBarScroll),
             contentWindowInsets = WindowInsets.navigationBars,
             snackbarHost = { snackbarHost() },
             topBar = {
-                if (!showTopBar) return@Scaffold
+                if (scrollBehavior == null) return@Scaffold
                 TopAppBar(
                     title = title,
                     expandedHeight = topBarHeight ?: TopAppBarDefaults.TopAppBarExpandedHeight,
@@ -295,10 +297,11 @@ fun HermesScaffold(
 
 @OptIn(ExperimentalMaterial3Api::class)
 private fun Modifier.dynamicTopBarPadding(
-    scrollBehavior: TopAppBarScrollBehavior,
+    scrollBehavior: TopAppBarScrollBehavior?,
     baseTopPadding: Dp,
-): Modifier =
-    this.layout { measurable, constraints ->
+): Modifier {
+    if (scrollBehavior == null) return padding(top = baseTopPadding)
+    return layout { measurable, constraints ->
         val baseTopPaddingPx = baseTopPadding.roundToPx()
         val heightOffset = scrollBehavior.state.heightOffset.roundToInt()
         val activeTopPadding = (baseTopPaddingPx + heightOffset).coerceAtLeast(0)
@@ -315,3 +318,4 @@ private fun Modifier.dynamicTopBarPadding(
             placeable.placeRelative(0, activeTopPadding)
         }
     }
+}

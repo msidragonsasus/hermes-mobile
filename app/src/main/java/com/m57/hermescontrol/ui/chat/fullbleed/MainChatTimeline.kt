@@ -181,12 +181,13 @@ internal fun MainChatTimeline(
     val topPaddingPx = with(LocalDensity.current) { topPadding.roundToPx() }
     val matchId = search.currentMatchId
     val matchOffset = search.matchOffsets.getOrNull(search.currentIndex)
-    LaunchedEffect(listState, matchId, matchOffset, search.query, search.isActive, topPaddingPx, leadingRows, rows) {
+    val matchIndex = remember(rows, matchId) { matchId?.let { id -> rows.indexOfFirst { it.message?.id == id } } ?: -1 }
+    // Scroll on match selection or when it first loads. Incoming rows can shift its index.
+    LaunchedEffect(listState, matchId, matchOffset, search.query, search.isActive, topPaddingPx, matchIndex >= 0) {
         if (!search.isActive || matchOffset == null || matchId == null) return@LaunchedEffect
-        val index = rows.indexOfFirst { it.message?.id == matchId }
-        val message = rows.getOrNull(index)?.message ?: return@LaunchedEffect
+        val message = rows.getOrNull(matchIndex)?.message ?: return@LaunchedEffect
         scrollController.scrollToSearchMatch(
-            index + leadingRows,
+            matchIndex + leadingRows,
             matchOffset,
             message.content.length,
             obscuredTopPx = topPaddingPx,
@@ -229,7 +230,7 @@ internal fun MainChatTimeline(
         }
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize().testTag("main_chat_timeline"),
+            modifier = Modifier.fillMaxSize().then(scrollPosition.touchObserver).testTag("main_chat_timeline"),
             reverseLayout = true,
             contentPadding = PaddingValues(top = topPadding, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.Bottom),

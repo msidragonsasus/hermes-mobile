@@ -2,6 +2,8 @@ package com.m57.hermescontrol.ui.chat.fullbleed
 
 import android.os.Bundle
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -9,6 +11,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import com.m57.hermescontrol.ui.chat.components.ChatTimelineNoPrefetchStrategy
 import com.m57.hermescontrol.ui.chat.components.isAtReverseChatBottom
 import com.m57.hermescontrol.ui.chat.nativeUiKey
@@ -32,6 +37,23 @@ internal class MainChatScrollPosition(
     val listState = LazyListState(0, 0, ChatTimelineNoPrefetchStrategy)
     private var awaitingAnchor = anchors.containsKey(sessionKey)
     private var latestKey: String? = null
+    private var isTouching = false
+
+    // Observe down before Compose crosses touch slop. Leave the gesture to the list and its rows.
+    val touchObserver =
+        Modifier.pointerInput(this) {
+            awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                isTouching = true
+                try {
+                    do {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                    } while (event.changes.any { it.pressed })
+                } finally {
+                    isTouching = false
+                }
+            }
+        }
 
     fun onRowsChanged(
         latest: String?,
@@ -39,17 +61,18 @@ internal class MainChatScrollPosition(
         indexOf: (String) -> Int?,
     ) {
         if (latest == null) return
+        val canAdjustScroll = !isTouching && !listState.isScrollInProgress
         if (awaitingAnchor) {
             val saved = anchors.getBundle(sessionKey)
             val index = saved?.getString("key")?.let(indexOf)
             if (index != null) {
-                listState.requestScrollToItem(index, saved.getInt("offset"))
+                if (canAdjustScroll) listState.requestScrollToItem(index, saved.getInt("offset"))
             } else if (saved != null && loading) {
                 return
             }
             awaitingAnchor = false
         } else if (latestKey != null && latestKey != latest &&
-            listState.isAtReverseChatBottom && !listState.isScrollInProgress
+            listState.isAtReverseChatBottom && canAdjustScroll
         ) {
             // Compose normally keeps the old index-0 key on insertion. When pinned,
             // keep index 0 on the next measure so a newly inserted row is visible.

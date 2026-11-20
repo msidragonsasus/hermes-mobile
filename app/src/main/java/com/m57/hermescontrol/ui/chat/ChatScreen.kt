@@ -430,7 +430,11 @@ fun ChatScreen(
             botsState.rosterScope == rosterScope &&
                 it.name == activeProfileName
         }
-    val activeTitle = BotConversations.label(activeProfileName, activeAgent) ?: "Hermes"
+    val activeTitle =
+        BotConversations
+            .label(activeProfileName, activeAgent)
+            ?.takeUnless { it == activeProfileName }
+            ?: stringResource(R.string.chat_header_specialist)
     var setupSheetProfile by rememberSaveable { mutableStateOf<String?>(null) }
     val epoch by AuthManager.connectionEpoch.collectAsStateWithLifecycle()
     val verifiedBotChat = state.canonicalBotChatId.takeIf { state.canonicalBotChatEpoch == epoch }

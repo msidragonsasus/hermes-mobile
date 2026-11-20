@@ -1195,6 +1195,7 @@
     <string name="chat_turn_activity_separator">・</string>
     <string name="chat_thinking_indicator">思考中</string>
     <string name="chat_header_working">相談中</string>
+    <string name="chat_header_specialist">専門ボット</string>
     <string name="chat_header_ready">接続済み</string>
     <string name="chat_header_checking">状態を確認中</string>
     <string name="chat_header_offline">未接続</string>

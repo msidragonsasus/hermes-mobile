@@ -1359,6 +1359,7 @@
     <string name="chat_turn_activity_separator">" · "</string>
     <string name="chat_thinking_indicator">Thinking</string>
     <string name="chat_header_working">Working</string>
+    <string name="chat_header_specialist">Specialist bot</string>
     <string name="chat_header_ready">Ready</string>
     <string name="chat_header_checking">Checking status</string>
     <string name="chat_header_offline">Offline</string>
