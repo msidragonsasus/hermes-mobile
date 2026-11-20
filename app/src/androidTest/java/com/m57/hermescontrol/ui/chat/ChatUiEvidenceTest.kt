@@ -91,6 +91,7 @@ import com.m57.hermescontrol.theme.ThemePreference
 import com.m57.hermescontrol.ui.bots.BotsUiState
 import com.m57.hermescontrol.ui.bots.BotsViewModel
 import com.m57.hermescontrol.ui.chat.components.ConversationMenuSheet
+import com.m57.hermescontrol.ui.chat.components.quotedReplyMessage
 import com.m57.hermescontrol.ui.chat.fullbleed.MAIN_CHAT_WAITING_KEY
 import com.m57.hermescontrol.ui.common.ActionProgressController
 import com.m57.hermescontrol.ui.common.ShellBottomBar
@@ -1037,6 +1038,90 @@ class ChatUiEvidenceTest {
             capture("specialist-setup-waiting")
         }
 
+    @Test
+    fun sentReplyShowsAnAuthorACompactQuoteAndOnlyTheUsersTextInTheirBubble() =
+        assertSentReplyPresentation(specialist = false, botDisplayName = null, label = "Hermesに返信しました")
+
+    @Test
+    fun botChatUsesTheQuotedBotsDisplayNameAndCanJumpToTheOriginal() =
+        assertSentReplyPresentation(specialist = true, botDisplayName = "調査ボット", label = "調査ボットに返信しました")
+
+    private fun assertSentReplyPresentation(
+        specialist: Boolean,
+        botDisplayName: String?,
+        label: String,
+    ) = withTouchChat(specialist = specialist, botDisplayName = botDisplayName) { _, fixture, _ ->
+        val original =
+            ChatMessage(
+                id = "reply-source",
+                role = MessageRole.ASSISTANT,
+                content = (listOf("Original answer", "") + List(15) { "Additional context $it" }).joinToString("\n"),
+            )
+        val intervening =
+            List(36) { ChatMessage(id = "earlier-$it", role = MessageRole.USER, content = "Earlier prompt $it") }
+        val reply =
+            ChatMessage(
+                id = "sent-reply",
+                role = MessageRole.USER,
+                content = quotedReplyMessage(original.content, "My own text"),
+            )
+        compose.runOnIdle { fixture.value = fixture.value.copy(messages = listOf(original) + intervening + reply) }
+
+        compose.onNodeWithText(label).assertIsDisplayed()
+        val quote = compose.onNodeWithTag("chat_sent_reply_quote")
+        val quoteText =
+            compose.onNode(
+                hasText(original.content) and hasAnyAncestor(hasTestTag("chat_sent_reply_quote")),
+                useUnmergedTree = true,
+            )
+        val layouts = mutableListOf<TextLayoutResult>()
+        quoteText.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        assertEquals(2, layouts.single().lineCount)
+        assertTrue(layouts.single().didOverflowHeight)
+        val own = compose.onNodeWithText("My own text", useUnmergedTree = true).assertIsDisplayed()
+        assertTrue(quote.fetchSemanticsNode().boundsInRoot.bottom <= own.fetchSemanticsNode().boundsInRoot.top)
+        compose.onNodeWithTag("prompt_disclosure_toggle").assertDoesNotExist()
+        compose.onNode(hasText("> ", substring = true), useUnmergedTree = true).assertDoesNotExist()
+
+        val originalBubble =
+            compose.onNode(
+                hasText("Original answer") and hasAnyAncestor(hasTestTag("chat_assistant_bubble")),
+                useUnmergedTree = true,
+            )
+        originalBubble.assertIsNotDisplayed()
+        quote.performTouchInput { click() }
+        originalBubble.assertIsDisplayed()
+    }
+
+    @Test
+    fun sentReplyToOwnMessageAndComposerPreviewBothHideQuoteMarkers() =
+        withTouchChat { _, fixture, _ ->
+            val source = ChatMessage(id = "my-earlier-prompt", role = MessageRole.USER, content = "Earlier question")
+            val priorReply =
+                ChatMessage(
+                    id = "my-earlier-reply",
+                    role = MessageRole.USER,
+                    content = quotedReplyMessage(source.content, "Follow-up question"),
+                )
+            compose.runOnIdle { fixture.value = fixture.value.copy(messages = listOf(source, priorReply)) }
+            compose.onNodeWithText("自分に返信しました").assertIsDisplayed()
+
+            openMessageActions(compose.onNodeWithText("Follow-up question", useUnmergedTree = true))
+            compose.onNodeWithTag("message_action_reply").performTouchInput { click() }
+            waitForChatTag("chat_reply_preview")
+            compose
+                .onNode(
+                    hasText("Earlier question\n\nFollow-up question") and
+                        hasAnyAncestor(hasTestTag("chat_reply_preview")),
+                    useUnmergedTree = true,
+                ).assertIsDisplayed()
+            compose
+                .onNode(
+                    hasText("> ", substring = true) and hasAnyAncestor(hasTestTag("chat_reply_preview")),
+                    useUnmergedTree = true,
+                ).assertDoesNotExist()
+        }
+
     private fun waitForChatTag(
         tag: String,
         present: Boolean = true,
@@ -1048,6 +1133,7 @@ class ChatUiEvidenceTest {
         specialist: Boolean = false,
         setupChat: Boolean = false,
         streaming: MutableStateFlow<StreamingState> = MutableStateFlow(StreamingState()),
+        botDisplayName: String? = null,
         test: (ChatViewModel, MutableStateFlow<ChatUiState>, SpecialistChatController) -> Unit,
     ) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -1126,12 +1212,20 @@ class ChatUiEvidenceTest {
         every { model.actionProgress } returns ActionProgressController(CoroutineScope(Dispatchers.Main))
         val roster = mockk<BotsViewModel>(relaxed = true)
         every { roster.getCloseable<AutoCloseable>(any()) } returns null
-        every { roster.uiState } returns MutableStateFlow(BotsUiState())
+        val rosterState = MutableStateFlow(BotsUiState())
+        every { roster.uiState } returns rosterState
         mockkObject(AuthManager)
         try {
             every { AuthManager.activeProfileId } returns MutableStateFlow<String?>(profile)
             every { AuthManager.connectionEpoch } returns MutableStateFlow(epoch)
             every { AuthManager.uiPreferenceScope() } returns scope
+            if (botDisplayName != null) {
+                rosterState.value =
+                    BotsUiState(
+                        rosterScope = BotConversations.serverScope(),
+                        profiles = listOf(ProfileInfo(name = profile, display_name = botDisplayName)),
+                    )
+            }
             compose.setContent {
                 InstallTestRoster(roster)
                 JapaneseTheme(if (setupChat) ThemePreference.LIGHT else ThemePreference.DARK) {

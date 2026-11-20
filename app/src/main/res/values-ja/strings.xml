@@ -1261,6 +1261,10 @@
     <string name="worker_approval_source_label">定期「%1$s」から</string>
     <string name="chat_message_actions">メッセージの操作</string>
     <string name="chat_reply_cancel">引用返信を取り消す</string>
+    <string name="chat_sent_reply">返信しました</string>
+    <string name="chat_sent_reply_author">%1$sに返信しました</string>
+    <string name="chat_reply_self">自分</string>
+    <string name="chat_reply_jump_to_source">元のメッセージに移動</string>
     <string name="chat_message_select">テキストを選択</string>
     <string name="chat_message_close_selection">選択を閉じる</string>
     <string name="chat_attach_remove_named">添付「%1$s」を削除</string>

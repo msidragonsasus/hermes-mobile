@@ -649,7 +649,7 @@ private fun ComposerReplyPreview(
     Surface(
         modifier = Modifier.fillMaxWidth().padding(start = spacing.sm, end = spacing.sm, top = spacing.sm),
         shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
     ) {
         Row(
@@ -659,7 +659,7 @@ private fun ComposerReplyPreview(
         ) {
             Icon(Icons.AutoMirrored.Outlined.Reply, contentDescription = null, modifier = Modifier.size(18.dp))
             Text(
-                text = quote,
+                text = remember(quote) { quotePreviewText(quote) },
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 2,

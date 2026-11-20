@@ -23,9 +23,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Psychology
@@ -67,9 +69,12 @@ import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.model.Attachment
 import com.m57.hermescontrol.theme.HermesStatusColors
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
+import com.m57.hermescontrol.theme.LocalSpacing
 import com.m57.hermescontrol.theme.onColorFor
 import com.m57.hermescontrol.ui.chat.components.CollapsiblePromptBody
 import com.m57.hermescontrol.ui.chat.components.MessageActionHost
+import com.m57.hermescontrol.ui.chat.components.parseQuotedReply
+import com.m57.hermescontrol.ui.chat.components.quotePreviewText
 import com.m57.hermescontrol.util.BidiUtils
 import java.time.Instant
 import java.time.ZoneId
@@ -94,18 +99,34 @@ fun ChatBubble(
     modifier: Modifier = Modifier,
     showTimestamp: Boolean = true,
     personalStyle: Boolean = false,
+    replyAuthor: String? = null,
+    onOpenQuotedMessage: (() -> Unit)? = null,
 ) {
     AnimatedVisibility(
         visible = true,
         enter = fadeIn() + expandVertically(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)),
     ) {
         val statusColors = LocalHermesStatusColors.current
+        val reply =
+            remember(message.content, personalStyle) { if (personalStyle) parseQuotedReply(message.content) else null }
+        val body = reply?.body ?: message.content
         val highlightedText =
-            remember(message.content, searchQuery, isCurrentMatch, statusColors) {
+            remember(body, searchQuery, isCurrentMatch, statusColors) {
                 if (searchQuery.isNotBlank()) {
-                    buildHighlightedString(message.content, searchQuery, isCurrentMatch, statusColors)
+                    buildHighlightedString(body, searchQuery, isCurrentMatch, statusColors)
                 } else {
-                    AnnotatedString(message.content)
+                    AnnotatedString(body)
+                }
+            }
+        val quotedText =
+            remember(reply, searchQuery, isCurrentMatch, statusColors) {
+                reply?.let {
+                    val text = quotePreviewText(it.quote)
+                    if (searchQuery.isNotBlank()) {
+                        buildHighlightedString(text, searchQuery, isCurrentMatch, statusColors)
+                    } else {
+                        AnnotatedString(text)
+                    }
                 }
             }
         val attachments = message.attachments.orEmpty()
@@ -119,7 +140,7 @@ fun ChatBubble(
             } else {
                 MaterialTheme.typography.bodyLarge
             }
-        val isRtl = remember(message.content) { BidiUtils.isRtlText(message.content) }
+        val isRtl = remember(body) { BidiUtils.isRtlText(body) }
         val direction = if (isRtl) LayoutDirection.Rtl else LocalLayoutDirection.current
         BoxWithConstraints(
             modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
@@ -138,7 +159,7 @@ fun ChatBubble(
                     Column(
                         Modifier.widthIn(max = maxBubbleWidth).testTag("chat_bubble_user"),
                         horizontalAlignment = Alignment.End,
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(if (quotedText == null) 6.dp else 2.dp),
                     ) {
                         // One renderer preserves attachment order and the existing open/save contract.
                         val renderAttachments: @Composable (Color) -> Unit = { color ->
@@ -160,7 +181,13 @@ fun ChatBubble(
                                 }
                             }
                         }
-                        if (message.content.isNotBlank() || (!hasInlineImages && attachments.isNotEmpty())) {
+                        if (quotedText != null) {
+                            val preview: @Composable () -> Unit = {
+                                SentReplyPreview(quotedText, replyAuthor, onOpenQuotedMessage)
+                            }
+                            if (body.isBlank()) preview() else DisableSelection(content = preview)
+                        }
+                        if (body.isNotBlank() || (!hasInlineImages && attachments.isNotEmpty())) {
                             Surface(
                                 shape =
                                     if (personalStyle) {
@@ -182,11 +209,11 @@ fun ChatBubble(
                                         vertical = 10.dp,
                                     ),
                                 ) {
-                                    if (message.content.isNotBlank()) {
+                                    if (body.isNotBlank()) {
                                         CollapsiblePromptBody(
                                             text = highlightedText,
                                             messageId = message.id,
-                                            content = message.content,
+                                            content = body,
                                             role = message.role,
                                             surfaceColor = bubbleColor,
                                             currentSearchMatch = searchQuery.isNotBlank() && isCurrentMatch,
@@ -199,7 +226,7 @@ fun ChatBubble(
                                         )
                                     }
                                     if (!hasInlineImages && attachments.isNotEmpty()) {
-                                        if (message.content.isNotBlank()) Spacer(Modifier.height(6.dp))
+                                        if (body.isNotBlank()) Spacer(Modifier.height(6.dp))
                                         renderAttachments(textColor)
                                     }
                                     if (!hasInlineImages && !message.isStreaming && showTimestamp) {
@@ -222,6 +249,69 @@ fun ChatBubble(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SentReplyPreview(
+    quote: AnnotatedString,
+    author: String?,
+    onOpen: (() -> Unit)?,
+) {
+    val spacing = LocalSpacing.current
+    val colors = MaterialTheme.colorScheme
+    val shape = MaterialTheme.shapes.large
+    Column(
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(spacing.xs),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = spacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(spacing.xs),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.AutoMirrored.Outlined.Reply,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = colors.onSurfaceVariant,
+            )
+            Text(
+                text =
+                    if (author == null) {
+                        stringResource(R.string.chat_sent_reply)
+                    } else {
+                        stringResource(R.string.chat_sent_reply_author, author)
+                    },
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        val opening =
+            if (onOpen == null) {
+                Modifier
+            } else {
+                Modifier
+                    .clip(
+                        shape,
+                    ).clickable(onClickLabel = stringResource(R.string.chat_reply_jump_to_source), onClick = onOpen)
+            }
+        Surface(
+            modifier = opening.testTag("chat_sent_reply_quote"),
+            shape = shape,
+            color = colors.surfaceContainerHigh,
+            contentColor = colors.onSurfaceVariant,
+        ) {
+            Text(
+                text = quote,
+                modifier = Modifier.padding(horizontal = spacing.md, vertical = spacing.sm),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

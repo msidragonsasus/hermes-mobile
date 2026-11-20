@@ -431,11 +431,8 @@ fun ChatScreen(
             botsState.rosterScope == rosterScope &&
                 it.name == activeProfileName
         }
-    val activeTitle =
-        BotConversations
-            .label(activeProfileName, activeAgent)
-            ?.takeUnless { it == activeProfileName }
-            ?: stringResource(R.string.chat_header_specialist)
+    val activeAgentName = BotConversations.label(activeProfileName, activeAgent)?.takeUnless { it == activeProfileName }
+    val activeTitle = activeAgentName ?: stringResource(R.string.chat_header_specialist)
     var setupSheetProfile by rememberSaveable { mutableStateOf<String?>(null) }
     val epoch by AuthManager.connectionEpoch.collectAsStateWithLifecycle()
     val verifiedBotChat = state.canonicalBotChatId.takeIf { state.canonicalBotChatEpoch == epoch }
@@ -835,6 +832,7 @@ fun ChatScreen(
                     MainChatTimeline(
                         state = state,
                         messages = visibleMessages,
+                        agentDisplayName = activeAgentName,
                         streaming = streamingState,
                         headerHeight = headerHeight,
                         scrollController = scrollController,

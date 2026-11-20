@@ -7,6 +7,8 @@ import com.m57.hermescontrol.ui.chat.ResponseLedger
 import com.m57.hermescontrol.ui.chat.RichAnswerPrompt
 import com.m57.hermescontrol.ui.chat.SPECIALIST_SETUP_REVIEW
 import com.m57.hermescontrol.ui.chat.brainstorm.BrainstormParser
+import com.m57.hermescontrol.ui.chat.components.messageActionText
+import com.m57.hermescontrol.ui.chat.components.parseQuotedReply
 import com.m57.hermescontrol.ui.chat.isApprovalTimelineRow
 import com.m57.hermescontrol.ui.chat.nativeUiKey
 
@@ -134,4 +136,49 @@ internal fun planMainChatTimeline(
         }
         if (waitingAfter == -1) add(MainChatRow(MAIN_CHAT_WAITING_KEY))
     }.asReversed()
+}
+
+private data class QuotedMessageSource(
+    val identity: String,
+    val index: Int,
+)
+
+/** The wire quote has no source ID. Resolve it against unambiguous earlier messages only. */
+internal fun List<MainChatRow>.resolveQuotedReplySources(): Map<String, Int> {
+    val quotes = mutableMapOf<String, String>()
+    for (row in this) {
+        val message = row.message?.takeIf { it.role == MessageRole.USER } ?: continue
+        parseQuotedReply(message.content)?.let { quotes[row.key] = it.quote }
+    }
+    if (quotes.isEmpty()) return emptyMap()
+
+    val wanted = quotes.values.toHashSet()
+    val sources = mutableMapOf<String, QuotedMessageSource?>()
+    val resolved = mutableMapOf<String, Int>()
+
+    fun indexText(
+        text: String,
+        source: QuotedMessageSource,
+    ) {
+        val normalized = text.replace("\r\n", "\n").replace('\r', '\n')
+        if (normalized !in wanted) return
+        val previous = sources[normalized]
+        if (previous?.identity == source.identity) return
+        sources[normalized] = if (normalized in sources) null else source
+    }
+
+    for (index in indices.reversed()) {
+        val row = this[index]
+        val message = row.message ?: continue
+        quotes[row.key]?.let { sources[it] }?.let { resolved[row.key] = it.index }
+        if (row.live || message.isStreaming ||
+            (message.role != MessageRole.USER && message.role != MessageRole.ASSISTANT)
+        ) {
+            continue
+        }
+        val source = QuotedMessageSource(row.reply?.responseId?.takeIf { it.isNotBlank() } ?: message.id, index)
+        indexText(messageActionText(message), source)
+        row.reply?.let { indexText(it.text, source) }
+    }
+    return resolved
 }

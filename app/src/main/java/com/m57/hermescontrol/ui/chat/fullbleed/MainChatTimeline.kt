@@ -81,6 +81,7 @@ private const val SPECIALIST_SETTINGS_KEY = "specialist-settings"
 internal fun MainChatTimeline(
     state: ChatUiState,
     messages: List<ChatMessage>,
+    agentDisplayName: String?,
     streaming: State<StreamingState>,
     headerHeight: Dp,
     scrollController: ChatScrollController,
@@ -153,6 +154,7 @@ internal fun MainChatTimeline(
         remember(clarify, messages) {
             clarify?.takeIf { it.ref == null && messages.none { message -> message.clarifyInfo == it } }
         }
+    val quotedSources = remember(rows) { rows.resolveQuotedReplySources() }
     val messageCount = remember(rows) { rows.count { it.message != null && !it.live } }
     val hasSpecialistFooter = specialistFooter != null
     val leadingRows = (if (pendingClarify != null) 1 else 0) + (if (hasSpecialistFooter) 1 else 0)
@@ -274,6 +276,13 @@ internal fun MainChatTimeline(
                     }
 
                     message.role == MessageRole.USER -> {
+                        val sourceIndex = quotedSources[row.key]
+                        val replyAuthor =
+                            when (sourceIndex?.let { rows[it].message?.role }) {
+                                MessageRole.USER -> stringResource(R.string.chat_reply_self)
+                                MessageRole.ASSISTANT -> agentDisplayName
+                                else -> null
+                            }
                         ChatBubble(
                             message = message,
                             searchQuery = query,
@@ -286,6 +295,11 @@ internal fun MainChatTimeline(
                             onImageClick = onImageClick,
                             showTimestamp = false,
                             personalStyle = true,
+                            replyAuthor = replyAuthor,
+                            onOpenQuotedMessage =
+                                sourceIndex?.let { index ->
+                                    { scrollController.scrollToItem(index + leadingRows, offset = 0) }
+                                },
                         )
                     }
 

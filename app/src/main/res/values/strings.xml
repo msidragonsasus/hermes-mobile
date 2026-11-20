@@ -1427,6 +1427,10 @@
     <string name="worker_approval_source_label">From %1$s</string>
     <string name="chat_message_actions">Message actions</string>
     <string name="chat_reply_cancel">Cancel reply</string>
+    <string name="chat_sent_reply">Replied</string>
+    <string name="chat_sent_reply_author">Replied to %1$s</string>
+    <string name="chat_reply_self">yourself</string>
+    <string name="chat_reply_jump_to_source">Go to original message</string>
     <string name="chat_message_select">Select text</string>
     <string name="chat_message_close_selection">Close text selection</string>
     <string name="chat_attach_remove_named">Remove attachment: %1$s</string>
