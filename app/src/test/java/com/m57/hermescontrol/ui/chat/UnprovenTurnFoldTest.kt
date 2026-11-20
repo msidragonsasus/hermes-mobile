@@ -255,6 +255,64 @@ class UnprovenTurnFoldTest {
         assertEquals(expectedTurns, agentTurns.map { it.entries })
     }
 
+    @Test
+    fun restoredAnswerFollowsAllToolsAndBothApprovalRows() =
+        runTest {
+            val toolRows = (11..48).map { row(it, "tool", "Synthetic result") }
+            val history = listOf(page.first()) + toolRows + row(49, "assistant", "local answer")
+            val restored = reconciled(localTurn(10L, terminal = noReceipt()), history)
+            val user = restored.messages.first()
+            val tools = restored.messages.filter { it.role == MessageRole.TOOL }
+            val answer = restored.messages.last().copy(reasoningText = "Synthetic reasoning")
+            val approvals =
+                (1..2).map { index ->
+                    ChatMessage(
+                        id = "approval-$index",
+                        role = MessageRole.SYSTEM,
+                        content = "Synthetic approval",
+                        approvalInfo =
+                            ApprovalInfo(
+                                command = null,
+                                description = null,
+                                patternKeys = null,
+                                status = com.m57.hermescontrol.domain.hermes.AttentionStatus.CONFIRMED,
+                            ),
+                    )
+                }
+            val activity = tools.take(15) + approvals[0] + tools.subList(15, 34) + approvals[1] + tools.drop(34)
+            val cached = listOf(user, answer) + activity
+            val repository = ChatPersistenceRepository(FakeChatMessageDao())
+            val (owner, _) = repository.openTranscript(target, session)
+            assertTrue(repository.save(repository.prepare(owner, cached, restored.responseLedger)))
+            val reopened = repository.readTranscript(target, session)
+            val reopenedApprovals = reopened.messages.mapNotNull { it.approvalInfo }
+            assertEquals(2, reopenedApprovals.size)
+            assertTrue(
+                reopenedApprovals.all {
+                    it.status ==
+                        com.m57.hermescontrol.domain.hermes.AttentionStatus.CONFIRMED
+                },
+            )
+            assertTrue(reopenedApprovals.all { it.ref == null && !it.responseEnabled })
+            val refreshed =
+                reconciled(ChatUiState(messages = reopened.messages, responseLedger = reopened.payload.ledger), history)
+            val turn =
+                groupIntoTurns(
+                    refreshed.messages,
+                    refreshed.responseLedger,
+                ).filterIsInstance<ChatTurn.Agent>().single()
+            val entryIds =
+                turn.entries.map {
+                    when (it) {
+                        is AgentEntry.ToolRow -> it.message.id
+                        is AgentEntry.SystemEvent -> it.message.id
+                        is AgentEntry.Prose -> it.message.id
+                        is AgentEntry.ConnectionEvents -> error("Unexpected connection event")
+                    }
+                }
+            assertEquals(activity.map { it.id } + answer.id, entryIds)
+        }
+
     @Test fun foldedTurnOwnsTheServerRows() {
         val state = reconciled(localTurn(null, terminal = incomplete()))
         val record = state.responseLedger.responses.single()

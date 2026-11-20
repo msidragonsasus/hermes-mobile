@@ -1,6 +1,7 @@
 package com.m57.hermescontrol.ui.chat
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import java.util.UUID
 
 /** Durable identity is independent of presentation groups and socket/RPC identities. */
@@ -22,6 +23,17 @@ data class ResponseRecord(
 )
 
 @Serializable
+data class ApprovalPlacement(
+    val responseId: String,
+    val afterToolCallId: String? = null,
+)
+
+data class ApprovalHistoryAnswer(
+    val responseId: String,
+    val messageId: String,
+)
+
+@Serializable
 data class ResponseLedger(
     val responses: List<ResponseRecord> = emptyList(),
     val activeId: String? = null,
@@ -38,13 +50,21 @@ data class ResponseLedger(
     val unboundControls: List<ControlInputEvidence> = emptyList(),
     /** REST transcript links used only to present recovered tools alongside their answer. */
     val toolAnswerIds: Map<String, String> = emptyMap(),
+    /** Approval rows are local activity and do not establish transcript or reply authority. */
+    val approvalPlacements: Map<String, ApprovalPlacement> = emptyMap(),
+    /** REST may observe the same final answer before the live terminal is delivered. */
+    @Transient val approvalHistoryAnswer: ApprovalHistoryAnswer? = null,
 ) {
+    val activeHistoryAnswerId: String?
+        get() = approvalHistoryAnswer?.takeIf { it.responseId == activeId }?.messageId
+
     fun open(): ResponseLedger {
         val response = ResponseRecord()
         return copy(
             responses = responses + response,
             activeId = response.id,
             requiresCorrelation = requiresCorrelation || responses.isNotEmpty(),
+            approvalHistoryAnswer = null,
         )
     }
 

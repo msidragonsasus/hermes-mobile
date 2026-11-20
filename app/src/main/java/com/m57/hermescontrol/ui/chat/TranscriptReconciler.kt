@@ -530,7 +530,18 @@ internal fun reconcileTranscript(
                 }
         }
     }
-    if (permitted.any { it.id !in ownedIds && it.role in setOf(MessageRole.USER, MessageRole.ASSISTANT) }) {
+    val historyAnswer =
+        if (older) {
+            ledger.approvalHistoryAnswer
+        } else {
+            activeApprovalHistoryAnswer(state, ledger, raw, permittedWithPositions)
+        }
+    val historyAnswerId = historyAnswer?.messageId
+    if (permitted.any {
+            it.id !in ownedIds && it.id != historyAnswerId &&
+                it.role in setOf(MessageRole.USER, MessageRole.ASSISTANT)
+        }
+    ) {
         // An existing remote reply also makes a subsequent uncorrelated terminal
         // ambiguous, even when no local response record existed at hydration time.
         ledger = ledger.copy(requiresCorrelation = true)
@@ -579,7 +590,7 @@ internal fun reconcileTranscript(
             session,
             raw,
             older,
-            live = state.isAgentTyping || state.responseStatusUnknown,
+            live = state.isAgentTyping || state.responseStatusUnknown || state.awaitsUserInput(),
         )
     val visible =
         if (latest && offset == 0 && !older && !state.isAgentTyping && !state.responseStatusUnknown) {
@@ -590,9 +601,60 @@ internal fun reconcileTranscript(
     val toolAnswerIds = recoveredToolAnswerIds(page.subList(0, mapped.size), visible, foldedLedger)
     return state.copy(
         messages = visible,
-        responseLedger = foldedLedger.copy(toolAnswerIds = toolAnswerIds),
+        responseLedger = foldedLedger.copy(toolAnswerIds = toolAnswerIds, approvalHistoryAnswer = historyAnswer),
         stagedCanonicalMessages = staged,
     )
+}
+
+/**
+ * A running turn can see its stored answer before the socket terminal. Scope the preview to the
+ * acknowledged user row and a shared unique tool call, without conferring receipt authority.
+ */
+private fun activeApprovalHistoryAnswer(
+    state: ChatUiState,
+    ledger: ResponseLedger,
+    raw: List<SessionMessage>,
+    permitted: List<Triple<ChatMessage, Int?, Long?>>,
+): ApprovalHistoryAnswer? {
+    val active = ledger.responses.singleOrNull { it.id == ledger.activeId && it.finishedAt == null } ?: return null
+    if (active.authority.revocations.isNotEmpty() ||
+        ledger.approvalPlacements.values.none { it.responseId == active.id }
+    ) {
+        return null
+    }
+    val root = raw.indexOfLast { it.role == "user" && it.display_kind == null }
+    if (root < 0) return null
+    val userRow = raw[root].id?.toLong() ?: return null
+    if (userRow !in active.userRowIds && userRow != active.authority.opening?.userRowId) return null
+    val (answer, position, rowId) = permitted.lastOrNull { it.second == raw.lastIndex } ?: return null
+    if (position == null || position <= root || rowId == null || answer.role != MessageRole.ASSISTANT ||
+        answer.displayKind != null || answer.hasServerDisplayProjection || answer.content.isBlank() ||
+        !answer.id.startsWith("canonical:") || answer.id in active.messageIds ||
+        ledger.responses.any { it.id != active.id && (rowId in it.claimedRows(ledger) || answer.id in it.messageIds) }
+    ) {
+        return null
+    }
+    return ApprovalHistoryAnswer(active.id, answer.id).takeIf {
+        sharesUniqueToolCall(state.messages, active.messageIds, raw.subList(root + 1, position))
+    }
+}
+
+private fun sharesUniqueToolCall(
+    messages: List<ChatMessage>,
+    memberIds: Collection<String>,
+    history: List<SessionMessage>,
+): Boolean {
+    val calls =
+        history
+            .filter { it.role == "tool" && it.toolCallId.isNotBlank() }
+            .groupingBy { it.toolCallId }
+            .eachCount()
+    val cachedCalls =
+        messages
+            .filter {
+                it.role == MessageRole.TOOL && it.toolCallId in calls
+            }.groupBy { it.toolCallId }
+    return calls.any { (call, count) -> count == 1 && cachedCalls[call]?.singleOrNull()?.id in memberIds }
 }
 
 /** Recover presentation links from the server order, independently of receipt ownership. */
@@ -603,22 +665,30 @@ private fun recoveredToolAnswerIds(
 ): Map<String, String> {
     if (ledger.responses.isEmpty()) return emptyMap()
     val visibleIds = visible.mapTo(HashSet()) { it.id }
-    val ownedIds = ledger.responses.flatMapTo(HashSet()) { it.messageIds }
+    val owners = ledger.responses.flatMap { response -> response.messageIds.map { it to response.id } }.toMap()
+
+    fun canLink(
+        tool: String,
+        answer: String,
+    ): Boolean =
+        tool in visibleIds && answer in visibleIds && owners[answer] != null &&
+            (owners[tool] == null || owners[tool] == owners[answer])
+
     val links =
         ledger.toolAnswerIds.filterTo(mutableMapOf()) { (tool, answer) ->
-            tool in visibleIds && tool !in ownedIds && answer in visibleIds && answer in ownedIds
+            canLink(tool, answer)
         }
     var answerId: String? = null
     for (row in page.asReversed()) {
         if (row.role == MessageRole.TOOL && row.displayKind == null) {
-            if (answerId != null && row.id in visibleIds && row.id !in ownedIds && !row.id.startsWith("disputed:")) {
+            if (answerId != null && canLink(row.id, answerId) && !row.id.startsWith("disputed:")) {
                 links[row.id] = answerId
             }
         } else {
             answerId =
                 row.id.takeIf {
                     row.role == MessageRole.ASSISTANT && row.displayKind == null &&
-                        it in ownedIds && it in visibleIds && !it.startsWith("disputed:")
+                        it in owners && it in visibleIds && !it.startsWith("disputed:")
                 }
         }
     }
@@ -955,7 +1025,9 @@ private fun foldUnprovenLocalTurns(
     for (initial in ledger.responses) {
         val record = result.responses.singleOrNull { it.id == initial.id } ?: continue
         if (record.authority.revocations.isNotEmpty()) continue // Disputed: keep every body.
-        if (record.finishedAt == null && record.id == result.activeId && live) continue // Still running.
+        val hasApproval = result.approvalPlacements.values.any { it.responseId == record.id }
+        val running = record.finishedAt == null && record.id == result.activeId && live
+        if (running && !hasApproval) continue
         val localUserIds = (record.userIds + result.pendingInputs.filterValues { it == record.id }.keys).toSet()
         val proven =
             (
@@ -1011,7 +1083,7 @@ private fun foldUnprovenLocalTurns(
             current.firstOrNull {
                 it.role == MessageRole.USER && it.id in localUserIds && !backed(it.id) && it.displayKind == null
             }
-        if (rootShown != null && rootShown.id !in localUserIds && primary != null &&
+        if (!running && rootShown != null && rootShown.id !in localUserIds && primary != null &&
             primary.foldsLosslesslyInto(rootShown)
         ) {
             substitutes[primary.id] = rootShown.withLocalPresentation(primary)
@@ -1026,7 +1098,16 @@ private fun foldUnprovenLocalTurns(
                 it.id in record.messageIds && (it.role == MessageRole.ASSISTANT || it.role == MessageRole.TOOL) &&
                     !backed(it.id) && it.approvalInfo == null && it.clarifyInfo == null
             }
-        if (replies.any { it.isStreaming || it.toolStatus == ToolStatus.RUNNING }) continue
+        if (!hasApproval && replies.any { it.isStreaming || it.toolStatus == ToolStatus.RUNNING }) continue
+        val shareApprovalTrace =
+            hasApproval && record.finishedAt != null &&
+                sharesUniqueToolCall(current, ownMembers, raw.subList(span.first, span.last + 1))
+        val localFinal = replies.lastOrNull { it.role == MessageRole.ASSISTANT }
+        val storedFinal =
+            available.lastOrNull()?.takeIf {
+                it.role == MessageRole.ASSISTANT && it.displayKind == null && !it.hasServerDisplayProjection &&
+                    positionOfDisplay[it.id] == span.last
+            }
         // Live streaming attaches the turn's reasoning to the final answer; history stores it on
         // the row that produced it (often the tool-call row). Within this proven span that trace
         // is kept, so it does not make the answer look lossy.
@@ -1044,22 +1125,44 @@ private fun foldUnprovenLocalTurns(
                 (trace == compact(spanTrace.joinToString("")) || spanTrace.any { compact(it) == trace })
         }
         for (local in replies) {
+            if (local.isStreaming || local.toolStatus == ToolStatus.RUNNING ||
+                (running && local.role != MessageRole.TOOL)
+            ) {
+                continue
+            }
+            val approvalFinal = storedFinal.takeIf { shareApprovalTrace && local.id == localFinal?.id }
             val match =
-                available.firstOrNull { server ->
-                    val uniqueCall =
-                        local.toolCallId.isNotBlank() && server.toolCallId == local.toolCallId &&
-                            available.count { it.toolCallId == local.toolCallId } == 1
-                    if (local.role == MessageRole.TOOL) {
-                        uniqueCall &&
-                            (local.foldsLosslesslyInto(server) || local.finishedToolFoldsByCallInto(server))
-                    } else {
-                        local.foldsLosslesslyInto(server, traceKeptElsewhere = traceKeptInSpan(local))
-                    }
-                } ?: continue
+                approvalFinal?.takeIf { it in available && local.foldsLosslesslyInto(it, traceKeptElsewhere = true) }
+                    ?: available.firstOrNull { server ->
+                        val uniqueCall =
+                            local.toolCallId.isNotBlank() && server.toolCallId == local.toolCallId &&
+                                available.count { it.toolCallId == local.toolCallId } == 1
+                        if (local.role == MessageRole.TOOL) {
+                            uniqueCall &&
+                                (local.foldsLosslesslyInto(server) || local.finishedToolFoldsByCallInto(server))
+                        } else {
+                            local.foldsLosslesslyInto(server, traceKeptElsewhere = traceKeptInSpan(local))
+                        }
+                    } ?: continue
             available -= match
             // Live tool presentation (name, status, finish time) is not in history; adopting it
             // would change on the next sync, so a folded tool is shown exactly as stored.
-            substitutes[local.id] = if (local.role == MessageRole.TOOL) match else match.withLocalPresentation(local)
+            substitutes[local.id] =
+                when {
+                    match == approvalFinal -> {
+                        match.withLocalPresentation(local).copy(
+                            reasoningText = mergeObservedReasoning(local.reasoningText, match.reasoningText),
+                        )
+                    }
+
+                    local.role == MessageRole.TOOL && !running -> {
+                        match
+                    }
+
+                    else -> {
+                        match.withLocalPresentation(local)
+                    }
+                }
         }
         if (substitutes.isEmpty()) continue
         val absorbedIds = substitutes.values.map { it.id }.toSet()

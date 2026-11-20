@@ -8,6 +8,63 @@ internal data class PreviewedFinalFold(
     val finalizedMessage: ChatMessage,
 )
 
+/** The caller has already tied this REST snapshot to the active approval turn. */
+internal fun ChatMessage.isLivePreviewOf(history: ChatMessage): Boolean =
+    role == MessageRole.ASSISTANT && isStreaming && displayKind == null && !history.hasServerDisplayProjection &&
+        sourceBody == null && history.sourceBody == null && attachments.isNullOrEmpty() &&
+        history.attachments.isNullOrEmpty() && content.isNotBlank() && history.content.trim().startsWith(content.trim())
+
+internal fun mergeObservedReasoning(
+    live: String,
+    stored: String,
+): String =
+    when {
+        live.contains(stored) -> live
+        stored.contains(live) -> stored
+        else -> "$live\n\n$stored"
+    }
+
+/** Merge a stored final observed while the same approved turn was streaming. */
+internal fun foldActiveApprovalFinal(
+    state: ChatUiState,
+    ledger: ResponseLedger,
+    candidate: ChatMessage?,
+): PreviewedFinalFold? {
+    val historyId = ledger.activeHistoryAnswerId ?: return null
+    val candidateId = candidate?.id ?: return null
+    if (ledger.responses.none {
+            it.id == ledger.activeId && candidateId in it.messageIds && it.authority.revocations.isEmpty()
+        }
+    ) {
+        return null
+    }
+    val fold =
+        foldPreviewedFinalCollision(
+            state.messages,
+            state.stagedCanonicalMessages,
+            ledger,
+            candidateId,
+            historyId,
+            keepBothReasoningTraces = true,
+        ) ?: return null
+    return fold.copy(
+        ledger =
+            fold.ledger.copy(
+                approvalHistoryAnswer = null,
+                toolAnswerIds =
+                    fold.ledger.toolAnswerIds.mapValues { (_, answer) ->
+                        if (answer ==
+                            historyId
+                        ) {
+                            candidateId
+                        } else {
+                            answer
+                        }
+                    },
+            ),
+    )
+}
+
 /**
  * Retire only the already-proven exact canonical address, never an equal-text neighbour.
  * Unmergeable metadata or disputed versions keep both observations rather than lose data.
@@ -18,6 +75,7 @@ internal fun foldPreviewedFinalCollision(
     ledger: ResponseLedger,
     candidateId: String,
     canonicalId: String,
+    keepBothReasoningTraces: Boolean = false,
 ): PreviewedFinalFold? {
     if (candidateId == canonicalId) return null
     val all = messages + stagedMessages
@@ -53,10 +111,14 @@ internal fun foldPreviewedFinalCollision(
         return source.takeIf { it == message.content || HostMediaExtractor.strip(it) == message.content }
     }
     val observed = observedBody(candidate) ?: return null
-    if (observedBody(canonical) != observed) return null
+    val stored = observedBody(canonical) ?: return null
+    val samePlainBody =
+        keepBothReasoningTraces && candidate.sourceBody == null && canonical.sourceBody == null &&
+            stored.replace("\r\n", "\n").trim() == observed.replace("\r\n", "\n").trim()
+    if (stored != observed && !samePlainBody) return null
     // Equal source does not make raw/stripped display interchangeable: importing REST cards
     // can make the first-terminal media effect return before it normalizes the raw body.
-    if (candidate.content != canonical.content) return null
+    if (candidate.content != canonical.content && !samePlainBody) return null
     if (candidate.hasServerDisplayProjection != canonical.hasServerDisplayProjection) return null
     // A projected row's intentionally empty fields are authoritative, not merge holes.
     if (canonical.hasServerDisplayProjection &&
@@ -74,7 +136,7 @@ internal fun foldPreviewedFinalCollision(
     ) {
         return null
     }
-    if (candidate.reasoningText.isNotEmpty() && canonical.reasoningText.isNotEmpty() &&
+    if (!keepBothReasoningTraces && candidate.reasoningText.isNotEmpty() && canonical.reasoningText.isNotEmpty() &&
         candidate.reasoningText != canonical.reasoningText
     ) {
         return null
@@ -102,7 +164,7 @@ internal fun foldPreviewedFinalCollision(
     val merged =
         candidate.copy(
             sourceBody = candidate.sourceBody ?: canonical.sourceBody,
-            reasoningText = candidate.reasoningText.ifEmpty { canonical.reasoningText },
+            reasoningText = mergeObservedReasoning(candidate.reasoningText, canonical.reasoningText),
             attachments =
                 candidate.attachments?.takeIf { it.isNotEmpty() } ?: canonical.attachments ?: candidate.attachments,
         )

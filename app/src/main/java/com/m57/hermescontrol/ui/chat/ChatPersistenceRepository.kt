@@ -5,6 +5,7 @@ import com.m57.hermescontrol.data.local.ChatTranscriptState
 import com.m57.hermescontrol.data.local.TranscriptRows
 import com.m57.hermescontrol.data.local.toEntity
 import com.m57.hermescontrol.data.local.toUiModel
+import com.m57.hermescontrol.domain.hermes.AttentionStatus
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -25,6 +26,7 @@ data class TranscriptPayload(
     val finishes: Map<String, Long> = emptyMap(),
     /** Missing provenance stays unknown, even when a legacy body is preserved in a snapshot. */
     val provenance: Map<String, String> = emptyMap(),
+    val settledApprovals: Map<String, AttentionStatus> = emptyMap(),
 )
 
 data class TranscriptSnapshot(
@@ -98,6 +100,11 @@ open class ChatPersistenceRepository(
                     ledger = ledger,
                     stagedIds = staged.map { it.id },
                     finishes = durable.mapNotNull { m -> m.finishTimestamp?.let { m.id to it } }.toMap(),
+                    settledApprovals =
+                        durable
+                            .mapNotNull { row ->
+                                row.settledApprovalStatus()?.let { row.id to it }
+                            }.toMap(),
                     provenance =
                         (durable + staged).associate {
                             it.id to
@@ -181,7 +188,23 @@ open class ChatPersistenceRepository(
                         session,
                         id,
                     ),
-                ]?.toUiModel()?.copy(id = id, finishTimestamp = payload.finishes[id], isStreaming = false)
+                ]?.toUiModel()?.let { row ->
+                    val approval =
+                        payload.settledApprovals[id]?.let { status ->
+                            ApprovalInfo(
+                                command = null,
+                                description = row.content.removePrefix(APPROVAL_MESSAGE_PREFIX),
+                                patternKeys = null,
+                                status = status,
+                            )
+                        }
+                    row.copy(
+                        id = id,
+                        finishTimestamp = payload.finishes[id],
+                        isStreaming = false,
+                        approvalInfo = approval,
+                    )
+                }
             }
         val staged =
             payload.stagedIds.mapNotNull { id ->

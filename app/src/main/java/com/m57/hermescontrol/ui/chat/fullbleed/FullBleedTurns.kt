@@ -1,8 +1,11 @@
 package com.m57.hermescontrol.ui.chat.fullbleed
 
+import com.m57.hermescontrol.ui.chat.ApprovalPlacement
 import com.m57.hermescontrol.ui.chat.ChatMessage
 import com.m57.hermescontrol.ui.chat.MessageRole
 import com.m57.hermescontrol.ui.chat.brainstorm.BrainstormParser
+import com.m57.hermescontrol.ui.chat.isApprovalTimelineRow
+import com.m57.hermescontrol.ui.chat.isLivePreviewOf
 
 /**
  * Turn model for the full-bleed chat renderer (issue #866).
@@ -87,23 +90,23 @@ private fun groupIntoTurnsForPresentation(
         ledger.responses
             .flatMap { response ->
                 (response.messageIds + response.userIds).map { it to response.id }
-            }.toMap()
-    val recoveredOwners = recoveredToolOwners(messages, ledger.toolAnswerIds, owners)
+            }.toMap() + ledger.approvalPlacements.mapValues { it.value.responseId } + presentationOwners
+    val (ordered, recoveredOwners) = recoverActivityOrder(messages, ledger.toolAnswerIds, owners)
     var previousOwner: String? = null
 
     fun flushAgent() {
         if (agentEntries.isNotEmpty()) {
-            turns += ChatTurn.Agent(compactConnectionEvents(agentEntries))
+            turns += ChatTurn.Agent(compactConnectionEvents(placeApprovals(agentEntries, ledger.approvalPlacements)))
             agentEntries.clear()
         }
     }
 
-    messages.forEach { message ->
+    ordered.forEach { message ->
         // A local configuration control has no response owner of its own.
         // Keep its row without treating the absent owner as a new response.
         val owner =
-            owners[message.id] ?: presentationOwners[message.id] ?: recoveredOwners[message.id]
-                ?: previousOwner.takeIf { message.isModelSwitchControl() }
+            owners[message.id] ?: recoveredOwners[message.id]
+                ?: previousOwner.takeIf { message.isModelSwitchControl() || message.isRoutineConnectionEvent() }
         if (owner != previousOwner && (owner != null || previousOwner != null)) flushAgent()
         previousOwner = owner
         when {
@@ -146,39 +149,88 @@ private fun groupIntoTurnsForPresentation(
 }
 
 /**
- * A cached answer can precede its tools after REST reconciliation. Use the server's
- * tool-to-answer link only when both are still adjacent in the displayed turn.
+ * A local approval or reconnect notice can split a recovered tool run. Treat those rows
+ * as part of the activity only when the tools point to the same nearby answer.
  */
-private fun recoveredToolOwners(
+private fun recoverActivityOrder(
     messages: List<ChatMessage>,
     toolAnswerIds: Map<String, String>,
     owners: Map<String, String>,
-): Map<String, String> {
-    if (toolAnswerIds.isEmpty()) return emptyMap()
-    return buildMap {
-        var start = 0
-        while (start < messages.size) {
-            if (messages[start].role != MessageRole.TOOL) {
-                start++
-                continue
+): Pair<List<ChatMessage>, Map<String, String>> {
+    if (toolAnswerIds.isEmpty()) return messages to emptyMap()
+    val recoveredOwners = mutableMapOf<String, String>()
+    val movedAnswers = mutableMapOf<Int, ChatMessage>()
+    val movedIds = mutableSetOf<String>()
+    var start = 0
+    while (start < messages.size) {
+        if (!messages[start].isActivityRow()) {
+            start++
+            continue
+        }
+        var end = start + 1
+        while (end < messages.size && messages[end].isActivityRow()) end++
+        val activity = messages.subList(start, end)
+        val linkedAnswers = activity.mapNotNull { toolAnswerIds[it.id] }.toSet()
+        val answer =
+            listOfNotNull(messages.getOrNull(start - 1), messages.getOrNull(end)).singleOrNull {
+                it.role == MessageRole.ASSISTANT && it.displayKind == null && it.id in linkedAnswers
             }
-            var end = start + 1
-            while (end < messages.size && messages[end].role == MessageRole.TOOL) end++
-            val adjacentAnswers =
-                listOfNotNull(messages.getOrNull(start - 1), messages.getOrNull(end))
-                    .filter { it.role == MessageRole.ASSISTANT && it.displayKind == null }
-                    .mapTo(HashSet()) { it.id }
-            val toolRun = messages.subList(start, end)
-            val candidates =
-                toolRun.map { tool ->
-                    owners[tool.id] ?: toolAnswerIds[tool.id]?.takeIf { it in adjacentAnswers }?.let(owners::get)
+        val owner = answer?.id?.let(owners::get)
+        if (answer != null && owner != null &&
+            activity.all { row ->
+                val knownOwner = owners[row.id]
+                when {
+                    knownOwner != null -> knownOwner == owner
+                    row.role == MessageRole.TOOL -> toolAnswerIds[row.id] == answer.id
+                    else -> true
                 }
-            // Keep separate responses and any uncorrelated tool rows as boundaries.
-            val owner = candidates.first()
-            if (owner != null && candidates.all { it == owner }) {
-                toolRun.forEach { put(it.id, owner) }
             }
-            start = end
+        ) {
+            activity.forEach { recoveredOwners[it.id] = owner }
+            if (answer == messages.getOrNull(start - 1)) {
+                movedIds += answer.id
+                movedAnswers[end - 1] = answer
+            }
+        }
+        start = end
+    }
+    val ordered =
+        if (movedIds.isEmpty()) {
+            messages
+        } else {
+            buildList {
+                messages.forEachIndexed { index, row ->
+                    if (row.id !in movedIds) add(row)
+                    movedAnswers[index]?.let(::add)
+                }
+            }
+        }
+    return ordered to recoveredOwners
+}
+
+private fun ChatMessage.isActivityRow(): Boolean =
+    (role == MessageRole.TOOL && displayKind == null) || isApprovalTimelineRow() || isRoutineConnectionEvent()
+
+/** Keep a local approval beside its tool when a complete REST manifest replaces the live rows. */
+private fun placeApprovals(
+    entries: List<AgentEntry>,
+    placements: Map<String, ApprovalPlacement>,
+): List<AgentEntry> {
+    if (placements.isEmpty()) return entries
+    val tools =
+        entries.filterIsInstance<AgentEntry.ToolRow>().groupingBy { it.message.toolCallId }.eachCount()
+    val anchored =
+        entries.filterIsInstance<AgentEntry.SystemEvent>().mapNotNull { entry ->
+            placements[entry.message.id]?.afterToolCallId?.takeIf { tools[it] == 1 }?.let { it to entry }
+        }
+    if (anchored.isEmpty()) return entries
+    val byTool = anchored.groupBy({ it.first }, { it.second })
+    val moved = anchored.mapTo(HashSet()) { it.second }
+    return buildList {
+        for (entry in entries) {
+            if (entry in moved) continue
+            add(entry)
+            if (entry is AgentEntry.ToolRow) addAll(byTool[entry.message.toolCallId].orEmpty())
         }
     }
 }
@@ -200,22 +252,28 @@ fun groupIntoTurnsWithStreaming(
         com.m57.hermescontrol.ui.chat
             .ResponseLedger(),
 ): List<ChatTurn> {
+    val historyAnswer = messages.firstOrNull { it.id == ledger.activeHistoryAnswerId }
+    val showsLivePreview = historyAnswer != null && streamingMessage?.isLivePreviewOf(historyAnswer) == true
+    val visible = if (showsLivePreview) messages.filterNot { it.id == historyAnswer.id } else messages
     val rows =
-        if (streamingMessage == null || messages.any { it.id == streamingMessage.id }) {
-            messages
+        if (streamingMessage == null || visible.any { it.id == streamingMessage.id }) {
+            visible
         } else {
-            messages + streamingMessage
+            visible + streamingMessage
         }
     // The UI ledger does not yet own the live segment. Infer adjacency only for
     // presentation; observing it in the ledger here would also grant copy authority.
     val active = ledger.responses.singleOrNull { it.id == ledger.activeId }
     val tail =
-        messages.lastOrNull { message ->
-            !message.isModelSwitchControl() ||
+        visible.lastOrNull { message ->
+            (!message.isModelSwitchControl() && !message.isRoutineConnectionEvent()) ||
                 ledger.responses.any { message.id in it.messageIds || message.id in it.userIds }
         }
     val tailOwners =
-        ledger.responses.filter { tail?.id in it.messageIds || tail?.id in it.userIds }
+        ledger.responses.filter {
+            tail?.id in it.messageIds || tail?.id in it.userIds ||
+                ledger.approvalPlacements[tail?.id]?.responseId == it.id
+        }
     val liveOwner =
         active?.takeIf {
             streamingMessage != null &&
@@ -228,7 +286,12 @@ fun groupIntoTurnsWithStreaming(
                 tail != null && tail.role != MessageRole.USER && tailOwners.singleOrNull()?.id == it.id
         }
     val presentationOwners =
-        if (liveOwner != null && streamingMessage != null) mapOf(streamingMessage.id to liveOwner.id) else emptyMap()
+        buildMap {
+            if (active != null && historyAnswer != null) put(historyAnswer.id, active.id)
+            if (streamingMessage != null && (showsLivePreview || liveOwner != null)) {
+                (liveOwner ?: active)?.let { put(streamingMessage.id, it.id) }
+            }
+        }
     return groupIntoTurnsForPresentation(rows, ledger, presentationOwners)
 }
 
@@ -353,11 +416,7 @@ internal fun compactConnectionEvents(entries: List<AgentEntry>): List<AgentEntry
     }
     entries.forEach { entry ->
         val message = (entry as? AgentEntry.SystemEvent)?.message
-        if (message != null && message.role == MessageRole.SYSTEM &&
-            message.content in setOf("Connected to Hermes", "Session resumed") &&
-            message.approvalInfo == null && message.clarifyInfo == null &&
-            message.displayKind == null && message.attachments.isNullOrEmpty()
-        ) {
+        if (message?.isRoutineConnectionEvent() == true) {
             connectionEvents += message
         } else {
             flush()
@@ -367,3 +426,7 @@ internal fun compactConnectionEvents(entries: List<AgentEntry>): List<AgentEntry
     flush()
     return result
 }
+
+private fun ChatMessage.isRoutineConnectionEvent(): Boolean =
+    role == MessageRole.SYSTEM && (content == "Connected to Hermes" || content == "Session resumed") &&
+        approvalInfo == null && clarifyInfo == null && displayKind == null && attachments.isNullOrEmpty()

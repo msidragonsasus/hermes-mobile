@@ -92,6 +92,7 @@ internal class RenderPlanningCache {
             streamingMessage
                 ?.takeIf {
                     it.role == MessageRole.ASSISTANT && it.displayKind == null && it.isStreaming &&
+                        lifecycle.ledger.activeHistoryAnswerId == null &&
                         it.id !in historyIds && it.id !in terminalIds
                 }?.copy(content = "")
         entry = Entry(messages, streamingMessage, lifecycle, scope, leadingItems, expandedTurns, output, liveTemplate)

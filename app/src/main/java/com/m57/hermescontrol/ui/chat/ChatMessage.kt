@@ -8,7 +8,7 @@ import java.util.UUID
 /**
  * Metadata for a [ChatMessage] that represents an approval request.
  * When present, the UI renders approval buttons inline.
- * Transient — not persisted to SQLite.
+ * Request identity and controls are transient. The transcript may cache a settled status for display.
  */
 data class ApprovalInfo(
     val command: String?,
@@ -26,6 +26,15 @@ data class ApprovalInfo(
     val status: AttentionStatus = AttentionStatus.PENDING,
     val responseEnabled: Boolean = false,
 )
+
+internal const val APPROVAL_MESSAGE_PREFIX = "承認が必要です\n"
+
+internal fun ChatMessage.isApprovalTimelineRow(): Boolean =
+    role == MessageRole.SYSTEM &&
+        (approvalInfo != null || (!id.startsWith("canonical:") && content.startsWith(APPROVAL_MESSAGE_PREFIX)))
+
+internal fun ChatMessage.settledApprovalStatus(): AttentionStatus? =
+    approvalInfo?.status?.takeIf { it == AttentionStatus.CONFIRMED || it == AttentionStatus.EXPIRED }
 
 /**
  * Risk metadata from the backend's [tool.output_risk] WS event.

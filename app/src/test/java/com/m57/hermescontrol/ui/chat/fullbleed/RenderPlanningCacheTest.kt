@@ -10,6 +10,26 @@ import java.util.IdentityHashMap
 
 class RenderPlanningCacheTest {
     @Test
+    fun approvalHistoryOverlapReplansWhenTheLiveBodyChanges() {
+        val history = listOf(message("stored", "Synthetic answer"))
+        val active = ResponseRecord(id = "current")
+        val ledger =
+            ResponseLedger(
+                responses = listOf(active),
+                activeId = active.id,
+                approvalHistoryAnswer = ApprovalHistoryAnswer(active.id, history.single().id),
+            )
+        val lifecycle = ReplyLifecycle(ledger = ledger)
+        val live = message("live", "Synthetic").copy(isStreaming = true)
+        val cache = RenderPlanningCache()
+        val scope = Any()
+        assertEquals(setOf("live"), cache.plan(history, live, lifecycle, scope).messageIdToLazyIndex.keys)
+        val changed = live.copy(content = "Different")
+        assertEquals(setOf("live", "stored"), cache.plan(history, changed, lifecycle, scope).messageIdToLazyIndex.keys)
+        assertEquals(setOf("live"), cache.plan(history, live, lifecycle, scope).messageIdToLazyIndex.keys)
+    }
+
+    @Test
     fun repeatedLiveContentUpdatesDoNotRevisitStableHistory() {
         val values =
             List(512) { i ->

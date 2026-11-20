@@ -1111,9 +1111,12 @@ class ChatViewModel(
         viewModelScope.launch {
             fun durableRows(rows: List<ChatMessage>): List<ChatMessage> =
                 rows.map {
-                    // These fields are deliberately transient in ChatMessageMapper.
+                    // Only the settled status is stored. Approval identity and actions are scoped to the socket.
                     it.copy(
-                        approvalInfo = null,
+                        approvalInfo =
+                            it.settledApprovalStatus()?.let { status ->
+                                ApprovalInfo(null, null, null, status = status)
+                            },
                         clarifyInfo = null,
                         attachments = null,
                         toolOutputRiskData = null,
@@ -2104,6 +2107,21 @@ class ChatViewModel(
                         )
                 }
                 ledger = ledger.copy(aliases = ledger.aliases + (finalRow.toString() to finalized.id))
+            }
+        }
+        if (!lateFrame && (event is WsEvent.MessageComplete || event is WsEvent.MessageDone)) {
+            val fold = foldActiveApprovalFinal(result.state, ledger, result.streamingState.finalizedMessage)
+            if (fold != null) {
+                ledger = fold.ledger
+                result =
+                    result.copy(
+                        state =
+                            result.state.copy(
+                                messages = fold.messages,
+                                stagedCanonicalMessages = fold.stagedMessages,
+                            ),
+                        streamingState = result.streamingState.copy(finalizedMessage = fold.finalizedMessage),
+                    )
             }
         }
         // Install the requirement before publishing state or admitting work: either collector
@@ -6572,6 +6590,8 @@ class ChatViewModel(
                 responseEnabled = ref != null && submissionTransport.isReady(ref.scope),
             )
         var added = false
+        val row =
+            ChatMessage(role = MessageRole.SYSTEM, content = APPROVAL_MESSAGE_PREFIX + description, approvalInfo = info)
         _uiState.update { state ->
             if (boundRef != null) {
                 val existing =
@@ -6593,14 +6613,30 @@ class ChatViewModel(
                 }
             }
             added = true
+            val ledger = state.responseLedger
+            val response = ledger.responses.singleOrNull { it.id == ledger.activeId && it.finishedAt == null }
+            val placement =
+                response?.let {
+                    val preceding = state.messages.lastOrNull { message -> message.id in it.messageIds }
+                    ApprovalPlacement(
+                        responseId = it.id,
+                        afterToolCallId =
+                            preceding
+                                ?.takeIf { message -> message.role == MessageRole.TOOL }
+                                ?.toolCallId
+                                ?.takeIf { call -> call.isNotBlank() },
+                    )
+                }
             state.copy(
-                messages =
-                    state.messages +
-                        ChatMessage(
-                            role = MessageRole.SYSTEM,
-                            content = "承認が必要です\n$description",
-                            approvalInfo = info,
-                        ),
+                messages = state.messages + row,
+                responseLedger =
+                    if (placement == null) {
+                        ledger
+                    } else {
+                        ledger.copy(
+                            approvalPlacements = ledger.approvalPlacements + (row.id to placement),
+                        )
+                    },
                 isAgentTyping = false,
                 responseStatusUnknown = false,
             )

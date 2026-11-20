@@ -13,6 +13,9 @@ import com.m57.hermescontrol.data.model.Attachment
 import com.m57.hermescontrol.data.model.AttachmentSource
 import com.m57.hermescontrol.data.model.CreateSpecialistRequest
 import com.m57.hermescontrol.data.model.CreateSpecialistResponse
+import com.m57.hermescontrol.data.model.PaginationInfo
+import com.m57.hermescontrol.data.model.SessionMessage
+import com.m57.hermescontrol.data.model.SessionMessagesResponse
 import com.m57.hermescontrol.data.model.SpecialistCapabilitiesResponse
 import com.m57.hermescontrol.data.model.SpecialistSetupApplyRequest
 import com.m57.hermescontrol.data.model.SpecialistSetupApplyResponse
@@ -47,6 +50,9 @@ import com.m57.hermescontrol.ui.chat.fakes.FakeChatPersistenceRepository
 import com.m57.hermescontrol.ui.chat.fakes.FakeOutgoingDraftStore
 import com.m57.hermescontrol.ui.chat.fakes.FakeSlashUsageStore
 import com.m57.hermescontrol.ui.chat.fakes.FakeSubmissionTransport
+import com.m57.hermescontrol.ui.chat.fullbleed.AgentEntry
+import com.m57.hermescontrol.ui.chat.fullbleed.ChatTurn
+import com.m57.hermescontrol.ui.chat.fullbleed.groupIntoTurnsWithStreaming
 import com.m57.hermescontrol.ui.chat.fullbleed.replyFooters
 import com.m57.hermescontrol.ui.chat.fullbleed.replyLifecycle
 import io.mockk.*
@@ -10187,6 +10193,196 @@ class ChatViewModelTest {
 
     // ── Approval flow ────────────────────────────────────────────────────────
 
+    @Test
+    fun approvalTurnResumeDoesNotDuplicateToolsOrFinalAnswer() =
+        runTest { approvalTurnResume(restBeforeTerminal = true) }
+
+    @Test
+    fun approvalTurnResumeFoldsHistoryThatArrivesAfterTerminal() =
+        runTest { approvalTurnResume(restBeforeTerminal = false) }
+
+    private suspend fun TestScope.approvalTurnResume(restBeforeTerminal: Boolean) {
+        val (vm, session) = createViewModelWithSession()
+        fakeSubmission.addressedPromptAcks = true
+        vm.sendMessage("Synthetic request")
+        runCurrent()
+        emitEvent(WsEvent.MessageStart(session))
+        val userRow =
+            vm.uiState.value.responseLedger.responses
+                .single()
+                .userRowIds
+                .single()
+                .toInt()
+        val history =
+            mutableListOf(
+                SessionMessage(
+                    id = userRow,
+                    role = "user",
+                    content = JsonPrimitive("Synthetic request"),
+                    timestamp = JsonPrimitive(1.0),
+                ),
+            )
+
+        suspend fun tools(
+            range: IntRange,
+            runtime: String,
+        ) {
+            for (index in range) {
+                val payload = mapOf("tool_id" to "call-$index")
+                emitEvent(WsEvent.ToolStart("terminal", payload, runtime))
+                emitEvent(WsEvent.ToolComplete("terminal", payload, runtime))
+                runCurrent()
+                history +=
+                    SessionMessage(
+                        id = userRow + history.size,
+                        role = "tool",
+                        content = JsonPrimitive("Stored result $index"),
+                        timestamp = JsonPrimitive(1.0),
+                        tool_call_id = "call-$index",
+                    )
+            }
+        }
+
+        fun rest(rows: List<SessionMessage>) =
+            retrofit2.Response.success(
+                SessionMessagesResponse(
+                    rows.toList(),
+                    pagination =
+                        PaginationInfo(order = "latest", offset = 0),
+                ),
+            )
+
+        tools(1..15, session)
+        vm.respondToApproval(observeApproval(vm, "approval-1", session).id, "once")
+        runCurrent()
+
+        // The resume starts history hydration independently from the running ACK.
+        stubEmptySessionRests(session)
+        val partial =
+            CompletableDeferred<retrofit2.Response<SessionMessagesResponse>>()
+        coEvery { ApiClient.hermesApi.getSessionMessages(session, any(), any(), any(), any()) } coAnswers
+            { partial.await() }
+        val resumes = captureRecoveryResumes()
+        mockConnectionStatus.value = ConnectionStatus.RECONNECTING
+        runCurrent()
+        mockConnectionStatus.value = ConnectionStatus.CONNECTED
+        emitEvent(WsEvent.GatewayReady(null))
+        runCurrent()
+        val runtime = "runtime-recovered"
+        recoveryAck(resumes.last(), running = true, runtimeId = runtime)
+        runCurrent()
+        partial.complete(rest(history))
+        runCurrent()
+        val resumedToolCount =
+            vm.uiState.value.messages
+                .count { it.role == MessageRole.TOOL }
+
+        tools(16..34, runtime)
+        val secondApproval = observeApproval(vm, "approval-2", runtime)
+        assertEquals("approval-2", secondApproval.approvalInfo?.requestId)
+        vm.respondToApproval(secondApproval.id, "once")
+        runCurrent()
+        // Reconnect again while the approval has paused the turn. The resumed history
+        // request can return after the server commits the final, on either side of the WS terminal.
+        val full =
+            CompletableDeferred<retrofit2.Response<SessionMessagesResponse>>()
+        val requested = CompletableDeferred<Unit>()
+        val api = ApiClient.hermesApi
+        coEvery { api.getSessionMessages(session, any(), any(), any(), any(), any()) } coAnswers {
+            requested.complete(Unit)
+            full.await()
+        }
+        assertFalse("Approval pauses the typing indicator", vm.uiState.value.isAgentTyping)
+        mockConnectionStatus.value = ConnectionStatus.RECONNECTING
+        runCurrent()
+        mockConnectionStatus.value = ConnectionStatus.CONNECTED
+        emitEvent(WsEvent.GatewayReady(null))
+        runCurrent()
+        assertTrue(requested.isCompleted)
+        recoveryAck(resumes.last(), running = true, runtimeId = runtime)
+        runCurrent()
+        tools(35..38, runtime)
+        emitEvent(WsEvent.ReasoningDelta("Synthetic reasoning", runtime))
+        emitEvent(WsEvent.MessageToken("Synthetic final", runtime))
+        advanceTimeBy(40L)
+        runCurrent()
+        assertNotNull(vm.streamingState.value.streamingMessage)
+        history +=
+            SessionMessage(
+                id = userRow + history.size,
+                role = "assistant",
+                content = JsonPrimitive("Synthetic final"),
+                timestamp = JsonPrimitive(1.0),
+                reasoning = JsonPrimitive("Stored reasoning"),
+            )
+        if (restBeforeTerminal) full.complete(rest(history))
+        runCurrent()
+        val whileStreaming = vm.uiState.value
+        val liveTurns =
+            groupIntoTurnsWithStreaming(
+                whileStreaming.messages,
+                vm.streamingState.value.streamingMessage,
+                whileStreaming.responseLedger,
+            )
+        emitEvent(WsEvent.MessageComplete("Synthetic final", runtime))
+        runCurrent()
+        if (!restBeforeTerminal) {
+            full.complete(rest(history))
+            runCurrent()
+        }
+        val completed = vm.uiState.value
+        val completedTurns = groupIntoTurnsWithStreaming(completed.messages, null, completed.responseLedger)
+
+        assertEquals("One copy of each completed call immediately after running resume", 15, resumedToolCount)
+        assertApprovalTurn(liveTurns)
+        assertTrue(vm.streamingState.value.turnEnded)
+        assertEquals(1, completed.messages.count { it.role == MessageRole.ASSISTANT })
+        val reasoning = completed.messages.single { it.role == MessageRole.ASSISTANT }.reasoningText
+        assertTrue(reasoning.contains("Synthetic reasoning") && reasoning.contains("Stored reasoning"))
+        assertApprovalTurn(completedTurns)
+        vm.syncCurrentSession()
+        runCurrent()
+        val synced = vm.uiState.value
+        assertApprovalTurn(groupIntoTurnsWithStreaming(synced.messages, null, synced.responseLedger))
+    }
+
+    private fun assertApprovalTurn(turns: List<ChatTurn>) {
+        val entries =
+            turns
+                .filterIsInstance<ChatTurn.Agent>()
+                .filter { turn ->
+                    turn.entries.any { entry ->
+                        entry is AgentEntry.ToolRow ||
+                            entry is AgentEntry.Prose ||
+                            (entry is AgentEntry.SystemEvent && entry.message.approvalInfo != null)
+                    }
+                }.single()
+                .entries
+        val tools = entries.filterIsInstance<AgentEntry.ToolRow>()
+        val approvals =
+            entries
+                .filterIsInstance<AgentEntry.SystemEvent>()
+                .mapNotNull { it.message.approvalInfo }
+        assertEquals((1..38).map { "call-$it" }, tools.map { it.message.toolCallId })
+        assertEquals(listOf("approval-1", "approval-2"), approvals.map { it.requestId })
+        assertTrue(approvals.all { it.status == AttentionStatus.CONFIRMED })
+        assertEquals(
+            listOf(15, 34),
+            entries.mapIndexedNotNull { index, entry ->
+                if (entry is AgentEntry.SystemEvent &&
+                    entry.message.approvalInfo != null
+                ) {
+                    entries.take(index).count { it is AgentEntry.ToolRow }
+                } else {
+                    null
+                }
+            },
+        )
+        val answer = entries.filterIsInstance<AgentEntry.Prose>().single()
+        assertTrue(answer.message.reasoningText.isNotBlank())
+        assertEquals(answer, entries.last())
+    }
+
     private suspend fun TestScope.observeApproval(
         viewModel: ChatViewModel,
         requestId: String? = "request-1",
@@ -15171,7 +15367,13 @@ class ChatViewModelTest {
             advanceUntilIdle()
             assertTrue(viewModel.uiState.value.isLoading)
             mockConnectionStatus.value = ConnectionStatus.CONNECTED
-            clearMocks(HermesWsClient, answers = false, recordedCalls = true, childMocks = false, verificationMarks = true)
+            clearMocks(
+                HermesWsClient,
+                answers = false,
+                recordedCalls = true,
+                childMocks = false,
+                verificationMarks = true,
+            )
 
             assertTrue(viewModel.recoverStuckLoading())
             advanceUntilIdle()
@@ -15204,11 +15406,19 @@ class ChatViewModelTest {
             advanceUntilIdle()
             @Suppress("UNCHECKED_CAST")
             val state =
-                ChatViewModel::class.java.getDeclaredField("_uiState").apply { isAccessible = true }
+                ChatViewModel::class.java
+                    .getDeclaredField("_uiState")
+                    .apply { isAccessible = true }
                     .get(viewModel) as MutableStateFlow<ChatUiState>
             // The stalled launch-time state: spinner up, its resume never answered.
             state.value = state.value.copy(isLoading = true, resumeError = null, isResumeRetrying = false)
-            clearMocks(HermesWsClient, answers = false, recordedCalls = true, childMocks = false, verificationMarks = true)
+            clearMocks(
+                HermesWsClient,
+                answers = false,
+                recordedCalls = true,
+                childMocks = false,
+                verificationMarks = true,
+            )
 
             assertFalse(viewModel.recoverStuckLoading())
             advanceUntilIdle()
