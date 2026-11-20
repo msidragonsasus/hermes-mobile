@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -48,7 +47,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
@@ -91,7 +89,6 @@ import com.m57.hermescontrol.ui.chat.components.ChatLifecycleEffects
 import com.m57.hermescontrol.ui.chat.components.ChatLoadingOverlay
 import com.m57.hermescontrol.ui.chat.components.ChatResumeErrorOverlay
 import com.m57.hermescontrol.ui.chat.components.ChatScrollToBottomFab
-import com.m57.hermescontrol.ui.chat.components.ChatTimelineNoPrefetchStrategy
 import com.m57.hermescontrol.ui.chat.components.ContextDetailSheet
 import com.m57.hermescontrol.ui.chat.components.ConversationLayout
 import com.m57.hermescontrol.ui.chat.components.MainChatHeader
@@ -105,6 +102,8 @@ import com.m57.hermescontrol.ui.chat.components.quotedReplyField
 import com.m57.hermescontrol.ui.chat.components.rememberChatScrollController
 import com.m57.hermescontrol.ui.chat.components.shouldShowProgressChip
 import com.m57.hermescontrol.ui.chat.fullbleed.MainChatTimeline
+import com.m57.hermescontrol.ui.chat.fullbleed.mainChatScrollKey
+import com.m57.hermescontrol.ui.chat.fullbleed.rememberMainChatScrollPosition
 import com.m57.hermescontrol.ui.common.ActionProgressDialog
 import com.m57.hermescontrol.ui.common.AppUpdateDialog
 import com.m57.hermescontrol.ui.common.CredentialWarningBanner
@@ -115,9 +114,6 @@ import com.m57.hermescontrol.ui.common.SettingsMenuItem
 import com.m57.hermescontrol.ui.model.components.ModelPickerDialog
 import com.m57.hermescontrol.ui.settings.AppUpdateViewModel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -162,12 +158,18 @@ fun ChatScreen(
     // read its fields recompose on search changes (bar, matched bubbles).
     val searchState = viewModel.searchState
     val lifecycleOwner = LocalLifecycleOwner.current
-    val listState = rememberLazyListState(prefetchStrategy = ChatTimelineNoPrefetchStrategy)
+    val activeProfileId by AuthManager.activeProfileId.collectAsStateWithLifecycle()
+    val chatScope = AuthManager.uiPreferenceScope()
+    val scrollKey = remember(chatScope, state.currentSessionId) { mainChatScrollKey(chatScope, state.currentSessionId) }
+    val scrollPosition = rememberMainChatScrollPosition(scrollKey)
+    val listState = scrollPosition.listState
     com.m57.hermescontrol.home
         .HomeChatReadEffect(state, listState)
     val scrollScope = rememberCoroutineScope()
-    val scrollController = rememberChatScrollController(listState, scrollScope)
-    var isOlderPagingArmed by remember(state.currentSessionId) { mutableStateOf(false) }
+    val scrollController =
+        key(scrollKey) {
+            rememberChatScrollController(listState, rememberCoroutineScope(), reverseLayout = true)
+        }
     var showContextSheet by remember { mutableStateOf(false) }
     var pendingSavePath by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingSaveName by rememberSaveable { mutableStateOf<String?>(null) }
@@ -197,10 +199,7 @@ fun ChatScreen(
             }
         }
 
-    // Continuous bottom-follow tracking from LazyListState (issue #682).
-    LaunchedEffect(Unit) {
-        scrollController.observeUserScrollPosition()
-    }
+    LaunchedEffect(scrollController) { scrollController.observeUserScrollPosition() }
 
     var inputFieldValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(""))
@@ -378,17 +377,17 @@ fun ChatScreen(
     ChatLifecycleEffects(
         sessionId = sessionId,
         connectionStatus = state.connectionStatus,
-        currentSessionId = state.currentSessionId,
-        messages = state.messages,
         errorMessage = state.errorMessage,
         backgroundCompleteMessage = state.backgroundCompleteMessage,
         openError = state.openError,
-        clarifyRequest = state.clarifyRequest,
         sudoPrompt = state.sudoPrompt,
         secretPrompt = state.secretPrompt,
         vaultPrompt = state.vaultPrompt,
-        listState = listState,
-        scrollController = scrollController,
+        onOpenLatest = { target ->
+            val targetKey = target?.let { mainChatScrollKey(chatScope, it) } ?: scrollKey
+            scrollPosition.forgetAnchor(targetKey)
+            if (targetKey == scrollKey) scrollController.jumpToBottom()
+        },
         snackbarHostState = snackbarHostState,
         viewModel = viewModel,
     )
@@ -399,7 +398,6 @@ fun ChatScreen(
                 .BotsViewModel()
         }
     val botsState by botsViewModel.uiState.collectAsStateWithLifecycle()
-    val activeProfileId by AuthManager.activeProfileId.collectAsStateWithLifecycle()
     val activeProfileName =
         activeProfileId?.takeIf { it.isNotBlank() }
             ?: botsState.activeProfileName?.takeIf { it.isNotBlank() }
@@ -425,23 +423,6 @@ fun ChatScreen(
                 if (!isMainProfile) viewModel.fetchContextUsage()
             }
         }
-    }
-    // Stable timeline row keys preserve the first visible item and offset across prepends.
-    LaunchedEffect(listState, state.currentSessionId, state.hasOlderMessages, state.isLoadingOlder) {
-        if (!state.hasOlderMessages || state.isLoadingOlder) return@LaunchedEffect
-        snapshotFlow {
-            val layout = listState.layoutInfo
-            // The unmeasured list reports zero items, including on navigation re-entry.
-            if (layout.viewportSize.height == 0) null else listState.firstVisibleItemIndex to layout.totalItemsCount
-        }.filterNotNull()
-            .distinctUntilChanged()
-            .collectLatest { (firstVisibleIndex, count) ->
-                if (firstVisibleIndex > 2) {
-                    isOlderPagingArmed = true
-                } else if (isOlderPagingArmed || count <= 3) {
-                    viewModel.loadOlderMessages()
-                }
-            }
     }
 
     val activeAgent =
@@ -504,9 +485,8 @@ fun ChatScreen(
     val hasSetupFooter =
         specialist != null && !specialist.legacy &&
             (!specialist.missing || specialistKnown) && specialist.showsFooter
-    val hasTimelineContent = visibleMessages.isNotEmpty() || hasSetupFooter
-    val showScrollToBottom by remember(scrollController, hasTimelineContent) {
-        derivedStateOf { scrollController.showFab(hasTimelineContent) }
+    val showScrollToBottom by remember(scrollController, listState) {
+        derivedStateOf { scrollController.showFab(listState.layoutInfo.visibleItemsInfo.isNotEmpty()) }
     }
     DisposableEffect(viewModel, botsViewModel) {
         viewModel.refreshSpecialistRoster = { botsViewModel.loadBots(isRefresh = true) }
@@ -838,7 +818,7 @@ fun ChatScreen(
                 val nativeCanSubmit = !setupComposer && canSendNativeAction(state)
                 // Rebuilt only when the scope or send availability changes, not on every chat update.
                 val nativeUiHost =
-                    remember(nativeUiScope, nativeCanSubmit) {
+                    remember(nativeUiScope, nativeCanSubmit, scrollController) {
                         NativeUiHost(nativeUiScope, nativeCanSubmit) { text ->
                             // The composer draft and attachments stay as they are.
                             if (viewModel.sendNativeAction(text)) scrollController.jumpToBottom(animated = true)
@@ -853,8 +833,8 @@ fun ChatScreen(
                         messages = visibleMessages,
                         streaming = streamingState,
                         headerHeight = headerHeight,
-                        listState = listState,
                         scrollController = scrollController,
+                        scrollPosition = scrollPosition,
                         search = searchState,
                         viewModel = viewModel,
                         onSaveAttachment = onSaveAttachment,

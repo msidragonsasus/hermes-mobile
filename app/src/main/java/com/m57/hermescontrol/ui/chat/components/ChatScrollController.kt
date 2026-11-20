@@ -20,38 +20,20 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
- * Owns all chat scroll behavior (issue #682):
- *
- * 1. **Bottom-follow intent** ([isFollowingBottom]) is tracked continuously from
- *    [LazyListState] via [snapshotFlow], not decided only when new data arrives.
- * 2. **Precise bottom detection** ([isAtBottom]) checks the last item's bottom
- *    edge against the viewport bottom within a small pixel tolerance, instead of
- *    an item-count threshold.
- * 3. **Streaming follow** — [onTailChanged] keeps following streamed output only
- *    while the reader is pinned at the bottom. An upward scroll pauses follow
- *    immediately (via [isFollowingBottom]) and never forces the reader back down.
- * 4. **Tail updates** — callers funnel every tail change (messages, streaming,
- *    thinking, subagent cards, clarify prompts) through [onTailChanged] with a
- *    stable tail key, so follow + unread tracking react to real content changes.
- * 5. **Unread indicator** — when follow is paused, [pendingCount] accumulates the
- *    number of tail updates; shows on the FAB. Tapping the FAB resumes following
- *    and clears the count.
- * 6. **Paging anchor preservation** — stable lazy row keys retain the first visible
- *    item and its offset when the transcript inserts older rows.
- * 7. **Serialized scroll commands** — every scroll (send, FAB, session switch,
- *    search navigation, auto-follow) is launched from [scope] so animations
- *    don't compete.
- *
- * Construct with [rememberChatScrollController].
+ * Shared latest-message actions, unread badge and search navigation (issue #682).
+ * Forward lists follow content changes through scroll commands. A reversed timeline
+ * anchors content in layout and reports whether its index and offset are both zero.
  */
 class ChatScrollController(
     private val listState: LazyListState,
     internal val scope: CoroutineScope,
     followIntent: MutableState<Boolean> = mutableStateOf(true),
+    private val reverseLayout: Boolean = false,
 ) {
     /** True while the reader is pinned at (or within tolerance of) the bottom. */
-    var isFollowingBottom by followIntent
-        private set
+    private var forwardFollowIntent by followIntent
+    val isFollowingBottom: Boolean
+        get() = if (reverseLayout) listState.isAtReverseChatBottom else forwardFollowIntent
 
     /**
      * Number of new messages that arrived while follow was paused. Shown on the
@@ -78,45 +60,44 @@ class ChatScrollController(
         scope.launch(block = block)
     }
 
-    /**
-     * Read the live bottom-follow state from [LazyListState] and react to
-     * user-driven scroll position changes. Should be called inside a
-     * `LaunchedEffect(Unit)` so it observes the list for the screen's lifetime.
-     */
-    fun observeUserScrollPosition() {
-        scope.launch {
-            var previousHeight: Int? = null
-            snapshotFlow {
-                val layout = listState.layoutInfo
-                if (layout.visibleItemsInfo.isEmpty()) {
-                    null
-                } else {
-                    Triple(
-                        listState.isAtBottom(bottomPixelTolerance),
-                        layout.viewportSize.height,
-                        listState.isScrollInProgress,
-                    )
-                }
-            }.filterNotNull()
-                .distinctUntilChanged()
-                .collect { (atBottom, height, scrolling) ->
-                    val firstLayout = previousHeight == null
-                    val resized = previousHeight != height
-                    previousHeight = height
-                    if (tailFollowJob?.isActive == true) return@collect
-                    if (resized && isFollowingBottom && !scrolling && (!firstLayout || !atBottom)) {
-                        // IME, attachments and a growing composer resize the viewport without
-                        // a reader gesture. The first layout also needs to honor saved follow intent.
-                        scheduleTailFollow()
-                    } else if (atBottom) {
-                        isFollowingBottom = true
-                        // Reaching the bottom means the reader caught up.
-                        pendingCount = 0
-                    } else {
-                        isFollowingBottom = false
-                    }
-                }
+    /** Observe scroll changes for the lifetime of the calling LaunchedEffect. */
+    suspend fun observeUserScrollPosition() {
+        if (reverseLayout) {
+            snapshotFlow { listState.isAtReverseChatBottom }.collect { atBottom ->
+                if (atBottom) pendingCount = 0
+            }
+            return
         }
+
+        var previousHeight: Int? = null
+        snapshotFlow {
+            val layout = listState.layoutInfo
+            if (layout.visibleItemsInfo.isEmpty()) {
+                null
+            } else {
+                Triple(
+                    listState.isAtBottom(bottomPixelTolerance),
+                    layout.viewportSize.height,
+                    listState.isScrollInProgress,
+                )
+            }
+        }.filterNotNull()
+            .distinctUntilChanged()
+            .collect { (atBottom, height, scrolling) ->
+                val firstLayout = previousHeight == null
+                val resized = previousHeight != height
+                previousHeight = height
+                if (tailFollowJob?.isActive == true) return@collect
+                if (resized && isFollowingBottom && !scrolling && (!firstLayout || !atBottom)) {
+                    // IME, attachments and a growing composer resize the viewport.
+                    scheduleTailFollow()
+                } else if (atBottom) {
+                    forwardFollowIntent = true
+                    pendingCount = 0
+                } else {
+                    forwardFollowIntent = false
+                }
+            }
     }
 
     /**
@@ -141,10 +122,10 @@ class ChatScrollController(
         val newMessages = if (lastTailKey == null) 0 else (messageCount - lastMessageCount).coerceAtLeast(0)
         lastMessageCount = messageCount
         lastTailKey = tailKey
-        if (isFollowingBottom) {
-            scheduleTailFollow()
-        } else {
+        if (!isFollowingBottom) {
             pendingCount += newMessages
+        } else if (!reverseLayout) {
+            scheduleTailFollow()
         }
     }
 
@@ -179,8 +160,16 @@ class ChatScrollController(
     fun jumpToBottom(animated: Boolean = false) {
         tailFollowJob?.cancel()
         pendingCount = 0
-        isFollowingBottom = true
-        scheduleTailFollow(animated)
+        if (reverseLayout) {
+            if (animated) {
+                tailFollowJob = scope.launch { listState.animateScrollToItem(0) }
+            } else {
+                listState.requestScrollToItem(0)
+            }
+        } else {
+            forwardFollowIntent = true
+            scheduleTailFollow(animated)
+        }
     }
 
     /** FAB tap: resume following + clear unread. */
@@ -222,16 +211,22 @@ class ChatScrollController(
     ) {
         // Runs in the caller's search effect: a changed query cancels stale positioning.
         tailFollowJob?.cancel()
-        isFollowingBottom = false
+        if (!reverseLayout) forwardFollowIntent = false
         listState.animateScrollToItem(index)
         val info = listState.layoutInfo
         val item = info.visibleItemsInfo.firstOrNull { it.index == index } ?: return
         val viewportHeight = info.viewportEndOffset - info.viewportStartOffset
         val fraction = if (contentLength > 0) contentOffset.toFloat() / contentLength else 0f
-        val targetTop =
-            (viewportHeight / 3).coerceAtLeast(obscuredTopPx + info.viewportStartOffset) -
-                (item.size * fraction).toInt()
-        val delta = item.offset - targetTop
+        val matchOffset = (item.size * fraction).toInt()
+        val delta =
+            if (reverseLayout) {
+                // Lazy item offsets run from bottom to top in the reversed column.
+                val itemTop = info.viewportEndOffset - item.offset - item.size
+                (viewportHeight / 3).coerceAtLeast(obscuredTopPx) - (itemTop + matchOffset)
+            } else {
+                val targetTop = (viewportHeight / 3).coerceAtLeast(obscuredTopPx + info.viewportStartOffset)
+                item.offset + matchOffset - targetTop
+            }
         if (delta != 0) {
             listState.animateScrollBy(delta.toFloat())
         }
@@ -302,11 +297,17 @@ suspend fun LazyListState.scrollToBottom(animated: Boolean) {
     }
 }
 
+internal val LazyListState.isAtReverseChatBottom: Boolean
+    get() = firstVisibleItemIndex == 0 && firstVisibleItemScrollOffset == 0
+
 @Composable
 fun rememberChatScrollController(
     listState: LazyListState,
     scope: CoroutineScope,
+    reverseLayout: Boolean = false,
 ): ChatScrollController {
     val followIntent = rememberSaveable { mutableStateOf(true) }
-    return remember(listState, scope, followIntent) { ChatScrollController(listState, scope, followIntent) }
+    return remember(listState, scope, followIntent, reverseLayout) {
+        ChatScrollController(listState, scope, followIntent, reverseLayout)
+    }
 }

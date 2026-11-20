@@ -25,10 +25,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.Alignment
@@ -68,7 +70,12 @@ import com.m57.hermescontrol.ui.chat.isApprovalTimelineRow
 import com.m57.hermescontrol.ui.chat.isLivePreviewOf
 import com.m57.hermescontrol.ui.chat.isSpecialistSetupText
 import com.m57.hermescontrol.ui.common.EmptyState
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlin.math.abs
+
+private const val PENDING_CLARIFY_KEY = "clarify_bubble"
+private const val SPECIALIST_SETTINGS_KEY = "specialist-settings"
 
 @Composable
 internal fun MainChatTimeline(
@@ -76,8 +83,8 @@ internal fun MainChatTimeline(
     messages: List<ChatMessage>,
     streaming: State<StreamingState>,
     headerHeight: Dp,
-    listState: LazyListState,
     scrollController: ChatScrollController,
+    scrollPosition: MainChatScrollPosition,
     search: ChatSearchState,
     viewModel: ChatViewModel,
     onSaveAttachment: (Attachment) -> Unit,
@@ -87,6 +94,7 @@ internal fun MainChatTimeline(
     specialistFooter: (@Composable () -> Unit)? = null,
     specialistCardsState: SpecialistChatState? = null,
 ) {
+    val listState = scrollPosition.listState
     val slot by remember(streaming) {
         derivedStateOf(structuralEqualityPolicy()) { streaming.value.streamingMessage?.mainChatStreamingSlot() }
     }
@@ -145,28 +153,43 @@ internal fun MainChatTimeline(
             clarify?.takeIf { it.ref == null && messages.none { message -> message.clarifyInfo == it } }
         }
     val messageCount = remember(rows) { rows.count { it.message != null && !it.live } }
-    LaunchedEffect(scope, state.currentSessionId, rows, pendingClarify, specialistCardsState) {
-        snapshotFlow {
-            listOf(
-                rows.lastOrNull()?.key,
-                streaming.value.streamingMessage?.content,
-                pendingClarify,
-                specialistCardsState,
-            )
-        }.collect { scrollController.onTailChanged(it, messageCount) }
+    val hasSpecialistFooter = specialistFooter != null
+    val leadingRows = (if (pendingClarify != null) 1 else 0) + (if (hasSpecialistFooter) 1 else 0)
+    val latestKey =
+        when {
+            pendingClarify != null -> PENDING_CLARIFY_KEY
+            hasSpecialistFooter -> SPECIALIST_SETTINGS_KEY
+            else -> rows.firstOrNull()?.key
+        }
+    SideEffect {
+        scrollPosition.onRowsChanged(latestKey, state.isLoading) { key ->
+            when {
+                key == PENDING_CLARIFY_KEY && pendingClarify != null -> 0
+                key == SPECIALIST_SETTINGS_KEY && hasSpecialistFooter -> leadingRows - 1
+                else -> rows.indexOfFirst { it.key == key }.takeIf { it >= 0 }?.plus(leadingRows)
+            }
+        }
+    }
+    LaunchedEffect(scrollController, rows, pendingClarify, specialistCardsState) {
+        scrollController.onTailChanged(
+            listOf(rows.firstOrNull()?.key, pendingClarify, specialistCardsState),
+            messageCount,
+        )
     }
 
+    val topPadding = headerHeight + 8.dp
+    val topPaddingPx = with(LocalDensity.current) { topPadding.roundToPx() }
     val matchId = search.currentMatchId
     val matchOffset = search.matchOffsets.getOrNull(search.currentIndex)
-    LaunchedEffect(matchId, matchOffset, search.query, search.isActive, headerHeight, state.isLoadingOlder, rows) {
+    LaunchedEffect(listState, matchId, matchOffset, search.query, search.isActive, topPaddingPx, leadingRows, rows) {
         if (!search.isActive || matchOffset == null || matchId == null) return@LaunchedEffect
         val index = rows.indexOfFirst { it.message?.id == matchId }
         val message = rows.getOrNull(index)?.message ?: return@LaunchedEffect
         scrollController.scrollToSearchMatch(
-            index + if (state.isLoadingOlder) 1 else 0,
+            index + leadingRows,
             matchOffset,
             message.content.length,
-            obscuredTopPx = with(listState.layoutInfo) { beforeContentPadding },
+            obscuredTopPx = topPaddingPx,
         )
     }
 
@@ -174,8 +197,24 @@ internal fun MainChatTimeline(
     val textScale = LocalChatFontScale.current
     val chatDensity = remember(density, textScale) { Density(density.density, density.fontScale * textScale) }
     val openingAttachmentPath = state.openingAttachmentPath
-    val headerPx = with(density) { headerHeight.roundToPx() }
     val isLoadingOlder = state.isLoadingOlder
+    val canPage by rememberUpdatedState(!state.isLoadingOlder && !state.isLoading)
+    LaunchedEffect(listState, state.hasOlderMessages) {
+        if (!state.hasOlderMessages) return@LaunchedEffect
+        snapshotFlow {
+            val layout = listState.layoutInfo
+            val oldestVisible = layout.visibleItemsInfo.lastOrNull()
+            if (canPage && layout.viewportSize.height > 0 && oldestVisible != null) {
+                layout.totalItemsCount to (oldestVisible.index >= layout.totalItemsCount - 3)
+            } else {
+                null
+            }
+        }.filterNotNull()
+            .distinctUntilChanged()
+            .collect { (_, nearTop) ->
+                if (nearTop && canPage) viewModel.loadOlderMessages()
+            }
+    }
     CompositionLocalProvider(LocalDensity provides chatDensity) {
         if (rows.isEmpty() && pendingClarify == null && specialistFooter == null && !state.isLoading &&
             !state.hasOlderMessages
@@ -191,15 +230,15 @@ internal fun MainChatTimeline(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize().testTag("main_chat_timeline"),
-            contentPadding = PaddingValues(top = headerHeight + 8.dp, bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            reverseLayout = true,
+            contentPadding = PaddingValues(top = topPadding, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.Bottom),
         ) {
-            if (isLoadingOlder) {
-                item(key = "loading-older") {
-                    Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(Modifier.size(24.dp))
-                    }
-                }
+            if (pendingClarify != null) {
+                item(key = PENDING_CLARIFY_KEY) { MainChatClarification(pendingClarify, viewModel) }
+            }
+            if (specialistFooter != null) {
+                item(key = SPECIALIST_SETTINGS_KEY) { specialistFooter() }
             }
             items(rows, key = { it.key }, contentType = { it.message?.role }) { row ->
                 val message =
@@ -213,7 +252,7 @@ internal fun MainChatTimeline(
                 val currentMatch = message != null && search.currentMatchId == message.id
                 when {
                     message == null -> {
-                        MainChatWaitingBubble(listState, headerPx)
+                        MainChatWaitingBubble(listState)
                     }
 
                     message.id == SPECIALIST_SETUP_REVIEW -> {
@@ -285,11 +324,12 @@ internal fun MainChatTimeline(
                     }
                 }
             }
-            if (specialistFooter != null) {
-                item(key = "specialist-settings") { specialistFooter() }
-            }
-            if (pendingClarify != null) {
-                item(key = "clarify_bubble") { MainChatClarification(pendingClarify, viewModel) }
+            if (isLoadingOlder) {
+                item(key = "loading-older") {
+                    Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(Modifier.size(24.dp))
+                    }
+                }
             }
         }
     }
@@ -309,17 +349,14 @@ private fun MainChatClarification(
 }
 
 @Composable
-private fun MainChatWaitingBubble(
-    listState: LazyListState,
-    headerPx: Int,
-) {
-    val visible by remember(listState, headerPx) {
+private fun MainChatWaitingBubble(listState: LazyListState) {
+    val visible by remember(listState) {
         derivedStateOf(structuralEqualityPolicy()) {
             val layout = listState.layoutInfo
             layout.visibleItemsInfo.any {
                 it.key == MAIN_CHAT_WAITING_KEY &&
-                    it.offset + it.size > layout.viewportStartOffset + headerPx &&
-                    it.offset < layout.viewportEndOffset
+                    it.offset + it.size > layout.viewportStartOffset &&
+                    it.offset < layout.viewportEndOffset - layout.afterContentPadding
             }
         }
     }

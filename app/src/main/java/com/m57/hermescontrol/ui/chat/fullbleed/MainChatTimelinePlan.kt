@@ -40,6 +40,7 @@ internal fun ChatMessage.isMainChatSearchable(): Boolean =
 
 /**
  * Use the canonical turn planner to align picks from the transcript with their user prompts.
+ * Build turns in reading order, then return newest-first lazy indices for the reversed column.
  * The live slot carries identity only. The visible lazy item reads the latest text itself.
  */
 internal fun planMainChatTimeline(
@@ -132,5 +133,5 @@ internal fun planMainChatTimeline(
             if (waitingAfter == index) add(MainChatRow(MAIN_CHAT_WAITING_KEY))
         }
         if (waitingAfter == -1) add(MainChatRow(MAIN_CHAT_WAITING_KEY))
-    }
+    }.asReversed()
 }

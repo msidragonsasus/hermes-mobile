@@ -40,11 +40,11 @@ class MainChatTimelinePlanTest {
     fun waitingAndLiveTextRemainUnderTheActivePrompt() {
         val transcript = listOf(requestA, requestB)
         val waiting = planMainChatTimeline(transcript, null, ledger, waitingForFirstText = true)
-        assertEquals(listOf("user-A", MAIN_CHAT_WAITING_KEY, "user-B"), waiting.map { it.key })
+        assertEquals(listOf("user-B", MAIN_CHAT_WAITING_KEY, "user-A"), waiting.map { it.key })
 
         val slot = partial.mainChatStreamingSlot()
         val live = planMainChatTimeline(transcript, slot, ledger, waitingForFirstText = false)
-        assertEquals(listOf("user-A", "prose-reply-A", "user-B"), live.map { it.key })
+        assertEquals(listOf("user-B", "prose-reply-A", "user-A"), live.map { it.key })
         assertTrue(live[1].live)
         assertEquals("", live[1].message?.content)
         assertEquals(
@@ -92,8 +92,8 @@ class MainChatTimelinePlanTest {
                 showsLivePreview = true,
             )
 
-        assertEquals(listOf("user-A", "sys-approval", "prose-reply-A", "user-B"), rows.map { it.key })
-        assertTrue(rows[2].live)
+        assertEquals(listOf("user-B", "prose-reply-A", "sys-approval", "user-A"), rows.map { it.key })
+        assertTrue(rows[1].live)
     }
 
     @Test
@@ -105,8 +105,8 @@ class MainChatTimelinePlanTest {
 
         val rows = planMainChatTimeline(listOf(requestA, acknowledgement, other, completion), null, ledger, false)
 
-        assertEquals(listOf("user-A", "brainstorm-complete"), rows.map { it.key })
-        assertEquals("brainstorm-1", rows.last().brainstorm?.id)
+        assertEquals(listOf("brainstorm-complete", "user-A"), rows.map { it.key })
+        assertEquals("brainstorm-1", rows.first().brainstorm?.id)
     }
 
     @Test
@@ -141,16 +141,29 @@ class MainChatTimelinePlanTest {
 
         assertEquals(
             listOf(
-                "prose-specialist:hello",
-                "sys-$SPECIALIST_SETUP_REVIEW",
-                "user-A",
-                "sys-clarify",
-                MAIN_CHAT_WAITING_KEY,
                 "user-B",
+                MAIN_CHAT_WAITING_KEY,
+                "sys-clarify",
+                "user-A",
+                "sys-$SPECIALIST_SETUP_REVIEW",
+                "prose-specialist:hello",
             ),
             rows.map { it.key },
         )
         assertEquals(clarify, rows.first { it.key == "sys-clarify" }.message)
+    }
+
+    @Test
+    fun olderPagesAppendWithoutChangingTheExistingLazyKeysOrIndices() {
+        val older = requestA.copy(id = "older")
+        val answer = partial.copy(isStreaming = false)
+        val current = listOf(requestA, answer, requestB)
+
+        val rows = planMainChatTimeline(current, null, ResponseLedger(), false)
+        val paged = planMainChatTimeline(listOf(older) + current, null, ResponseLedger(), false)
+
+        assertEquals(listOf("user-B", "prose-reply-A", "user-A"), rows.map { it.key })
+        assertEquals(rows.map { it.key } + "user-older", paged.map { it.key })
     }
 
     @Test

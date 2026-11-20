@@ -5,16 +5,11 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -23,9 +18,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.ws.ConnectionStatus
-import com.m57.hermescontrol.ui.chat.ChatMessage
 import com.m57.hermescontrol.ui.chat.ChatViewModel
-import com.m57.hermescontrol.ui.chat.ClarifyUi
 import com.m57.hermescontrol.ui.chat.SecretPromptUi
 import com.m57.hermescontrol.ui.chat.SudoPromptUi
 import com.m57.hermescontrol.vault.VaultPromptDialog
@@ -35,17 +28,13 @@ import com.m57.hermescontrol.vault.VaultPromptUi
 fun ChatLifecycleEffects(
     sessionId: String?,
     connectionStatus: ConnectionStatus,
-    currentSessionId: String?,
-    messages: List<ChatMessage>,
     errorMessage: String?,
     backgroundCompleteMessage: String?,
     openError: String?,
-    clarifyRequest: ClarifyUi?,
     sudoPrompt: SudoPromptUi?,
     secretPrompt: SecretPromptUi?,
     vaultPrompt: VaultPromptUi?,
-    listState: LazyListState,
-    scrollController: ChatScrollController,
+    onOpenLatest: (String?) -> Unit,
     snackbarHostState: SnackbarHostState,
     viewModel: ChatViewModel,
 ) {
@@ -66,16 +55,7 @@ fun ChatLifecycleEffects(
             viewModel.showMainConversation()
         }
         if (request?.scrollToBottom == true) {
-            scrollController.jumpToBottom(animated = false)
-        }
-    }
-
-    // A new session opens at the latest message. Re-entering a saved session restores its reader position.
-    var positionedSessionId by rememberSaveable { mutableStateOf<String?>(null) }
-    LaunchedEffect(currentSessionId) {
-        if (currentSessionId != null && currentSessionId != positionedSessionId) {
-            positionedSessionId = currentSessionId
-            scrollController.jumpToBottom(animated = false)
+            onOpenLatest(target)
         }
     }
 

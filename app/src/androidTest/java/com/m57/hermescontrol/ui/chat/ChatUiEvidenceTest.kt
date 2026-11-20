@@ -77,6 +77,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import java.io.File
@@ -240,6 +241,8 @@ class ChatUiEvidenceTest {
         every { model.actionProgress } returns ActionProgressController(CoroutineScope(Dispatchers.Main))
         compose.setContent { JapaneseTheme { ChatScreen(viewModel = model, onOpenDrawer = {}) } }
         compose.onNodeWithTag(MAIN_CHAT_WAITING_KEY).assertIsDisplayed()
+        val latestFab = compose.onNodeWithContentDescription("最新のメッセージへ移動")
+        latestFab.assertDoesNotExist()
 
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val packageName = instrumentation.targetContext.packageName
@@ -258,6 +261,18 @@ class ChatUiEvidenceTest {
         val wallBefore = SystemClock.elapsedRealtime()
         val reply = ChatMessage(id = "stream", role = MessageRole.ASSISTANT, content = "Streaming", isStreaming = true)
         var text = reply.content
+        compose.runOnIdle {
+            streaming.value = StreamingState(streamingMessage = reply, isWritingText = true)
+        }
+        val firstReply =
+            compose
+                .onNodeWithText(text)
+                .assertIsDisplayed()
+                .fetchSemanticsNode()
+                .boundsInRoot
+        val prompt = compose.onNodeWithText("Current prompt").fetchSemanticsNode().boundsInRoot
+        assertTrue(prompt.bottom <= firstReply.top)
+
         compose.mainClock.autoAdvance = false
         try {
             repeat(120) {
@@ -270,7 +285,14 @@ class ChatUiEvidenceTest {
         } finally {
             compose.mainClock.autoAdvance = true
         }
-        compose.onNodeWithText(text).assertIsDisplayed()
+        val grownReply =
+            compose
+                .onNodeWithText(text)
+                .assertIsDisplayed()
+                .fetchSemanticsNode()
+                .boundsInRoot
+        assertEquals(firstReply.bottom, grownReply.bottom, 1f)
+        latestFab.assertDoesNotExist()
         compose.onNodeWithTag(MAIN_CHAT_WAITING_KEY).assertDoesNotExist()
         val elapsed = SystemClock.elapsedRealtime() - wallBefore
         val cpuNanos = compose.runOnIdle { Debug.threadCpuTimeNanos() } - cpuBefore
@@ -279,6 +301,19 @@ class ChatUiEvidenceTest {
             "historyRows=501 updates=120 elapsedMs=$elapsed mainThreadCpuNs=$cpuNanos\n" +
                 "javaHeapUsedBefore=$heapBefore javaHeapUsedAfter=$heapAfter\n" + graphicsStats(),
         )
+
+        compose.onNodeWithTag("main_chat_timeline").performScrollToIndex(12)
+        val anchor = compose.onNodeWithText("Previous message 489")
+        val beforeGrowth = anchor.assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        latestFab.assertIsDisplayed()
+        text += " more streaming output".repeat(80)
+        compose.runOnIdle {
+            streaming.value = StreamingState(streamingMessage = reply.copy(content = text), isWritingText = true)
+        }
+        assertEquals(beforeGrowth, anchor.assertIsDisplayed().fetchSemanticsNode().boundsInRoot)
+        latestFab.performClick()
+        compose.onNodeWithText(text).assertIsDisplayed()
+        latestFab.assertDoesNotExist()
     }
 
     @Test
@@ -387,10 +422,15 @@ class ChatUiEvidenceTest {
             mockk { every { state } returns MutableStateFlow(SpecialistChatState()) }
         every { model.uiState } returns fixture
         every { model.streamingState } returns MutableStateFlow(StreamingState())
-        every { model.searchState } returns ChatSearchState()
+        val search = ChatSearchState()
+        every { model.searchState } returns search
         every { model.actionProgress } returns ActionProgressController(CoroutineScope(Dispatchers.Main))
         every { model.loadOlderMessages() } answers { fixture.value = fixture.value.copy(isLoadingOlder = true) }
         val inChat = mutableStateOf(true)
+        val latest = compose.onNodeWithText("Transcript message 60", useUnmergedTree = true)
+        val latestFab = compose.onNodeWithContentDescription("最新のメッセージへ移動")
+        // Read the initial layout before the Compose clock can run a post-layout snap.
+        compose.mainClock.autoAdvance = false
         compose.setContent {
             JapaneseTheme {
                 val stateHolder = rememberSaveableStateHolder()
@@ -402,8 +442,13 @@ class ChatUiEvidenceTest {
             }
         }
 
-        val latest = compose.onNodeWithText("Transcript message 60", useUnmergedTree = true)
-        latest.assertIsDisplayed()
+        try {
+            latest.assertIsDisplayed()
+            compose.onNodeWithText("Transcript message 1", useUnmergedTree = true).assertDoesNotExist()
+        } finally {
+            compose.mainClock.autoAdvance = true
+        }
+        latestFab.assertDoesNotExist()
         compose.runOnIdle { inChat.value = false }
         latest.assertDoesNotExist()
         val updatedMessages =
@@ -415,7 +460,8 @@ class ChatUiEvidenceTest {
         compose.onNodeWithText("Transcript message 61", useUnmergedTree = true).assertIsDisplayed()
         verify(exactly = 0) { model.loadOlderMessages() }
 
-        compose.onNodeWithTag("main_chat_timeline").performScrollToIndex(2)
+        val timeline = compose.onNodeWithTag("main_chat_timeline")
+        timeline.performScrollToIndex(58)
         val anchor = compose.onNodeWithText("Transcript message 3", useUnmergedTree = true)
 
         fun anchorTop(): Float =
@@ -438,10 +484,44 @@ class ChatUiEvidenceTest {
                 )
         }
         assertEquals(beforePaging, anchorTop(), 1f)
+        val afterPaging = fixture.value
+        val latestArrival = ChatMessage(id = "fixture-62", role = MessageRole.USER, content = "Transcript message 62")
         compose.runOnIdle { inChat.value = false }
         anchor.assertDoesNotExist()
-        compose.runOnIdle { inChat.value = true }
+        compose.runOnIdle {
+            fixture.value = afterPaging.copy(messages = afterPaging.messages + latestArrival)
+            inChat.value = true
+        }
         assertEquals(beforePaging, anchorTop(), 1f)
+        latestFab.assertIsDisplayed()
+
+        val otherMessages = messages.map { it.copy(content = "Other ${it.content}") }
+        compose.runOnIdle {
+            fixture.value = afterPaging.copy(currentSessionId = "another-session", messages = otherMessages)
+        }
+        compose.onNodeWithText("Other Transcript message 60").assertIsDisplayed()
+        latestFab.assertDoesNotExist()
+        compose.runOnIdle { fixture.value = afterPaging.copy(messages = afterPaging.messages + latestArrival) }
+        assertEquals(beforePaging, anchorTop(), 1f)
+
+        latestFab.performClick()
+        compose.onNodeWithText(latestArrival.content).assertIsDisplayed()
+        latestFab.assertDoesNotExist()
+        val newMessage = latestArrival.copy(id = "fixture-63", content = "Transcript message 63")
+        compose.runOnIdle { fixture.value = fixture.value.copy(messages = fixture.value.messages + newMessage) }
+        compose.onNodeWithText(newMessage.content).assertIsDisplayed()
+        latestFab.assertDoesNotExist()
+
+        compose.runOnIdle {
+            search.isActive = true
+            search.query = "message 20"
+            search.matchOffsets = listOf(11)
+            search.currentIndex = 0
+            search.matchedIds = setOf("fixture-20")
+            search.currentMatchId = "fixture-20"
+        }
+        compose.onNodeWithText("Transcript message 20", useUnmergedTree = true).assertIsDisplayed()
+        latestFab.assertIsDisplayed()
     }
 
     @Test
@@ -530,6 +610,7 @@ class ChatUiEvidenceTest {
                         rosterScope = BotConversations.serverScope(),
                     ),
                 )
+            val inChat = mutableStateOf(true)
             val rosterFactory =
                 object : ViewModelProvider.Factory {
                     override fun <T : ViewModel> create(modelClass: Class<T>): T = modelClass.cast(roster)!!
@@ -539,7 +620,16 @@ class ChatUiEvidenceTest {
                     checkNotNull(LocalViewModelStoreOwner.current),
                     rosterFactory,
                 )[BotsViewModel::class.java]
-                JapaneseTheme { ChatScreen(viewModel = model, onOpenDrawer = {}) }
+                JapaneseTheme {
+                    val stateHolder = rememberSaveableStateHolder()
+                    if (inChat.value) {
+                        stateHolder.SaveableStateProvider(
+                            "specialist",
+                        ) { ChatScreen(viewModel = model, onOpenDrawer = {}) }
+                    } else {
+                        Text("Other screen")
+                    }
+                }
             }
 
             compose.onNodeWithTag("menu_button", useUnmergedTree = true).assertIsDisplayed()
@@ -592,6 +682,34 @@ class ChatUiEvidenceTest {
             compose.onNodeWithTag(MAIN_CHAT_WAITING_KEY).assertIsDisplayed()
             compose.onNodeWithText("Hidden bot tool", substring = true).assertDoesNotExist()
             compose.onNodeWithText("Hidden reasoning", substring = true).assertDoesNotExist()
+
+            compose.runOnIdle { inChat.value = false }
+            compose.onNodeWithText("Other screen").assertIsDisplayed()
+            val history =
+                List(60) { index ->
+                    ChatMessage(id = "bot-history-$index", role = MessageRole.USER, content = "Bot history $index")
+                }
+            compose.runOnIdle { fixture.value = fixture.value.copy(messages = history, isAgentTyping = false) }
+            compose.mainClock.autoAdvance = false
+            try {
+                compose.runOnUiThread { inChat.value = true }
+                compose.mainClock.advanceTimeByFrame()
+                compose.mainClock.advanceTimeByFrame()
+                compose.onNodeWithText("Bot history 59").assertIsDisplayed()
+                compose.onNodeWithText("Bot history 0").assertDoesNotExist()
+            } finally {
+                compose.mainClock.autoAdvance = true
+            }
+            val timeline = compose.onNodeWithTag("main_chat_timeline")
+            timeline.performScrollToIndex(20)
+            val anchor = compose.onNodeWithText("Bot history 39")
+            val position = anchor.assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            compose.runOnIdle { inChat.value = false }
+            anchor.assertDoesNotExist()
+            compose.runOnIdle { inChat.value = true }
+            assertEquals(position, anchor.assertIsDisplayed().fetchSemanticsNode().boundsInRoot)
+            compose.onNodeWithContentDescription("最新のメッセージへ移動").performClick()
+            compose.onNodeWithText("Bot history 59").assertIsDisplayed()
         } finally {
             unmockkObject(AuthManager, NavigationController)
         }
