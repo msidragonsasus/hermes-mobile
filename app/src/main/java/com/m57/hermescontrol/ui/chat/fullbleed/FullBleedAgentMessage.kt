@@ -92,7 +92,6 @@ internal fun FullBleedAgentMessage(
     MessageActionHost(
         message = actionMessage,
         modifier = modifier,
-        directSelection = personalStyle,
         selectable = !message.isStreaming && message.content.isNotBlank(),
     ) {
         Column(

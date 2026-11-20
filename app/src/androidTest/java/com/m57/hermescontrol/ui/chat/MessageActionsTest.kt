@@ -19,6 +19,8 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.click
@@ -83,14 +85,58 @@ class MessageActionsTest {
         tapLink("PDF")
         compose.runOnIdle { assertEquals("gateway:/srv/報告 書.pdf", opened?.uri) }
         tapLink("公式")
+        compose.runOnIdle {
+            assertEquals("https://example.com", external)
+            external = null
+        }
+        touchLink("公式", hold = true)
+        compose.onNodeWithTag("message_action_menu").assertIsDisplayed()
+        pressBack()
+        compose.runOnIdle { assertEquals(null, external) }
+        tapLink("公式")
         compose.runOnIdle { assertEquals("https://example.com", external) }
     }
 
-    private fun tapLink(label: String) {
+    @Test
+    fun longPressInsideNativeContentOpensTheMessageMenu() {
+        val nativeMessage =
+            agent.copy(
+                content =
+                    """
+                    ```hermes-ui-v2
+                    {"v":1,"id":"plan","type":"savings","title":"積立シミュレーター"}
+                    ```
+                    """.trimIndent(),
+            )
+        compose.setContent {
+            HermesControlTheme {
+                FullBleedAgentMessage(
+                    message = nativeMessage,
+                    showTurnHeader = false,
+                    isDarkTheme = true,
+                    showTimestamp = false,
+                    personalStyle = true,
+                )
+            }
+        }
+        compose.onNodeWithText("積立シミュレーター").performTouchInput { longClick() }
+        compose.onNodeWithTag("message_action_menu").assertIsDisplayed()
+        compose.onNodeWithTag("message_action_copy").assertIsDisplayed()
+    }
+
+    private fun tapLink(label: String) = touchLink(label, hold = false)
+
+    private fun touchLink(
+        label: String,
+        hold: Boolean,
+    ) {
         val layouts = mutableListOf<TextLayoutResult>()
         val node = compose.onNodeWithText(label)
         node.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
-        node.performTouchInput { click(layouts.single().getBoundingBox(0).center) }
+        node.performTouchInput {
+            val link = layouts.single().getBoundingBox(0).center
+            if (hold) longClick(link) else click(link)
+        }
     }
 
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
@@ -102,7 +148,10 @@ class MessageActionsTest {
     private var sends = 0
     private var childClicks = 0
 
-    private fun show(streaming: Boolean = false) {
+    private fun show(
+        streaming: Boolean = false,
+        personalStyle: Boolean = false,
+    ) {
         compose.setContent {
             val density = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(density.density, scale.value)) {
@@ -128,14 +177,14 @@ class MessageActionsTest {
                                 )
                             },
                         ) {
-                            ChatBubble(user, showTimestamp = false)
+                            ChatBubble(user, showTimestamp = false, personalStyle = personalStyle)
                             FullBleedAgentMessage(
                                 agent.copy(isStreaming = streaming),
                                 showTurnHeader = true,
                                 showTimestamp = false,
                                 isDarkTheme = theme.value == ThemePreference.DARK,
                             )
-                            Spacer(Modifier.weight(1f))
+                            Spacer(Modifier.fillMaxWidth().weight(1f).testTag("transcript_space"))
                         }
                     }
                 }
@@ -216,7 +265,7 @@ class MessageActionsTest {
     }
 
     @Test
-    fun selectionStaysInTheSameMessageAndBackClearsItWithoutChangingDraft() {
+    fun selectionStaysInTheSameMessageAndAnOutsideTapClearsItWithoutChangingDraft() {
         show()
         val before = compose.onNodeWithText(agent.content).fetchSemanticsNode().boundsInRoot
         open()
@@ -231,9 +280,27 @@ class MessageActionsTest {
                 .boundsInRoot
         assertEquals(before, after)
         screenshot("selection")
-        pressBack()
+        compose.onNodeWithTag("transcript_space").performTouchInput { click() }
         compose.onNodeWithTag("message_selection_text").assertDoesNotExist()
         compose.onNodeWithTag("chat_input").assertTextEquals("書きかけの相談")
+    }
+
+    @Test
+    fun userBubbleSelectionShowsBothHandlesInLightAndDarkThemes() {
+        show(personalStyle = true)
+        val handles =
+            SemanticsMatcher("Compose selection handle") { node ->
+                node.config.any { it.key.name == "SelectionHandleInfo" }
+            }
+        for ((appearance, name) in listOf(ThemePreference.DARK to "dark", ThemePreference.LIGHT to "light")) {
+            compose.runOnIdle { theme.value = appearance }
+            open("chat_bubble_user")
+            compose.onNodeWithTag("message_action_select").performTouchInput { click() }
+            compose.onAllNodes(handles, useUnmergedTree = true).assertCountEquals(2)
+            screenshot("user-selection-$name")
+            compose.onNodeWithTag("transcript_space").performTouchInput { click() }
+            compose.onNodeWithTag("message_selection_text").assertDoesNotExist()
+        }
     }
 
     @Test

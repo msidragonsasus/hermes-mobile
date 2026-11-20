@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Build
@@ -125,7 +126,14 @@ fun ChatBubble(
             contentAlignment = Alignment.CenterEnd,
         ) {
             val maxBubbleWidth = maxWidth * if (personalStyle) 0.88f else 0.80f
-            MessageActionHost(message = message, directSelection = personalStyle, actionsAtStart = true) {
+            MessageActionHost(
+                message = message,
+                selectionColors =
+                    TextSelectionColors(
+                        handleColor = textColor,
+                        backgroundColor = textColor.copy(alpha = 0.35f),
+                    ),
+            ) {
                 CompositionLocalProvider(LocalLayoutDirection provides direction) {
                     Column(
                         Modifier.widthIn(max = maxBubbleWidth).testTag("chat_bubble_user"),

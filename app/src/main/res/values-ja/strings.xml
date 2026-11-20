@@ -1261,7 +1261,7 @@
     <string name="worker_approval_source_label">定期「%1$s」から</string>
     <string name="chat_message_actions">メッセージの操作</string>
     <string name="chat_reply_cancel">引用返信を取り消す</string>
-    <string name="chat_message_select">選択</string>
+    <string name="chat_message_select">テキストを選択</string>
     <string name="chat_message_close_selection">選択を閉じる</string>
     <string name="chat_attach_remove_named">添付「%1$s」を削除</string>
     <string name="gif_pause">GIFを一時停止</string>

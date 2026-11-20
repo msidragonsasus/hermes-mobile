@@ -37,9 +37,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasAnyAncestor
@@ -60,6 +63,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -731,11 +735,11 @@ class ChatUiEvidenceTest {
     }
 
     @Test
-    fun mainChatLongPressShowsNativeHandlesAndCopiesOnlyTheSelectedWord() =
+    fun mainChatSelectTextShowsNativeHandlesAndCopiesOnlyTheSelectedWord() =
         withTouchChat { _, _, _ -> assertNativeMessageSelection() }
 
     @Test
-    fun setupChatLongPressShowsNativeHandlesAndCopiesOnlyTheSelectedWord() =
+    fun setupChatSelectTextShowsNativeHandlesAndCopiesOnlyTheSelectedWord() =
         withTouchChat(setupChat = true) { _, _, _ -> assertNativeMessageSelection() }
 
     private fun assertNativeMessageSelection() {
@@ -743,7 +747,8 @@ class ChatUiEvidenceTest {
         val layouts = mutableListOf<TextLayoutResult>()
         text.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
         val before = text.fetchSemanticsNode().boundsInRoot
-        text.performTouchInput { longClick(layouts.single().getBoundingBox(13).center) }
+        openMessageActions(text)
+        compose.onNodeWithTag("message_action_select").performTouchInput { click() }
         val handles =
             SemanticsMatcher("Compose selection handle") { node ->
                 node.config.any { it.key.name == "SelectionHandleInfo" }
@@ -751,6 +756,8 @@ class ChatUiEvidenceTest {
         compose.onAllNodes(handles, useUnmergedTree = true).assertCountEquals(2)
         assertEquals(before, text.fetchSemanticsNode().boundsInRoot)
         compose.onNodeWithTag("message_action_menu").assertDoesNotExist()
+        text.performTouchInput { longClick(layouts.single().getBoundingBox(13).center) }
+        compose.onAllNodes(handles, useUnmergedTree = true).assertCountEquals(2)
 
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val automation = instrumentation.uiAutomation
@@ -759,20 +766,20 @@ class ChatUiEvidenceTest {
         try {
             service.flags = originalFlags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
             automation.serviceInfo = service
-            val copy = compose.activity.getString(android.R.string.copy)
+            val copyLabels = listOf(compose.activity.getString(android.R.string.copy), "コピー").distinct()
             var copyBounds: Rect? = null
             compose.waitUntil(5_000) {
                 copyBounds =
                     automation.windows
                         .asSequence()
                         .flatMap {
-                            it.root
-                                ?.findAccessibilityNodeInfosByText(copy)
-                                .orEmpty()
-                                .asSequence()
+                            val root = it.root
+                            copyLabels.asSequence().flatMap { label ->
+                                root?.findAccessibilityNodeInfosByText(label).orEmpty().asSequence()
+                            }
                         }.firstOrNull {
                             it.isVisibleToUser &&
-                                (it.text?.toString() == copy || it.contentDescription?.toString() == copy)
+                                (it.text?.toString() in copyLabels || it.contentDescription?.toString() in copyLabels)
                         }?.let { node -> Rect().also(node::getBoundsInScreen) }
                 copyBounds != null
             }
@@ -814,6 +821,129 @@ class ChatUiEvidenceTest {
     }
 
     @Test
+    fun mainChatOpensActionsInTheMiddleAndAtTheEndOfAFinalizedLongMarkdownReply() =
+        assertLongMarkdownMessageActions(specialist = false)
+
+    @Test
+    fun botChatOpensActionsInTheMiddleAndAtTheEndOfAFinalizedLongMarkdownReply() =
+        assertLongMarkdownMessageActions(specialist = true)
+
+    private fun assertLongMarkdownMessageActions(specialist: Boolean) {
+        val streaming = MutableStateFlow(StreamingState())
+        withTouchChat(specialist = specialist, streaming = streaming) { _, fixture, _ ->
+            val paragraphs =
+                List(24) { index ->
+                    "Paragraph ${index + 1}: **Bold detail** for a multi-paragraph answer with enough text to wrap."
+                }
+            val answer =
+                ChatMessage(id = "long-answer", role = MessageRole.ASSISTANT, content = paragraphs.joinToString("\n\n"))
+            val timeline = compose.onNodeWithTag("main_chat_timeline")
+            val liveText = "Live reply preview"
+            compose.runOnIdle {
+                streaming.value =
+                    StreamingState(
+                        streamingMessage = answer.copy(content = liveText, isStreaming = true),
+                        isWritingText = true,
+                    )
+            }
+            compose.onNodeWithText(liveText).performTouchInput { longClick() }
+            compose.onNodeWithTag("message_action_menu").assertDoesNotExist()
+            compose.runOnIdle {
+                // A visible history reply can settle before there is a canonical whole-response projection.
+                fixture.value = fixture.value.copy(messages = fixture.value.messages.dropLast(1) + answer)
+                streaming.value = StreamingState()
+            }
+
+            fun paragraph(number: Int) =
+                compose.onNodeWithText("Paragraph $number:", substring = true, useUnmergedTree = true)
+
+            paragraph(1).assertIsNotDisplayed()
+            val end = paragraph(24).assertIsDisplayed()
+            val textLayouts = mutableListOf<TextLayoutResult>()
+            end.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(textLayouts) }
+            assertTrue(
+                textLayouts
+                    .single()
+                    .layoutInput.text.spanStyles
+                    .any { it.item.fontWeight == FontWeight.Bold },
+            )
+            openMessageActions(end)
+            compose.onNodeWithTag("message_action_copy").performTouchInput { click() }
+            compose.runOnIdle {
+                val clipboard = compose.activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                assertEquals(
+                    answer.content,
+                    clipboard.primaryClip
+                        ?.getItemAt(0)
+                        ?.text
+                        ?.toString(),
+                )
+            }
+            compose.onNodeWithTag("message_action_menu").assertDoesNotExist()
+
+            val middle = paragraph(12)
+            val viewport = timeline.fetchSemanticsNode().boundsInRoot
+            val pressBand = (viewport.top + viewport.height * 0.35f)..(viewport.top + viewport.height * 0.73f)
+
+            // The hero header overlays the upper part of the timeline, including partly visible nodes.
+            fun middleY() =
+                if (middle.isDisplayed()) {
+                    middle
+                        .fetchSemanticsNode()
+                        .boundsInRoot.center.y
+                } else {
+                    null
+                }
+            repeat(12) {
+                val y = middleY()
+                if (y == null || y < pressBand.start) {
+                    timeline.performTouchInput {
+                        swipeDown(
+                            startY = height * 0.36f,
+                            endY = height * 0.56f,
+                            durationMillis = 450,
+                        )
+                    }
+                } else if (y > pressBand.endInclusive) {
+                    timeline.performTouchInput {
+                        swipeUp(
+                            startY = height * 0.64f,
+                            endY = height * 0.44f,
+                            durationMillis = 450,
+                        )
+                    }
+                }
+            }
+            assertTrue(checkNotNull(middleY()) in pressBand)
+            openMessageActions(middle.assertIsDisplayed())
+            Espresso.pressBack()
+            compose.onNodeWithTag("message_action_menu").assertDoesNotExist()
+
+            fun scrollOffset() =
+                timeline.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+            val before = scrollOffset()
+            timeline.performTouchInput {
+                if (before == 0f) {
+                    swipeDown(startY = height * 0.35f, endY = height * 0.7f)
+                } else {
+                    swipeUp(startY = height * 0.7f, endY = height * 0.35f)
+                }
+            }
+            assertTrue("The timeline still scrolls after the message dialog closes", scrollOffset() != before)
+        }
+    }
+
+    private fun openMessageActions(message: SemanticsNodeInteraction) {
+        val actionButton =
+            SemanticsMatcher("per-message actions button") { node ->
+                node.config.getOrNull(SemanticsProperties.TestTag)?.startsWith("message_actions_") == true
+            }
+        compose.onAllNodes(actionButton, useUnmergedTree = true).assertCountEquals(0)
+        message.performTouchInput { longClick() }
+        compose.onNodeWithTag("message_action_menu").assertIsDisplayed()
+    }
+
+    @Test
     fun mainChatReplyPreviewCancelsCollapsesReopensAndSendsMarkdownQuote() =
         withTouchChat { model, _, _ ->
             val input = compose.onNodeWithTag("chat_input")
@@ -823,7 +953,7 @@ class ChatUiEvidenceTest {
             val collapsedHeight = composer.fetchSemanticsNode().boundsInRoot.height
 
             fun reply() {
-                compose.onNodeWithTag("message_actions_topic").performTouchInput { click() }
+                openMessageActions(compose.onNodeWithText(quote))
                 compose.onNodeWithTag("message_action_reply").performTouchInput { click() }
                 waitForChatTag("chat_reply_preview")
             }
@@ -893,7 +1023,7 @@ class ChatUiEvidenceTest {
     fun setupChatTouchReplySubmitsQuotedTextAndDisplaysTheSharedDots() =
         withTouchChat(setupChat = true) { _, _, controller ->
             compose.onNodeWithTag(MAIN_CHAT_WAITING_KEY).assertDoesNotExist()
-            compose.onNodeWithTag("message_actions_specialist:answer").performTouchInput { click() }
+            openMessageActions(compose.onNodeWithText("Select this exact word"))
             compose.onNodeWithTag("message_action_reply").performTouchInput { click() }
             waitForChatTag("chat_reply_preview")
             val input = compose.onNodeWithTag("chat_input")
@@ -917,6 +1047,7 @@ class ChatUiEvidenceTest {
     private fun withTouchChat(
         specialist: Boolean = false,
         setupChat: Boolean = false,
+        streaming: MutableStateFlow<StreamingState> = MutableStateFlow(StreamingState()),
         test: (ChatViewModel, MutableStateFlow<ChatUiState>, SpecialistChatController) -> Unit,
     ) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -990,7 +1121,7 @@ class ChatUiEvidenceTest {
         val model = mockk<ChatViewModel>(relaxed = true)
         every { model.specialistChat } returns controller
         every { model.uiState } returns fixture
-        every { model.streamingState } returns MutableStateFlow(StreamingState())
+        every { model.streamingState } returns streaming
         every { model.searchState } returns ChatSearchState()
         every { model.actionProgress } returns ActionProgressController(CoroutineScope(Dispatchers.Main))
         val roster = mockk<BotsViewModel>(relaxed = true)

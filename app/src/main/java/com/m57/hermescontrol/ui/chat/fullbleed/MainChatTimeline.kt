@@ -299,9 +299,7 @@ internal fun MainChatTimeline(
                                             message
                                         } else {
                                             message.copy(
-                                                id = row.reply?.responseId ?: message.id,
                                                 content = row.reply?.text ?: message.content,
-                                                isStreaming = row.reply == null,
                                             )
                                         },
                                     showTurnHeader = false,
