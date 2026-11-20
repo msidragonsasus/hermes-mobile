@@ -252,10 +252,12 @@ existing code. A Material import or a rounded rectangle does not prove complianc
   Rejected: a stack of identical 「不明（サーバーから未提供）」 rows, unlabeled ID dumps,
   disabled buttons on an expired request, and a permanently disabled 「修正」 button.
 
-- 2026-11-20: the default-profile chat uses a left menu and a centered avatar and
-  status pill that opens the status sheet. The right side stays empty. Its
-  timeline shows waiting dots before the first reply text and hides thinking
-  and tool execution rows. Approvals, clarifications and brainstorm cards
+- 2026-11-20: the default-profile and specialist chats share a left menu and a
+  centered avatar and status pill for the current bot. The pill opens the status
+  sheet, which also holds specialist settings, setup editing and the return to
+  the main chat. The right side stays empty. Both timelines show waiting dots
+  before the first reply text and hide thinking and tool execution rows.
+  Approvals, clarifications, brainstorm cards and specialist setup reviews
   remain inline. The shared Composer opens its controls while typing and
   collapses to one pill for an empty draft when the keyboard closes.
 

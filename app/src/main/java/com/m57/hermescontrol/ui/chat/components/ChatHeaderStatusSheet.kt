@@ -32,6 +32,9 @@ import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.model.BotAvatarMeta
 import com.m57.hermescontrol.ui.common.BotAvatar
+import com.m57.hermescontrol.ui.common.SettingsGroup
+import com.m57.hermescontrol.ui.common.SettingsMenuItem
+import com.m57.hermescontrol.ui.common.SettingsRow
 
 /**
  * Quick session inspector opened from the floating center header pill:
@@ -56,6 +59,8 @@ internal fun ChatHeaderStatusSheet(
     onSelectReasoning: (String?) -> Unit,
     onOpenContextDetails: () -> Unit,
     onDismiss: () -> Unit,
+    specialistActions: List<SettingsMenuItem> = emptyList(),
+    workProgress: (@Composable () -> Unit)? = null,
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -90,6 +95,23 @@ internal fun ChatHeaderStatusSheet(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+
+            SettingsGroup(modifier = Modifier.testTag("header_sheet_specialist_actions")) {
+                specialistActions.forEach { action ->
+                    row {
+                        SettingsRow(
+                            title = action.label,
+                            enabled = action.enabled,
+                            chevron = true,
+                            onClick = {
+                                onDismiss()
+                                action.onClick()
+                            },
+                        )
+                    }
+                }
+            }
+            workProgress?.invoke()
 
             Surface(
                 onClick = {

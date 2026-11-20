@@ -31,20 +31,36 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.unit.Density
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.test.espresso.Espresso
 import androidx.test.platform.app.InstrumentationRegistry
+import com.m57.hermescontrol.NavigationController
+import com.m57.hermescontrol.agents.BotConversations
+import com.m57.hermescontrol.agents.BotSettingsKey
+import com.m57.hermescontrol.data.local.AuthManager
+import com.m57.hermescontrol.data.model.ProfileInfo
 import com.m57.hermescontrol.data.model.SessionInfo
+import com.m57.hermescontrol.data.model.SpecialistAppConnection
+import com.m57.hermescontrol.data.model.SpecialistCapabilitiesResponse
+import com.m57.hermescontrol.data.model.SpecialistSetupDraft
+import com.m57.hermescontrol.data.model.SpecialistSetupSnapshot
 import com.m57.hermescontrol.data.ws.ConnectionStatus
 import com.m57.hermescontrol.navigation.ShellTab
 import com.m57.hermescontrol.theme.HermesControlTheme
 import com.m57.hermescontrol.theme.ThemePreference
+import com.m57.hermescontrol.ui.bots.BotsUiState
+import com.m57.hermescontrol.ui.bots.BotsViewModel
 import com.m57.hermescontrol.ui.chat.components.ConversationMenuSheet
 import com.m57.hermescontrol.ui.chat.fullbleed.MAIN_CHAT_WAITING_KEY
 import com.m57.hermescontrol.ui.common.ActionProgressController
@@ -52,10 +68,14 @@ import com.m57.hermescontrol.ui.common.ShellBottomBar
 import com.m57.hermescontrol.ui.sessions.SessionsUiState
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
 import io.mockk.verify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -159,8 +179,15 @@ class ChatUiEvidenceTest {
         compose.waitUntil(5_000) { compose.onAllNodesWithTag("shell_tab_agent").fetchSemanticsNodes().isEmpty() }
         compose.onNodeWithTag("chat_header_pill").assertIsDisplayed()
         compose.onNodeWithTag("model_chip").assertIsDisplayed()
-        compose.onNodeWithTag("reasoning_chip").assertIsDisplayed()
         capture("08-main-chat-light-keyboard")
+        compose.onNodeWithTag("reasoning_chip").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("reasoning_panel").assertIsDisplayed()
+        listOf("Low", "Medium", "High", "Max").forEach { label ->
+            compose.onNodeWithTag("reasoning_level_${label.lowercase()}").assertTextEquals(label).assertIsDisplayed()
+        }
+        capture("09-main-chat-light-keyboard-reasoning")
+        compose.onNodeWithTag("reasoning_chip").performClick()
+        compose.onNodeWithTag("reasoning_panel").assertDoesNotExist()
         Espresso.pressBack()
         compose.waitUntil(5_000) { compose.onAllNodesWithTag("shell_tab_agent").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("model_chip").assertDoesNotExist()
@@ -415,6 +442,159 @@ class ChatUiEvidenceTest {
         anchor.assertDoesNotExist()
         compose.runOnIdle { inChat.value = true }
         assertEquals(beforePaging, anchorTop(), 1f)
+    }
+
+    @Test
+    fun specialistUsesSharedTimelineAndKeepsSetupAndBotSettings() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            instrumentation.uiAutomation.grantRuntimePermission(
+                instrumentation.targetContext.packageName,
+                Manifest.permission.POST_NOTIFICATIONS,
+            )
+        }
+        val profile = "research"
+        val botTitle = "Research bot"
+        val epoch = 20L
+        val scope = "synthetic-scope"
+        val sessionId = "research-session"
+        val setup =
+            SpecialistChatState(
+                target = SpecialistChatTarget(scope, epoch, profile),
+                sessionId = sessionId,
+                capabilities =
+                    SpecialistCapabilitiesResponse(
+                        setup_conversation = true,
+                        setup_apply = true,
+                        edit_conversation = true,
+                    ),
+                snapshot =
+                    SpecialistSetupSnapshot(
+                        name = profile,
+                        revision = 7,
+                        draft =
+                            SpecialistSetupDraft(
+                                "draft",
+                                apps = listOf(SpecialistAppConnection("app", "Evidence app", "read")),
+                            ),
+                    ),
+            )
+        val setupState = MutableStateFlow(setup)
+        val controller = mockk<SpecialistChatController>(relaxed = true)
+        every { controller.state } returns setupState
+        every { controller.setEditing(any()) } answers
+            { setupState.value = setupState.value.copy(editing = firstArg()) }
+        val fixture =
+            MutableStateFlow(
+                ChatUiState(
+                    currentSessionId = sessionId,
+                    canonicalBotChatId = sessionId,
+                    canonicalBotChatEpoch = epoch,
+                    connectionStatus = ConnectionStatus.CONNECTED,
+                ),
+            )
+        val model = mockk<ChatViewModel>(relaxed = true)
+        every { model.specialistChat } returns controller
+        every { model.uiState } returns fixture
+        every { model.streamingState } returns MutableStateFlow(StreamingState())
+        every { model.searchState } returns ChatSearchState()
+        every { model.actionProgress } returns ActionProgressController(CoroutineScope(Dispatchers.Main))
+        val roster = mockk<BotsViewModel>(relaxed = true)
+        every { roster.getCloseable<AutoCloseable>(any()) } returns null
+        mockkObject(AuthManager, NavigationController)
+        try {
+            every { AuthManager.activeProfileId } returns MutableStateFlow<String?>(profile)
+            every { AuthManager.connectionEpoch } returns MutableStateFlow(epoch)
+            every { AuthManager.uiPreferenceScope() } returns scope
+            every { NavigationController.navigateTo(any()) } returns Unit
+            every { roster.uiState } returns
+                MutableStateFlow(
+                    BotsUiState(
+                        profiles =
+                            listOf(
+                                ProfileInfo(
+                                    name = profile,
+                                    display_name = botTitle,
+                                    ui_meta =
+                                        mapOf(
+                                            "hermes-bots" to
+                                                JsonObject(
+                                                    mapOf(
+                                                        "avatar" to
+                                                            JsonObject(mapOf("icon" to JsonPrimitive("science"))),
+                                                    ),
+                                                ),
+                                        ),
+                                ),
+                            ),
+                        rosterScope = BotConversations.serverScope(),
+                    ),
+                )
+            val rosterFactory =
+                object : ViewModelProvider.Factory {
+                    override fun <T : ViewModel> create(modelClass: Class<T>): T = modelClass.cast(roster)!!
+                }
+            compose.setContent {
+                ViewModelProvider(
+                    checkNotNull(LocalViewModelStoreOwner.current),
+                    rosterFactory,
+                )[BotsViewModel::class.java]
+                JapaneseTheme { ChatScreen(viewModel = model, onOpenDrawer = {}) }
+            }
+
+            compose.onNodeWithTag("menu_button", useUnmergedTree = true).assertIsDisplayed()
+            compose.onNodeWithContentDescription(botTitle, useUnmergedTree = true).assertIsDisplayed()
+            compose.onNodeWithTag("main_chat_timeline").assertIsDisplayed()
+            compose.onNodeWithTag("specialist_chat_review").assertIsDisplayed()
+            compose.onNodeWithText("Evidence app", substring = true).assertIsDisplayed()
+            compose.onNodeWithText("この設定で確定").performClick()
+            verify(exactly = 1) { controller.confirm("draft", 7) }
+
+            compose.runOnIdle {
+                setupState.value =
+                    setup.copy(
+                        snapshot = setup.snapshot?.copy(setup_completed = true, activation = "applied", draft = null),
+                    )
+            }
+            compose.onNodeWithTag("specialist_chat_review").assertDoesNotExist()
+            compose.onNodeWithTag("specialist_chat_actions").assertDoesNotExist()
+            compose.onNodeWithTag("chat_header_pill").performClick()
+            compose.onNodeWithTag("header_sheet_specialist_actions").assertIsDisplayed()
+            compose.onNodeWithText("会話で設定を変更").performClick()
+            verify(exactly = 1) { controller.setEditing(true) }
+            compose.onNodeWithTag("specialist_chat_actions").assertIsDisplayed()
+            compose.onNodeWithText("通常の会話に戻る").performClick()
+            verify(exactly = 1) { controller.setEditing(false) }
+            compose.onNodeWithTag("specialist_chat_actions").assertDoesNotExist()
+            compose.onNodeWithTag("chat_header_pill").performClick()
+            compose.onNodeWithText("${botTitle}の設定").performClick()
+            verify(exactly = 1) { NavigationController.navigateTo(BotSettingsKey(profile)) }
+
+            compose.runOnIdle {
+                fixture.value =
+                    fixture.value.copy(
+                        messages =
+                            listOf(
+                                ChatMessage(id = "first", role = MessageRole.USER, content = "Bot prompt"),
+                                ChatMessage(id = "tool", role = MessageRole.TOOL, content = "Hidden bot tool"),
+                                ChatMessage(
+                                    id = "prose",
+                                    role = MessageRole.ASSISTANT,
+                                    content = "Bot answer",
+                                    reasoningText = "Hidden reasoning",
+                                ),
+                                ChatMessage(id = "next", role = MessageRole.USER, content = "Next bot prompt"),
+                            ),
+                        isAgentTyping = true,
+                    )
+            }
+            compose.onNodeWithText("Bot answer", useUnmergedTree = true).assertIsDisplayed()
+            compose.onNodeWithTag(MAIN_CHAT_WAITING_KEY).assertIsDisplayed()
+            compose.onNodeWithText("Hidden bot tool", substring = true).assertDoesNotExist()
+            compose.onNodeWithText("Hidden reasoning", substring = true).assertDoesNotExist()
+        } finally {
+            unmockkObject(AuthManager, NavigationController)
+        }
     }
 
     @Test

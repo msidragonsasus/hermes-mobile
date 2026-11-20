@@ -793,13 +793,7 @@ fun MainNavigation(sessionId: String? = null) {
                         shell?.let {
                             ShellBottomBar(
                                 selected = it.selectedTab,
-                                museMinimal =
-                                    currentScreen == ChatScreen &&
-                                        (
-                                            currentBotProfile?.takeIf { it.isNotBlank() }
-                                                ?: botsState?.activeProfileName?.takeIf { it.isNotBlank() }
-                                                ?: "default"
-                                        ) == "default",
+                                museMinimal = currentScreen == ChatScreen,
                             )
                         }
                     }

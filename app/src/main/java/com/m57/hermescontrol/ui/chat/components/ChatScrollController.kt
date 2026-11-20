@@ -36,9 +36,8 @@ import kotlinx.coroutines.launch
  * 5. **Unread indicator** — when follow is paused, [pendingCount] accumulates the
  *    number of tail updates; shows on the FAB. Tapping the FAB resumes following
  *    and clears the count.
- * 6. **Paging anchor preservation** — capture the first visible item + offset
- *    with [captureAnchor] before prepending older history, then
- *    [restoreAnchor] after insertion so the same content stays under the eye.
+ * 6. **Paging anchor preservation** — stable lazy row keys retain the first visible
+ *    item and its offset when the transcript inserts older rows.
  * 7. **Serialized scroll commands** — every scroll (send, FAB, session switch,
  *    search navigation, auto-follow) is launched from [scope] so animations
  *    don't compete.
@@ -189,12 +188,6 @@ class ChatScrollController(
 
     /** True when the FAB should be visible (not following bottom + content exists). */
     fun showFab(contentPresent: Boolean): Boolean = !isFollowingBottom && contentPresent
-
-    /**
-     * Current pixel scroll offset of the first visible item — captured before
-     * prepending older history so it can be restored after insertion.
-     */
-    fun captureAnchorOffset(): Int = listState.firstVisibleItemScrollOffset
 
     /**
      * Restore the viewport to a specific item (resolved by id in the caller, so

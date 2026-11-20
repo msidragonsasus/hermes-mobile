@@ -5,6 +5,7 @@ import com.m57.hermescontrol.ui.chat.ChatMessage
 import com.m57.hermescontrol.ui.chat.MessageRole
 import com.m57.hermescontrol.ui.chat.ResponseLedger
 import com.m57.hermescontrol.ui.chat.RichAnswerPrompt
+import com.m57.hermescontrol.ui.chat.SPECIALIST_SETUP_REVIEW
 import com.m57.hermescontrol.ui.chat.brainstorm.BrainstormParser
 import com.m57.hermescontrol.ui.chat.isApprovalTimelineRow
 import com.m57.hermescontrol.ui.chat.nativeUiKey
@@ -104,7 +105,9 @@ internal fun planMainChatTimeline(
                                 val message = entry.message
                                 if (message.role == MessageRole.USER && message.displayKind == "steer") {
                                     add(MainChatRow("user-${message.id}", message))
-                                } else if (message.isApprovalTimelineRow() || message.clarifyInfo != null) {
+                                } else if (message.id == SPECIALIST_SETUP_REVIEW || message.isApprovalTimelineRow() ||
+                                    message.clarifyInfo != null
+                                ) {
                                     add(MainChatRow("sys-${message.id}", message))
                                 }
                             }

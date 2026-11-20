@@ -136,7 +136,7 @@ class ChatComposerControlsTest {
         compose.onNodeWithTag("reasoning_chip").assertIsDisplayed().performClick()
         compose.onNodeWithTag("reasoning_panel").assertIsDisplayed()
         listOf("Low", "Medium", "High", "Max").forEach { label ->
-            compose.onNodeWithText(label).assertIsDisplayed()
+            compose.onNodeWithTag("reasoning_level_${label.lowercase()}").assertTextEquals(label).assertIsDisplayed()
         }
         compose.onNodeWithTag("reasoning_level_ultra").assertTextEquals("Ultra").performClick()
         assertEquals(1, models)

@@ -249,16 +249,17 @@ class ConversationLayoutTest {
     }
 
     @Test
-    fun keyboardAndIdleReasoningKeepDraftAndDockAccessible() {
+    fun keyboardAndReasoningKeepDraftAndDockAccessible() {
         compose.setContent { Fixture() }
         compose.runOnIdle { scroll.jumpToBottom() }
         compose.waitUntil(5000) { !list.canScrollForward }
+        compose.onNodeWithTag("reasoning_chip").assertDoesNotExist()
+        compose.onNodeWithTag("chat_input").performClick().performTextInput("送信しない下書き")
+        compose.waitUntil(10000) { imeBottom > 0 }
         compose.onNodeWithTag("reasoning_chip").assertIsDisplayed().performClick()
         compose.onNodeWithTag("reasoning_panel").assertIsDisplayed()
         compose.onNodeWithTag("reasoning_chip").performClick()
         compose.onNodeWithTag("reasoning_panel").assertDoesNotExist()
-        compose.onNodeWithTag("chat_input").performClick().performTextInput("送信しない下書き")
-        compose.waitUntil(10000) { imeBottom > 0 }
         compose.waitForIdle()
         assertNoOverlap()
         val bottom =

@@ -1,13 +1,20 @@
 package com.m57.hermescontrol.ui.chat.fullbleed
 
+import com.m57.hermescontrol.data.model.SpecialistSetupDraft
+import com.m57.hermescontrol.data.model.SpecialistSetupMessage
+import com.m57.hermescontrol.data.model.SpecialistSetupSnapshot
 import com.m57.hermescontrol.ui.chat.APPROVAL_MESSAGE_PREFIX
 import com.m57.hermescontrol.ui.chat.ApprovalHistoryAnswer
 import com.m57.hermescontrol.ui.chat.ApprovalPlacement
 import com.m57.hermescontrol.ui.chat.ChatMessage
 import com.m57.hermescontrol.ui.chat.ChatSearchController
+import com.m57.hermescontrol.ui.chat.ClarifyUi
 import com.m57.hermescontrol.ui.chat.MessageRole
 import com.m57.hermescontrol.ui.chat.ResponseLedger
 import com.m57.hermescontrol.ui.chat.ResponseRecord
+import com.m57.hermescontrol.ui.chat.SPECIALIST_SETUP_REVIEW
+import com.m57.hermescontrol.ui.chat.SpecialistChatState
+import com.m57.hermescontrol.ui.chat.projectMessages
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -100,6 +107,50 @@ class MainChatTimelinePlanTest {
 
         assertEquals(listOf("user-A", "brainstorm-complete"), rows.map { it.key })
         assertEquals("brainstorm-1", rows.last().brainstorm?.id)
+    }
+
+    @Test
+    fun specialistSetupAndBusyTurnKeepTheirOwnTimelineRows() {
+        val setup =
+            SpecialistChatState(
+                snapshot =
+                    SpecialistSetupSnapshot(
+                        name = "research",
+                        greeting = SpecialistSetupMessage("hello", "assistant", "Tell me what to research"),
+                        draft = SpecialistSetupDraft("draft", description = "Research support"),
+                    ),
+            )
+        val tool = ChatMessage(id = "internal-tool", role = MessageRole.TOOL, content = "Internal tool output")
+        val clarify =
+            ChatMessage(id = "clarify", role = MessageRole.SYSTEM, content = "", clarifyInfo = ClarifyUi("Which date?"))
+        val busyLedger =
+            ledger.copy(
+                responses =
+                    listOf(
+                        ledger.responses.first().copy(messageIds = listOf(tool.id, clarify.id)),
+                        ledger.responses.last(),
+                    ),
+            )
+        val rows =
+            planMainChatTimeline(
+                setup.projectMessages(listOf(requestA, tool, clarify, requestB)),
+                null,
+                busyLedger,
+                true,
+            )
+
+        assertEquals(
+            listOf(
+                "prose-specialist:hello",
+                "sys-$SPECIALIST_SETUP_REVIEW",
+                "user-A",
+                "sys-clarify",
+                MAIN_CHAT_WAITING_KEY,
+                "user-B",
+            ),
+            rows.map { it.key },
+        )
+        assertEquals(clarify, rows.first { it.key == "sys-clarify" }.message)
     }
 
     @Test

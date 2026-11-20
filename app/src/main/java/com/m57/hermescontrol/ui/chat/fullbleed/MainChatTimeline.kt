@@ -49,6 +49,7 @@ import com.m57.hermescontrol.R
 import com.m57.hermescontrol.data.model.Attachment
 import com.m57.hermescontrol.theme.LocalChatFontScale
 import com.m57.hermescontrol.ui.chat.ChatBubble
+import com.m57.hermescontrol.ui.chat.ChatMessage
 import com.m57.hermescontrol.ui.chat.ChatSearchState
 import com.m57.hermescontrol.ui.chat.ChatUiState
 import com.m57.hermescontrol.ui.chat.ChatViewModel
@@ -56,6 +57,8 @@ import com.m57.hermescontrol.ui.chat.ClarifyUi
 import com.m57.hermescontrol.ui.chat.ImageViewerModel
 import com.m57.hermescontrol.ui.chat.LocalNativeUiMessage
 import com.m57.hermescontrol.ui.chat.MessageRole
+import com.m57.hermescontrol.ui.chat.SPECIALIST_SETUP_REVIEW
+import com.m57.hermescontrol.ui.chat.SpecialistChatState
 import com.m57.hermescontrol.ui.chat.StreamingState
 import com.m57.hermescontrol.ui.chat.awaitsUserInput
 import com.m57.hermescontrol.ui.chat.brainstorm.BrainstormCard
@@ -63,12 +66,14 @@ import com.m57.hermescontrol.ui.chat.components.ChatScrollController
 import com.m57.hermescontrol.ui.chat.components.ClarifyBubble
 import com.m57.hermescontrol.ui.chat.isApprovalTimelineRow
 import com.m57.hermescontrol.ui.chat.isLivePreviewOf
+import com.m57.hermescontrol.ui.chat.isSpecialistSetupText
 import com.m57.hermescontrol.ui.common.EmptyState
 import kotlin.math.abs
 
 @Composable
 internal fun MainChatTimeline(
     state: ChatUiState,
+    messages: List<ChatMessage>,
     streaming: State<StreamingState>,
     headerHeight: Dp,
     listState: LazyListState,
@@ -78,6 +83,9 @@ internal fun MainChatTimeline(
     onSaveAttachment: (Attachment) -> Unit,
     savingAttachmentPath: String?,
     onImageClick: (ImageViewerModel) -> Unit,
+    specialistReview: (@Composable () -> Unit)? = null,
+    specialistFooter: (@Composable () -> Unit)? = null,
+    specialistCardsState: SpecialistChatState? = null,
 ) {
     val slot by remember(streaming) {
         derivedStateOf(structuralEqualityPolicy()) { streaming.value.streamingMessage?.mainChatStreamingSlot() }
@@ -85,8 +93,8 @@ internal fun MainChatTimeline(
     val awaitingInput = state.awaitsUserInput()
     val activeLedger = state.responseLedger
     val historyAnswer =
-        remember(state.messages, activeLedger.activeHistoryAnswerId) {
-            state.messages.firstOrNull { it.id == activeLedger.activeHistoryAnswerId }
+        remember(messages, activeLedger.activeHistoryAnswerId) {
+            messages.firstOrNull { it.id == activeLedger.activeHistoryAnswerId }
         }
     val showsLivePreview by remember(streaming, historyAnswer) {
         derivedStateOf(structuralEqualityPolicy()) {
@@ -95,10 +103,10 @@ internal fun MainChatTimeline(
     }
     val scope = viewModel.renderPlanningScope()
     val activeHasText =
-        remember(state.messages, activeLedger) {
+        remember(messages, activeLedger) {
             val active = activeLedger.responses.singleOrNull { it.id == activeLedger.activeId }
             active != null &&
-                state.messages.any {
+                messages.any {
                     it.role == MessageRole.ASSISTANT && it.isMainChatSearchable() && it.id in active.messageIds
                 }
         }
@@ -113,7 +121,7 @@ internal fun MainChatTimeline(
         remember(
             scope,
             state.currentSessionId,
-            state.messages,
+            messages,
             slot,
             activeLedger,
             awaitingInput,
@@ -122,7 +130,7 @@ internal fun MainChatTimeline(
             state.brainstormsById,
         ) {
             planMainChatTimeline(
-                state.messages,
+                messages,
                 slot,
                 activeLedger,
                 waiting,
@@ -133,13 +141,19 @@ internal fun MainChatTimeline(
         }
     val clarify = state.clarifyRequest
     val pendingClarify =
-        remember(clarify, state.messages) {
-            clarify?.takeIf { it.ref == null && state.messages.none { message -> message.clarifyInfo == it } }
+        remember(clarify, messages) {
+            clarify?.takeIf { it.ref == null && messages.none { message -> message.clarifyInfo == it } }
         }
     val messageCount = remember(rows) { rows.count { it.message != null && !it.live } }
-    LaunchedEffect(scope, state.currentSessionId, rows, pendingClarify) {
-        snapshotFlow { Triple(rows.lastOrNull()?.key, streaming.value.streamingMessage?.content, pendingClarify) }
-            .collect { scrollController.onTailChanged(it, messageCount) }
+    LaunchedEffect(scope, state.currentSessionId, rows, pendingClarify, specialistCardsState) {
+        snapshotFlow {
+            listOf(
+                rows.lastOrNull()?.key,
+                streaming.value.streamingMessage?.content,
+                pendingClarify,
+                specialistCardsState,
+            )
+        }.collect { scrollController.onTailChanged(it, messageCount) }
     }
 
     val matchId = search.currentMatchId
@@ -163,7 +177,9 @@ internal fun MainChatTimeline(
     val headerPx = with(density) { headerHeight.roundToPx() }
     val isLoadingOlder = state.isLoadingOlder
     CompositionLocalProvider(LocalDensity provides chatDensity) {
-        if (rows.isEmpty() && pendingClarify == null && !state.isLoading && !state.hasOlderMessages) {
+        if (rows.isEmpty() && pendingClarify == null && specialistFooter == null && !state.isLoading &&
+            !state.hasOlderMessages
+        ) {
             Box(Modifier.fillMaxSize().padding(top = headerHeight), contentAlignment = Alignment.Center) {
                 EmptyState(
                     title = stringResource(R.string.chat_empty_title),
@@ -198,6 +214,10 @@ internal fun MainChatTimeline(
                 when {
                     message == null -> {
                         MainChatWaitingBubble(listState, headerPx)
+                    }
+
+                    message.id == SPECIALIST_SETUP_REVIEW -> {
+                        specialistReview?.invoke()
                     }
 
                     message.clarifyInfo != null -> {
@@ -257,12 +277,16 @@ internal fun MainChatTimeline(
                                     modifier = Modifier.widthIn(max = maxWidth * 0.88f),
                                     showTimestamp = false,
                                     showFooter = false,
+                                    allowInteractiveContent = !message.isSpecialistSetupText(),
                                     personalStyle = true,
                                 )
                             }
                         }
                     }
                 }
+            }
+            if (specialistFooter != null) {
+                item(key = "specialist-settings") { specialistFooter() }
             }
             if (pendingClarify != null) {
                 item(key = "clarify_bubble") { MainChatClarification(pendingClarify, viewModel) }
