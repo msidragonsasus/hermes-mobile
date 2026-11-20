@@ -91,6 +91,12 @@ data class CareerThreads(
     val threads: List<CareerThread> = emptyList(),
 )
 
+private const val THREADS_CACHE_KEY = "threads"
+private val json = Json { ignoreUnknownKeys = true }
+
+internal suspend fun CareerLocalStore.cachedThreads(): List<CareerThread> =
+    uiValue(THREADS_CACHE_KEY)?.let { json.decodeFromString<CareerThreads>(it).threads }.orEmpty()
+
 data class CareerThreadsState(
     val loading: Boolean = true,
     val busy: Boolean = false,
@@ -110,7 +116,6 @@ class CareerThreadsViewModel(
 ) : ViewModel() {
     private val api = ApiClient.hermesApi
     private val profile = AppScope.PROFILE
-    private val json = Json { ignoreUnknownKeys = true }
     private val mutableState = MutableStateFlow(CareerThreadsState())
     val state = mutableState.asStateFlow()
     private var storageReadable = false
@@ -122,10 +127,7 @@ class CareerThreadsViewModel(
                     it.copy(
                         threads =
                             local
-                                .uiValue("threads")
-                                ?.let { value ->
-                                    json.decodeFromString<CareerThreads>(value).threads
-                                }.orEmpty()
+                                .cachedThreads()
                                 .plus(recoverableDrafts())
                                 .distinctBy { thread -> thread.id },
                         pending =
@@ -211,7 +213,7 @@ class CareerThreadsViewModel(
                     result.copy(
                         threads = (result.threads + localDrafts + recoverableDrafts()).distinctBy { it.id },
                     )
-                local.saveUiValue("threads", json.encodeToString(merged))
+                local.saveUiValue(THREADS_CACHE_KEY, json.encodeToString(merged))
                 local.saveUiValue("threads-supported", supported.toString())
                 mutableState.update {
                     it.copy(

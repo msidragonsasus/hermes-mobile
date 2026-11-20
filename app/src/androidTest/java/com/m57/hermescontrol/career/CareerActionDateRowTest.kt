@@ -10,8 +10,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -72,11 +74,29 @@ class CareerActionDateRowTest {
         compose.setContent { TestFrame { CareerHomeActionRow(CareerActionGroup(sources)) { opened = it } } }
         capture("01-date-rail")
         compose.onNodeWithTag("career_action_date_mail-1", useUnmergedTree = true).assertIsDisplayed()
-        compose.onNodeWithText("期限：23:59 まで（日本時間）").assertIsDisplayed()
+        compose.onNodeWithText("23:59まで（日本時間）").assertIsDisplayed()
         compose.onNodeWithTag("career_action_sources_mail-1").performClick()
+        compose.runOnIdle { assertEquals(null, opened) }
         capture("02-original-sources")
         compose.onNodeWithTag("career_action_source_mail-4").assertIsDisplayed().performClick()
         compose.runOnIdle { assertEquals(sources[3], opened) }
+    }
+
+    @Test
+    fun unknownDeadlineHasOneMetadataMessageAndNoDateRail() {
+        val withReminder = item("reminder").copy(deadline = null, detail = "提出・期限は元の案内で確認")
+        val withoutReminder = item("no-reminder").copy(deadline = null, detail = "提出")
+        compose.setContent {
+            TestFrame {
+                CareerHomeActionRow(CareerActionGroup(listOf(withReminder))) {}
+                CareerHomeActionRow(CareerActionGroup(listOf(withoutReminder))) {}
+            }
+        }
+        compose.onNodeWithTag("career_action_date_reminder", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithTag("career_action_date_no-reminder", useUnmergedTree = true).assertDoesNotExist()
+        compose.onAllNodesWithText("期限は元の案内で確認", substring = true, useUnmergedTree = true).assertCountEquals(1)
+        compose.onNodeWithText("提出 · 期限未確定").assertIsDisplayed()
+        compose.onNodeWithText("詳細を見る").assertDoesNotExist()
     }
 
     @Test
@@ -89,6 +109,6 @@ class CareerActionDateRowTest {
         capture("03-large-font")
         compose.onNodeWithTag("career_action_date_large").assertDoesNotExist()
         compose.onNodeWithText("2026年10月8日(木)").assertIsDisplayed()
-        compose.onNodeWithText("期限：23:59 まで（日本時間）").assertIsDisplayed()
+        compose.onNodeWithText("23:59まで（日本時間）").assertIsDisplayed()
     }
 }

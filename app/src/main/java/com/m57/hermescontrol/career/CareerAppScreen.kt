@@ -28,6 +28,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -175,7 +176,7 @@ fun CareerAppScreen() {
                         }
 
                         else -> {
-                            CareerDashboard(state, dashboardRefresh, refreshAll) { selected = it }
+                            CareerDashboard(state, local, dashboardRefresh, refreshAll) { selected = it }
                         }
                     }
                 }
@@ -188,12 +189,22 @@ fun CareerAppScreen() {
 @Composable
 internal fun CareerDashboard(
     state: CareerUiState,
+    local: CareerLocalStore,
     refreshKey: Int,
     refresh: () -> Unit,
     select: (CareerEntity) -> Unit,
 ) {
     val feed = remember { CareerHomeFeed { CareerHomeProvider().read() } }
     val home by feed.state.collectAsState()
+    val threads by produceState(emptyList<CareerThread>(), local, refreshKey) {
+        value =
+            try {
+                local.cachedThreads()
+            } catch (failure: Exception) {
+                if (failure is CancellationException) throw failure
+                emptyList()
+            }
+    }
     var now by remember { mutableStateOf(Instant.now()) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle, refreshKey, state.snapshot) {
@@ -211,6 +222,7 @@ internal fun CareerDashboard(
         page = home.page,
         pageError = home.error,
         pageLoading = home.loading,
+        threads = threads,
         today = now.atZone(ZoneId.of("Asia/Tokyo")).toLocalDate(),
         now = now,
         onSelect = select,

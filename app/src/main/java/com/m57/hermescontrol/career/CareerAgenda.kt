@@ -15,6 +15,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -136,6 +137,7 @@ internal fun CareerAgendaRow(
 internal fun CareerAgendaDateRail(
     date: AgendaDate,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
 ) {
     Column(
         modifier.width(54.dp).clearAndSetSemantics {
@@ -147,10 +149,15 @@ internal fun CareerAgendaDateRail(
             if (it.year != LocalDate.now(ZoneId.of("Asia/Tokyo")).year) {
                 Text("${it.year}年", style = MaterialTheme.typography.labelSmall)
             }
-            Text("${it.monthValue}月", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("%02d".format(it.dayOfMonth), style = MaterialTheme.typography.displaySmall)
+            if (compact) {
+                Text("${it.monthValue}/${it.dayOfMonth}", style = MaterialTheme.typography.titleSmall)
+            } else {
+                Text("${it.monthValue}月", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("%02d".format(it.dayOfMonth), style = MaterialTheme.typography.displaySmall)
+            }
             Text(
                 it.format(DateTimeFormatter.ofPattern("E", Locale.JAPAN)),
+                style = if (compact) MaterialTheme.typography.labelSmall else LocalTextStyle.current,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } ?: Text("日付\n未確定", style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center)

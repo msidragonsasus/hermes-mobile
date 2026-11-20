@@ -126,6 +126,90 @@ class CareerHomeActionsTest {
     }
 
     @Test
+    fun attentionRowsUseCachedThreadTitlesThenFeedDetailThenServerTitle() {
+        val cached =
+            deadline.copy(
+                id = "cached",
+                title = "相談への回答が必要です",
+                target = HomeTarget("conversation", thread_id = "thread-1", session_id = "thread-2"),
+                detail = "相談の補足",
+                deadline = null,
+                updated_at = "2026-10-05T05:05:00Z",
+            )
+        val session =
+            cached.copy(
+                id = "session",
+                target = HomeTarget("conversation", session_id = "thread-2"),
+                updated_at = "",
+            )
+        val detail = cached.copy(id = "detail", target = HomeTarget("conversation", thread_id = "missing"))
+        val generic = detail.copy(id = "generic", detail = "")
+        val threads =
+            listOf(
+                CareerThread("thread-1", "ES添削の相談"),
+                CareerThread("thread-2", "面接練習の相談", updated_at = "2026-10-04T00:12:00Z"),
+            )
+        var opened: HomeItem? = null
+        compose.setContent {
+            MaterialTheme {
+                CareerDashboardContent(
+                    state = CareerUiState(initialized = true, enabled = true, snapshot = CareerSnapshot(1)),
+                    page = HomePage(items = listOf(cached, session, detail, generic)),
+                    pageError = null,
+                    pageLoading = false,
+                    onSelect = {},
+                    onTask = {},
+                    onAttention = { opened = it },
+                    onResult = {},
+                    onSettings = {},
+                    today = today,
+                    threads = threads,
+                )
+            }
+        }
+        val list = compose.onNodeWithTag("career_agenda")
+        list.performScrollToNode(hasText("ES添削の相談"))
+        compose.onNode(hasText("ES添削の相談") and hasText("回答待ち · 今日 14:05")).assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(cached, opened) }
+        list.performScrollToNode(hasText("面接練習の相談"))
+        compose.onNode(hasText("面接練習の相談") and hasText("回答待ち · 昨日 09:12")).assertIsDisplayed()
+        list.performScrollToNode(hasText(detail.detail))
+        compose.onNodeWithText(detail.detail).assertIsDisplayed()
+        list.performScrollToNode(hasText(generic.title))
+        compose.onNodeWithText(generic.title).assertIsDisplayed()
+        compose.onNodeWithText("相談を開く").assertDoesNotExist()
+    }
+
+    @Test
+    fun resultsSectionWaitsForTheFeedBeforeShowingEmptyState() {
+        val page = mutableStateOf<HomePage?>(null)
+        val loading = mutableStateOf(true)
+        compose.setContent {
+            MaterialTheme {
+                CareerDashboardContent(
+                    state = CareerUiState(initialized = true, enabled = true, snapshot = CareerSnapshot(1)),
+                    page = page.value,
+                    pageError = null,
+                    pageLoading = loading.value,
+                    onSelect = {},
+                    onTask = {},
+                    onAttention = {},
+                    onResult = {},
+                    onSettings = {},
+                )
+            }
+        }
+        compose.onNodeWithText("届いた成果物・結果").assertDoesNotExist()
+        compose.onNodeWithText("接続後に表示します。").assertDoesNotExist()
+        compose.runOnIdle {
+            page.value = HomePage()
+            loading.value = false
+        }
+        compose.onNodeWithTag("career_agenda").performScrollToNode(hasText("まだ届いていません。"))
+        compose.onNodeWithText("まだ届いていません。").assertIsDisplayed()
+    }
+
+    @Test
     fun unavailableFeedDoesNotClaimThereAreNoUpcomingTasks() {
         compose.setContent {
             MaterialTheme {
@@ -146,5 +230,7 @@ class CareerHomeActionsTest {
         compose.onNodeWithTag("career_agenda").performScrollToNode(hasText(text))
         compose.onNodeWithText(text).assertIsDisplayed()
         compose.onNodeWithText("これからの作業・予定はありません。企業から募集・締切を確認できます。").assertDoesNotExist()
+        compose.onNodeWithText("届いた成果物・結果").assertDoesNotExist()
+        compose.onNodeWithText("接続後に表示します。").assertDoesNotExist()
     }
 }

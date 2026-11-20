@@ -64,6 +64,8 @@ fun CompactListRow(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
     trailing: (@Composable RowScope.() -> Unit)? = null,
+    leading: (@Composable RowScope.() -> Unit)? = null,
+    footer: (@Composable ColumnScope.() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(modifier.fillMaxWidth()) {
@@ -76,9 +78,11 @@ fun CompactListRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            leading?.invoke(this)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp), content = content)
             trailing?.invoke(this)
         }
+        footer?.invoke(this)
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     }
 }
