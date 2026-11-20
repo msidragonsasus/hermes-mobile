@@ -40,8 +40,10 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.click
@@ -92,6 +94,7 @@ import com.m57.hermescontrol.ui.bots.BotsUiState
 import com.m57.hermescontrol.ui.bots.BotsViewModel
 import com.m57.hermescontrol.ui.chat.components.ConversationMenuSheet
 import com.m57.hermescontrol.ui.chat.components.quotedReplyMessage
+import com.m57.hermescontrol.ui.chat.components.reasoningLevels
 import com.m57.hermescontrol.ui.chat.fullbleed.MAIN_CHAT_WAITING_KEY
 import com.m57.hermescontrol.ui.common.ActionProgressController
 import com.m57.hermescontrol.ui.common.ShellBottomBar
@@ -163,6 +166,9 @@ class ChatUiEvidenceTest {
         every { model.streamingState } returns MutableStateFlow(StreamingState())
         every { model.searchState } returns ChatSearchState()
         every { model.actionProgress } returns ActionProgressController(CoroutineScope(Dispatchers.Main))
+        val roster = mockk<BotsViewModel>(relaxed = true)
+        every { roster.getCloseable<AutoCloseable>(any()) } returns null
+        every { roster.uiState } returns MutableStateFlow(BotsUiState())
         val preference = mutableStateOf(ThemePreference.DARK)
         val fontScale = mutableStateOf(1f)
         compose.runOnUiThread {
@@ -170,6 +176,7 @@ class ChatUiEvidenceTest {
             compose.activity.window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         }
         compose.setContent {
+            InstallTestRoster(roster)
             JapaneseTheme(preference.value) {
                 CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, fontScale.value)) {
                     val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
@@ -206,16 +213,21 @@ class ChatUiEvidenceTest {
         }
         compose.onNodeWithTag("chat_header_pill").assertIsDisplayed()
         capture("07-main-chat-light-large-text")
-        compose.onNodeWithTag("chat_input").performClick()
+        compose.onNodeWithTag("chat_input").assertIsEnabled().performTouchInput { click() }
         compose.waitUntil(5_000) { compose.onAllNodesWithTag("shell_tab_agent").fetchSemanticsNodes().isEmpty() }
         compose.onNodeWithTag("chat_header_pill").assertIsDisplayed()
         compose.onNodeWithTag("model_chip").assertIsDisplayed()
         capture("08-main-chat-light-keyboard")
         compose.onNodeWithTag("reasoning_chip").assertIsDisplayed().performClick()
         compose.onNodeWithTag("reasoning_panel").assertIsDisplayed()
-        listOf("Low", "Medium", "High", "Max").forEach { label ->
-            compose.onNodeWithTag("reasoning_level_${label.lowercase()}").assertTextEquals(label).assertIsDisplayed()
+        reasoningLevels.forEach { (level, _) ->
+            compose.onNodeWithTag("reasoning_level_$level").assertDoesNotExist()
         }
+        compose.onNodeWithText("High の推論レベル").assertIsDisplayed()
+        compose
+            .onNodeWithTag("reasoning_slider")
+            .assertIsDisplayed()
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "High"))
         capture("09-main-chat-light-keyboard-reasoning")
         compose.onNodeWithTag("reasoning_chip").performClick()
         compose.onNodeWithTag("reasoning_panel").assertDoesNotExist()

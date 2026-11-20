@@ -4,6 +4,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -12,6 +16,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextInputSelection
 import androidx.compose.ui.text.TextRange
@@ -21,6 +26,7 @@ import com.m57.hermescontrol.data.ws.CommandCatalog
 import com.m57.hermescontrol.theme.HermesControlTheme
 import com.m57.hermescontrol.ui.chat.components.ChatComposer
 import com.m57.hermescontrol.ui.chat.components.ChatInputBar
+import com.m57.hermescontrol.ui.chat.components.reasoningLevels
 import com.m57.hermescontrol.ui.chat.fullbleed.ConnectionEventRow
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -135,10 +141,13 @@ class ChatComposerControlsTest {
         compose.onNodeWithTag("model_chip").assertIsDisplayed().performClick()
         compose.onNodeWithTag("reasoning_chip").assertIsDisplayed().performClick()
         compose.onNodeWithTag("reasoning_panel").assertIsDisplayed()
-        listOf("Low", "Medium", "High", "Max").forEach { label ->
-            compose.onNodeWithTag("reasoning_level_${label.lowercase()}").assertTextEquals(label).assertIsDisplayed()
+        reasoningLevels.forEach { (level, _) ->
+            compose.onNodeWithTag("reasoning_level_$level").assertDoesNotExist()
         }
-        compose.onNodeWithTag("reasoning_level_ultra").assertTextEquals("Ultra").performClick()
+        val slider = compose.onNodeWithTag("reasoning_slider")
+        slider.assertIsDisplayed().assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "High"))
+        slider.performSemanticsAction(SemanticsActions.SetProgress) { it(reasoningLevels.lastIndex.toFloat()) }
+        slider.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ultra"))
         assertEquals(1, models)
         assertEquals("ultra", reasoning)
         compose.onNodeWithTag("chat_input").assertTextEquals("unsent draft")

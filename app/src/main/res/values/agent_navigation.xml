@@ -63,6 +63,7 @@
     <string name="agent_selector_status_ready">Connected</string>
     <string name="agent_selector_status_unavailable">Not connected</string>
     <string name="chat_reasoning_slider_suffix">" reasoning"</string>
+    <string name="chat_reasoning_slider_label">Reasoning level</string>
     <string name="agent_selector_manage_bots">Manage bots</string>
     <string name="chat_settings_manage_bots">Bots</string>
     <string name="bots_worker_running">Working: %1$s</string>

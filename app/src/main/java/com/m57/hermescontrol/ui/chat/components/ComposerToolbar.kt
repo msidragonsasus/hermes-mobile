@@ -3,13 +3,13 @@ package com.m57.hermescontrol.ui.chat.components
 import androidx.annotation.StringRes
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,12 +19,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -34,18 +32,33 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.R
+import kotlin.math.roundToInt
 
 /** Reasoning levels the gateway accepts, in slider order, with their labels. */
 internal val reasoningLevels: List<Pair<String, Int>> =
@@ -162,8 +175,9 @@ fun ReasoningLevelPanel(
 ) {
     val levels = availableReasoningLevels(canDisableReasoning)
     val committed = levels.indexOfFirst { it.first == (reasoningLevel ?: "medium") }.coerceAtLeast(0)
-    var preview by remember(committed) { mutableIntStateOf(committed) }
-    val labels = levels.map { stringResource(it.second) }
+    var preview by remember(levels, committed) { mutableIntStateOf(committed) }
+    val levelLabel = stringResource(levels[preview].second)
+    val sliderLabel = stringResource(R.string.chat_reasoning_slider_label)
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraLarge,
@@ -176,7 +190,7 @@ fun ReasoningLevelPanel(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(
-                text = labels[preview] + stringResource(R.string.chat_reasoning_slider_suffix),
+                text = levelLabel + stringResource(R.string.chat_reasoning_slider_suffix),
                 style = MaterialTheme.typography.titleMedium,
             )
             Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
@@ -185,25 +199,15 @@ fun ReasoningLevelPanel(
                     selected = preview,
                     onPreview = { preview = it },
                     onCommit = { onSelect(levels[it].first) },
-                    modifier = Modifier.padding(4.dp),
+                    modifier =
+                        Modifier
+                            .padding(4.dp)
+                            .testTag("reasoning_slider")
+                            .semantics {
+                                contentDescription = sliderLabel
+                                stateDescription = levelLabel
+                            },
                 )
-            }
-            FlowRow(
-                modifier = Modifier.fillMaxWidth().selectableGroup(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
-            ) {
-                levels.forEachIndexed { index, (level, _) ->
-                    FilterChip(
-                        selected = preview == index,
-                        onClick = {
-                            preview = index
-                            onSelect(level)
-                        },
-                        label = { Text(labels[index]) },
-                        modifier = Modifier.testTag("reasoning_level_$level"),
-                        border = null,
-                    )
-                }
             }
         }
     }
@@ -219,35 +223,63 @@ private fun SteppedSlider(
 ) {
     val thumb = 44.dp
     val density = LocalDensity.current
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val currentOnPreview by rememberUpdatedState(onPreview)
+    val currentOnCommit by rememberUpdatedState(onCommit)
     val track = MaterialTheme.colorScheme.primary
     val dot = MaterialTheme.colorScheme.onPrimary
     val restDot = MaterialTheme.colorScheme.onSurfaceVariant
-    BoxWithConstraints(modifier.fillMaxWidth().height(thumb)) {
+
+    fun select(index: Int): Boolean {
+        val next = index.coerceIn(0, count - 1)
+        if (next == selected) return false
+        currentOnPreview(next)
+        currentOnCommit(next)
+        return true
+    }
+
+    BoxWithConstraints(
+        modifier
+            .fillMaxWidth()
+            .height(thumb)
+            .semantics {
+                progressBarRangeInfo = ProgressBarRangeInfo(selected.toFloat(), 0f..(count - 1).toFloat(), count - 2)
+                setProgress { select(it.roundToInt()) }
+            }.onKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                when (event.key) {
+                    Key.DirectionLeft -> select(selected + if (isRtl) 1 else -1)
+                    Key.DirectionRight -> select(selected + if (isRtl) -1 else 1)
+                    else -> false
+                }
+            }.focusable(),
+    ) {
         val stepWidth = (maxWidth - thumb) / (count - 1).coerceAtLeast(1)
         val thumbOffset by animateDpAsState(stepWidth * selected, label = "thumb")
 
         fun indexAt(x: Float): Int {
             val px = with(density) { (x - thumb.toPx() / 2) / stepWidth.toPx() }
-            return px.let { kotlin.math.round(it).toInt() }.coerceIn(0, count - 1)
+            val index = px.roundToInt().coerceIn(0, count - 1)
+            return if (isRtl) count - 1 - index else index
         }
         var dragIndex by remember { mutableIntStateOf(selected) }
         Box(
             Modifier
                 .fillMaxWidth()
                 .fillMaxHeight()
-                .pointerInput(count, stepWidth, density) {
+                .pointerInput(count, stepWidth, density, isRtl) {
                     detectTapGestures { offset ->
                         val i = indexAt(offset.x)
-                        onPreview(i)
-                        onCommit(i)
+                        currentOnPreview(i)
+                        currentOnCommit(i)
                     }
-                }.pointerInput(count, stepWidth, density) {
+                }.pointerInput(count, stepWidth, density, isRtl) {
                     detectHorizontalDragGestures(
                         onDragStart = { dragIndex = indexAt(it.x) },
-                        onDragEnd = { onCommit(dragIndex) },
+                        onDragEnd = { currentOnCommit(dragIndex) },
                         onHorizontalDrag = { change, _ ->
                             dragIndex = indexAt(change.position.x)
-                            onPreview(dragIndex)
+                            currentOnPreview(dragIndex)
                         },
                     )
                 },

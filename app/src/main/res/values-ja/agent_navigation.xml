@@ -63,6 +63,7 @@
     <string name="agent_selector_status_ready">接続中</string>
     <string name="agent_selector_status_unavailable">未接続</string>
     <string name="chat_reasoning_slider_suffix">" の推論レベル"</string>
+    <string name="chat_reasoning_slider_label">推論レベル</string>
     <string name="agent_selector_manage_bots">botを管理</string>
     <string name="chat_settings_manage_bots">bot（作成・編集）</string>
     <string name="bots_worker_running">作業中：%1$s</string>
