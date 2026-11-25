@@ -411,6 +411,8 @@ internal fun LoginField(
     busy: Boolean,
     keyboard: KeyboardType = KeyboardType.Text,
     contentType: ContentType? = null,
+    revealed: Boolean = false,
+    trailingIcon: (@Composable () -> Unit)? = null,
 ) {
     HermesTextField(
         value = value,
@@ -418,11 +420,10 @@ internal fun LoginField(
         label = { Text(stringResource(label)) },
         singleLine = true,
         enabled = !busy,
+        trailingIcon = trailingIcon,
         keyboardOptions = KeyboardOptions(keyboardType = keyboard, autoCorrectEnabled = false),
         visualTransformation =
-            if (keyboard ==
-                KeyboardType.Password
-            ) {
+            if (keyboard == KeyboardType.Password && !revealed) {
                 PasswordVisualTransformation()
             } else {
                 VisualTransformation.None

@@ -25,6 +25,7 @@ object ProfileScopeInterceptor : Interceptor {
             "/api/plugins/pc-power",
             "/api/plugins/mobile-terminal",
             "/api/plugins/today_home",
+            "/api/plugins/mobile_worker",
             "/api/connections/google-workspace",
             "/api/connections/slack",
         )

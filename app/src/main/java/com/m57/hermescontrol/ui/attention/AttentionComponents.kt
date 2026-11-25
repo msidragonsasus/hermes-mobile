@@ -74,14 +74,6 @@ fun AttentionStatusLabel(
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalHermesStatusColors.current
-    val label =
-        when (status) {
-            AttentionStatus.PENDING -> if (ready) R.string.attention_pending else R.string.attention_on_hold
-            AttentionStatus.SUBMITTING -> R.string.attention_submitting
-            AttentionStatus.CONFIRMED -> R.string.attention_confirmed
-            AttentionStatus.EXPIRED -> R.string.attention_expired
-            AttentionStatus.UNKNOWN -> R.string.attention_unknown_result
-        }
     val color =
         when (status) {
             AttentionStatus.CONFIRMED -> colors.success
@@ -94,9 +86,25 @@ fun AttentionStatusLabel(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(Icons.Outlined.Info, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
-        Text(stringResource(label), color = color, style = MaterialTheme.typography.bodySmall)
+        Text(
+            stringResource(attentionStatusLabelRes(status, ready)),
+            color = color,
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
+
+internal fun attentionStatusLabelRes(
+    status: AttentionStatus,
+    ready: Boolean,
+): Int =
+    when (status) {
+        AttentionStatus.PENDING -> if (ready) R.string.attention_pending else R.string.attention_on_hold
+        AttentionStatus.SUBMITTING -> R.string.attention_submitting
+        AttentionStatus.CONFIRMED -> R.string.attention_confirmed
+        AttentionStatus.EXPIRED -> R.string.attention_expired
+        AttentionStatus.UNKNOWN -> R.string.attention_unknown_result
+    }
 
 /** True while a decision can still be made or is awaiting its acknowledgement. */
 internal fun AttentionStatus.isOpenDecision(): Boolean =

@@ -1,6 +1,9 @@
 package com.m57.hermescontrol.home
 
 import com.m57.hermescontrol.data.remote.OkHttpProvider
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -10,9 +13,49 @@ import java.time.Instant
 import java.time.LocalDate
 
 class TodayPlanTest {
+    @Test
+    fun settingsEncodeEmptySourcesAndDisabledExplicitly() {
+        val encoded = OkHttpProvider.json.encodeToString(TodaySettings("", "", false))
+        assertEquals(
+            JsonObject(
+                mapOf(
+                    "email" to JsonPrimitive(""),
+                    "manaba_url" to JsonPrimitive(""),
+                    "enabled" to JsonPrimitive(false),
+                ),
+            ),
+            OkHttpProvider.json.parseToJsonElement(encoded),
+        )
+    }
+
+    @Test
+    fun uncertainRunUsesTheSameFailureStateAsInterruptedRuns() {
+        for (state in listOf("failed", "interrupted", "uncertain")) {
+            assertTrue(TodayPlan(state = state).runFailed())
+        }
+        assertFalse(TodayPlan(state = "running").runFailed())
+    }
+
     // 2026-10-28 16:30 JST.
     private val now = Instant.parse("2026-10-28T07:30:00Z")
     private val fivePm = Instant.parse("2026-10-28T08:00:00Z")
+
+    @Test
+    fun homeFocusUsesJapanTimeAndKeepsDateOnlyDeadlinesThroughTheDay() {
+        assertEquals("期限 今日 17:00 · 残り30分", homeFocusDeadline(fivePm.toString(), now))
+        assertEquals("期限 今日 · 残り7時間30分", homeFocusDeadline("2026-10-28", now))
+        assertEquals("期限切れ（昨日）", homeFocusDeadline("2026-10-27", now))
+        assertEquals("期限不明", homeFocusDeadline("unknown", now))
+        assertNull(homeFocusDeadline(null, now))
+    }
+
+    @Test
+    fun approvalIsUrgentThroughTheNextTwentyFourHours() {
+        assertTrue(now.plusSeconds(1).isHomeDecisionSoon(now))
+        assertTrue(now.plusSeconds(86_400).isHomeDecisionSoon(now))
+        assertFalse(now.plusSeconds(86_401).isHomeDecisionSoon(now))
+        assertFalse(now.isHomeDecisionSoon(now))
+    }
 
     private fun task(
         id: String,
@@ -41,7 +84,7 @@ class TodayPlanTest {
         priority: Int = 2,
         deadline: String? = null,
         stale: Boolean = false,
-    ) = todayTaskMeta(task("a", priority, deadline), stale, now)
+    ) = todayTaskMeta(task("a", priority, deadline).copy(source = "manaba"), stale, now)
 
     @Test
     fun yesterdayIsNeverCurrentAfterJapaneseMidnightEvenWhenServerSaysFresh() {
@@ -82,21 +125,21 @@ class TodayPlanTest {
     fun expiredTaskIsNeverLabelledAsRequiredToday() {
         val expired = meta(priority = 1, deadline = "2026-10-27T17:00:00+09:00")
         assertFalse(expired, expired.contains("今日必須"))
-        assertEquals("期限切れ（昨日 17:00） · メール", expired)
-        assertEquals("期限切れ（10月20日） · メール", meta(priority = 1, deadline = "2026-10-20"))
-        assertEquals("今日必須 · 期限 今日 17:00 · メール", meta(priority = 1, deadline = "2026-10-28T17:00:00+09:00"))
+        assertEquals("期限切れ（昨日 17:00） · manaba", expired)
+        assertEquals("期限切れ（10月20日） · manaba", meta(priority = 1, deadline = "2026-10-20"))
+        assertEquals("今日必須 · 期限 今日 17:00 · manaba", meta(priority = 1, deadline = "2026-10-28T17:00:00+09:00"))
     }
 
     @Test
     fun deadlineLabelsAreHumanReadableNeverRawIso() {
-        assertEquals("今日準備 · 期限 今日 · メール", meta(deadline = "2026-10-28"))
-        assertEquals("今日準備 · 期限 明日 · メール", meta(deadline = "2026-10-29"))
-        assertEquals("今日準備 · 期限 11月2日 · メール", meta(deadline = "2026-11-02"))
-        assertEquals("今日準備 · 期限 明日 09:00 · メール", meta(deadline = "2026-10-29T09:00"))
-        assertEquals("今日準備 · 期限 2027年1月5日 · メール", meta(deadline = "2027-01-05"))
-        assertEquals("今日準備 · 期限不明 · メール", meta(deadline = "来週"))
-        assertEquals("今日準備 · メール", meta())
-        assertEquals("今日準備 · メール · 前回の情報", meta(stale = true))
+        assertEquals("今日準備 · 期限 今日 · manaba", meta(deadline = "2026-10-28"))
+        assertEquals("今日準備 · 期限 明日 · manaba", meta(deadline = "2026-10-29"))
+        assertEquals("今日準備 · 期限 11月2日 · manaba", meta(deadline = "2026-11-02"))
+        assertEquals("今日準備 · 期限 明日 09:00 · manaba", meta(deadline = "2026-10-29T09:00"))
+        assertEquals("今日準備 · 期限 2027年1月5日 · manaba", meta(deadline = "2027-01-05"))
+        assertEquals("今日準備 · 期限不明 · manaba", meta(deadline = "来週"))
+        assertEquals("今日準備 · manaba", meta())
+        assertEquals("今日準備 · manaba · 前回の情報", meta(stale = true))
     }
 
     @Test
@@ -105,20 +148,45 @@ class TodayPlanTest {
             reason: String?,
             deadline: String? = null,
             actionability: String = "review",
-        ) = todayTaskMeta(task("c", 1, deadline, actionability = actionability, reason = reason), false, now)
-        assertEquals("分類未確認 · 期限 明日 · メール", candidate("unclassified", "2026-10-29"))
-        assertEquals("任意の案内 · メール", candidate("optional"))
-        assertEquals("関係するか未確認 · メール", candidate("unknown_relevance"))
-        assertEquals("参加・応募の意思が未確認 · メール", candidate("interest_unconfirmed"))
-        assertEquals("対応状況が未確認 · メール", candidate("status_unknown"))
-        assertEquals("受付終了 · メール", candidate("closed"))
+        ) = todayTaskMeta(
+            task("c", 1, deadline, actionability = actionability, reason = reason).copy(source = "manaba"),
+            false,
+            now,
+        )
+        assertEquals("分類未確認 · 期限 明日 · manaba", candidate("unclassified", "2026-10-29"))
+        assertEquals("任意の案内 · manaba", candidate("optional"))
+        assertEquals("関係するか未確認 · manaba", candidate("unknown_relevance"))
+        assertEquals("参加・応募の意思が未確認 · manaba", candidate("interest_unconfirmed"))
+        assertEquals("対応状況が未確認 · manaba", candidate("status_unknown"))
+        assertEquals("受付終了 · manaba", candidate("closed"))
         // The deadline already says expired; the reason is not repeated.
-        assertEquals("期限切れ（10月25日） · メール", candidate("expired", "2026-10-25"))
-        assertEquals("分類未確認 · 期限切れ（10月25日 23:59） · メール", candidate("unclassified", "2026-10-25T23:59:00+09:00"))
+        assertEquals("期限切れ（10月25日） · manaba", candidate("expired", "2026-10-25"))
+        assertEquals("分類未確認 · 期限切れ（10月25日 23:59） · manaba", candidate("unclassified", "2026-10-25T23:59:00+09:00"))
         // Older server: no classification at all.
-        assertEquals("分類未確認 · メール", candidate(null, actionability = ""))
-        assertEquals("対象外 · メール", candidate("dismissed", actionability = "dismissed"))
-        assertEquals("要確認 · メール", candidate("something_new"))
+        assertEquals("分類未確認 · manaba", candidate(null, actionability = ""))
+        assertEquals("対象外 · manaba", candidate("dismissed", actionability = "dismissed"))
+        assertEquals("要確認 · manaba", candidate("something_new"))
+    }
+
+    @Test
+    fun mailCopyUsesConcreteTitleAndPreservesSeparateDeadlinesAndCondition() {
+        val candidate =
+            task("mail", deadline = "2026-10-29T12:00:00+09:00", actionability = "review", reason = "optional").copy(
+                day = "2026-10-28",
+                title = "架空工房の体験会を希望する場合のみ、明日正午に備えて申込票・同意書の受付記録を確認する",
+                source_title = "長い元メールの件名",
+                reason = "案内によると、申込票は10月29日12:00まで。事前課題は11月4日17:00まで。参加は未確認。",
+            )
+        val copy = candidate.mailCopy()
+        assertEquals("架空工房の体験会 受付記録を確認", copy.title)
+        assertEquals(listOf("申込票 10月29日12:00まで", "事前課題 11月4日17:00まで", "希望する場合のみ"), copy.facts)
+        assertEquals(listOf("申込票・同意書の受付記録を確認する", "参加は未確認"), copy.additional)
+        assertEquals("期限 明日 12:00 · メール", todayTaskMeta(candidate, stale = true, now))
+        assertEquals(
+            "受付終了 · メール",
+            todayTaskMeta(candidate.copy(deadline = null, review_reason = "closed"), stale = true, now),
+        )
+        assertTrue("今日18時に備える" in candidate.copy(title = candidate.title.replace("明日正午", "今日18時")).mailCopy().facts)
     }
 
     @Test

@@ -178,6 +178,53 @@ class TerminalAcceptanceTransportTest {
             assertFalse(params.containsKey("surface"))
         }
 
+    @Test fun steerUsesScopedWireAndDecodesDeployedAcceptRefuseAndUnknownResults() =
+        runBlocking {
+            val transport = RichAnswerSubmissionTransport(DashboardRpcTransport())
+            for ((body, expected) in listOf(
+                """{"status":"queued","text":"follow up"}""" to PromptAcceptance.STEERED,
+                """{"status":"queued","text":"follow up","delivery":"next_turn"}""" to PromptAcceptance.QUEUED,
+                """{"status":"rejected","text":"follow up"}""" to SubmissionResult.NotSent,
+                """{"status":"unexpected"}""" to SubmissionResult.Unknown,
+            )) {
+                duringSend = { response(it, body) }
+                val result = transport.steerPrompt(scope, session, "follow up")
+                assertEquals(expected, if (result is SubmissionResult.Confirmed) result.value else result)
+                val sentRequest = sent.last()
+                assertEquals(WsMethods.SESSION_STEER, sentRequest["method"]!!.jsonPrimitive.content)
+                val params = sentRequest["params"]!!.jsonObject
+                assertEquals(setOf("session_id", "text", "profile"), params.keys)
+                assertEquals("runtime", params["session_id"]!!.jsonPrimitive.content)
+                assertEquals("follow up", params["text"]!!.jsonPrimitive.content)
+                assertEquals("profile-a", params["profile"]!!.jsonPrimitive.content)
+            }
+        }
+
+    @Test fun redirectDemotedToTheNextTurnUsesQueuedAcceptance() =
+        runBlocking {
+            duringSend = { response(it, """{"status":"queued","text":"correction","delivery":"next_turn"}""") }
+            val result = DashboardRpcTransport().submitPrompt(scope, session, "correction", redirect = true)
+            assertEquals(PromptAcceptance.QUEUED, (result as SubmissionResult.Confirmed).value)
+            assertEquals(WsMethods.SESSION_REDIRECT, sent.last()["method"]!!.jsonPrimitive.content)
+        }
+
+    @Test fun steerUnsupportedAgentAndMissingMethodAreDefinitelyRefused() =
+        runBlocking {
+            for ((code, message) in listOf(
+                4010 to "unsupported",
+                -32601 to "missing",
+                4001 to "invalid_params",
+                5000 to "failed",
+            )) {
+                duringSend = {
+                    val body = """{"jsonrpc":"2.0","id":"${id(it)}","error":{"code":$code,"message":"$message"}}"""
+                    listener.onMessage(socket, body)
+                }
+                val result = DashboardRpcTransport().steerPrompt(scope, session, "follow up")
+                assertEquals(if (code == 5000) SubmissionResult.Unknown else SubmissionResult.NotSent, result)
+            }
+        }
+
     @Test fun attachmentPromptWaitsForInFlightNegotiationAndKeepsTheImageOnTheSameSession() =
         runBlocking {
             val adapter = RichAnswerSubmissionTransport(DashboardRpcTransport())

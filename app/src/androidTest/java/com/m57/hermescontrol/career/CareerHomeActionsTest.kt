@@ -64,18 +64,8 @@ class CareerHomeActionsTest {
                         results = emptyList(),
                         pending = emptyList(),
                         linkState = LinkState.CONNECTED,
-                        loading = false,
-                        error = null,
-                        storageError = null,
-                        metadata = page,
-                        careerVisible = true,
-                        careerEnabled = true,
-                        chatVisible = true,
-                        onRefresh = {},
-                        onProviderChange = { _, _ -> },
                         onOpen = { opened = it },
                         onAttention = {},
-                        onConnectionSettings = {},
                     )
                 }
             }

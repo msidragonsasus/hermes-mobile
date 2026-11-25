@@ -321,11 +321,13 @@ object HermesWsClient {
             !value.isNullOrBlank() && value.length <= 512 && value.none(Char::isISOControl)
         if (!matchesCurrentScope(scope) || expectedRuntimeId.isNullOrBlank() || !validId(expectedRuntimeId)) return
         if (payload?.containsKey("session_id") == true && payload["session_id"] != expectedRuntimeId) return
-        val raw = payload?.get("open_requests") as? List<*> ?: return
-        if (raw.size > 1000) return
+        val open = payload?.get("open_requests") as? List<*>
+        val prompts = payload?.get("prompts") as? List<*>
+        if (open == null && prompts == null) return
+        if (open.orEmpty().size + prompts.orEmpty().size > 1000) return
         val ids = mutableSetOf<String>()
         val requests = mutableListOf<WsEvent>()
-        for (entry in raw) {
+        for (entry in open.orEmpty()) {
             val frame = entry as? Map<*, *> ?: return
             val id = (frame["id"] as? String)?.takeIf(::validId) ?: return
             val method = (frame["method"] as? String)?.takeIf(String::isNotBlank) ?: return
@@ -342,6 +344,18 @@ object HermesWsClient {
                 return
             }
             requests.add(parsed)
+        }
+        for (entry in prompts.orEmpty()) {
+            val prompt = entry as? Map<*, *> ?: return
+            val kind = prompt["kind"]
+            if (kind != "clarify" && kind != "approval") continue
+            val id = (prompt["prompt_id"] as? String)?.takeIf(::validId) ?: return
+            if (prompt["execution_generation"] !is Number || !ids.add(id)) return
+            requests.add(
+                EventParser.parseParams(
+                    mapOf("type" to "$kind.request", "session_id" to expectedRuntimeId, "payload" to prompt),
+                ),
+            )
         }
         emitScoped(scope, WsEvent.OpenRequestsSnapshot(expectedRuntimeId, startedAt, requests, ids))
         // Existing Chat and notification consumers use the same scoped request events.
@@ -1176,6 +1190,7 @@ object HermesWsClient {
                     setOf(
                         WsMethods.PROMPT_SUBMIT,
                         WsMethods.SESSION_REDIRECT,
+                        WsMethods.SESSION_STEER,
                         WsMethods.IMAGE_ATTACH_BYTES,
                         WsMethods.FILE_ATTACH,
                         WsMethods.SESSION_RESUME,
@@ -1193,8 +1208,12 @@ object HermesWsClient {
             val exactResponse =
                 when (method) {
                     WsMethods.APPROVAL_RESPOND -> {
-                        params["choice"] in KNOWN_APPROVAL_CHOICES && params["all"] == false &&
-                            !(params["request_id"] as? String).isNullOrBlank()
+                        params["choice"] in KNOWN_APPROVAL_CHOICES &&
+                            if (params["execution_generation"] is Long) {
+                                !(params["prompt_id"] as? String).isNullOrBlank()
+                            } else {
+                                params["all"] == false && !(params["request_id"] as? String).isNullOrBlank()
+                            }
                     }
 
                     WsMethods.CLARIFY_LOCK -> {
@@ -1203,7 +1222,15 @@ object HermesWsClient {
                             (params["answer"] == null || params["answer"] is String)
                     }
 
-                    WsMethods.APPROVAL_RECEIVED, WsMethods.CLARIFY_RESPOND -> {
+                    WsMethods.CLARIFY_RESPOND -> {
+                        if (params["execution_generation"] is Long) {
+                            !(params["prompt_id"] as? String).isNullOrBlank() && params["answer"] is String
+                        } else {
+                            !(params["request_id"] as? String).isNullOrBlank()
+                        }
+                    }
+
+                    WsMethods.APPROVAL_RECEIVED -> {
                         !(params["request_id"] as? String).isNullOrBlank()
                     }
 

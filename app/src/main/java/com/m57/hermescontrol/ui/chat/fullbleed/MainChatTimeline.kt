@@ -29,8 +29,10 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.Alignment
@@ -70,6 +72,8 @@ import com.m57.hermescontrol.ui.chat.isApprovalTimelineRow
 import com.m57.hermescontrol.ui.chat.isLivePreviewOf
 import com.m57.hermescontrol.ui.chat.isSpecialistSetupText
 import com.m57.hermescontrol.ui.common.EmptyState
+import com.m57.hermescontrol.vault.VaultPromptCard
+import com.m57.hermescontrol.vault.VaultPromptSheet
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlin.math.abs
@@ -157,9 +161,14 @@ internal fun MainChatTimeline(
     val quotedSources = remember(rows) { rows.resolveQuotedReplySources() }
     val messageCount = remember(rows) { rows.count { it.message != null && !it.live } }
     val hasSpecialistFooter = specialistFooter != null
-    val leadingRows = (if (pendingClarify != null) 1 else 0) + (if (hasSpecialistFooter) 1 else 0)
+    val vaultPrompt = state.vaultPrompt
+    val vaultKey = vaultPrompt?.request?.id?.let { "vault-prompt:$it" }
+    var vaultSheetOpen by remember(vaultPrompt?.scope, vaultPrompt?.request) { mutableStateOf(false) }
+    val clarifyIndex = if (vaultKey == null) 0 else 1
+    val leadingRows = clarifyIndex + (if (pendingClarify != null) 1 else 0) + (if (hasSpecialistFooter) 1 else 0)
     val latestKey =
         when {
+            vaultKey != null -> vaultKey
             pendingClarify != null -> PENDING_CLARIFY_KEY
             hasSpecialistFooter -> SPECIALIST_SETTINGS_KEY
             else -> rows.firstOrNull()?.key
@@ -167,15 +176,16 @@ internal fun MainChatTimeline(
     SideEffect {
         scrollPosition.onRowsChanged(latestKey, state.isLoading) { key ->
             when {
-                key == PENDING_CLARIFY_KEY && pendingClarify != null -> 0
+                key == vaultKey -> 0
+                key == PENDING_CLARIFY_KEY && pendingClarify != null -> clarifyIndex
                 key == SPECIALIST_SETTINGS_KEY && hasSpecialistFooter -> leadingRows - 1
                 else -> rows.indexOfFirst { it.key == key }.takeIf { it >= 0 }?.plus(leadingRows)
             }
         }
     }
-    LaunchedEffect(scrollController, rows, pendingClarify, specialistCardsState) {
+    LaunchedEffect(scrollController, rows, pendingClarify, specialistCardsState, vaultKey) {
         scrollController.onTailChanged(
-            listOf(rows.firstOrNull()?.key, pendingClarify, specialistCardsState),
+            listOf(rows.firstOrNull()?.key, pendingClarify, specialistCardsState, vaultKey),
             messageCount,
         )
     }
@@ -220,9 +230,7 @@ internal fun MainChatTimeline(
             }
     }
     CompositionLocalProvider(LocalDensity provides chatDensity) {
-        if (rows.isEmpty() && pendingClarify == null && specialistFooter == null && !state.isLoading &&
-            !state.hasOlderMessages
-        ) {
+        if (rows.isEmpty() && leadingRows == 0 && !state.isLoading && !state.hasOlderMessages) {
             Box(Modifier.fillMaxSize().padding(top = headerHeight), contentAlignment = Alignment.Center) {
                 EmptyState(
                     title = stringResource(R.string.chat_empty_title),
@@ -238,6 +246,15 @@ internal fun MainChatTimeline(
             contentPadding = PaddingValues(top = topPadding, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.Bottom),
         ) {
+            if (vaultPrompt != null) {
+                item(key = vaultKey) {
+                    VaultPromptCard(
+                        vaultPrompt,
+                        onOpen = { vaultSheetOpen = true },
+                        onDecline = { viewModel.respondToVaultPrompt(vaultPrompt, "") },
+                    )
+                }
+            }
             if (pendingClarify != null) {
                 item(key = PENDING_CLARIFY_KEY) { MainChatClarification(pendingClarify, viewModel) }
             }
@@ -345,6 +362,13 @@ internal fun MainChatTimeline(
                     }
                 }
             }
+        }
+        if (vaultPrompt != null && vaultSheetOpen) {
+            VaultPromptSheet(
+                vaultPrompt,
+                onDismiss = { vaultSheetOpen = false },
+                onRespond = { viewModel.respondToVaultPrompt(vaultPrompt, it) },
+            )
         }
     }
 }

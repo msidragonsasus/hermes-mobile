@@ -46,7 +46,10 @@ class AttentionRepository {
         outer: String,
     ) = OuterKey(scope.copy(generation = 0), runtimeId, outer)
 
-    private fun key(ref: RequestRef): OuterKey? = ref.serverRequestId?.let { key(ref.scope, ref.session.runtimeId, it) }
+    private fun key(ref: RequestRef): OuterKey? =
+        (ref.serverRequestId ?: ref.requestId.takeIf { ref.executionGeneration != null })?.let {
+            key(ref.scope, ref.session.runtimeId, it)
+        }
 
     private fun coalesces(
         a: RequestRef,
@@ -112,7 +115,7 @@ class AttentionRepository {
                     .filter { item ->
                         item.ref.scope.copy(generation = signal.scope.generation) == signal.scope &&
                             item.ref.session.runtimeId == signal.runtimeId &&
-                            item.ref.serverRequestId != null && item.ref.serverRequestId !in signal.serverRequestIds &&
+                            key(item.ref)?.let { it.outer !in signal.serverRequestIds } == true &&
                             (observedAt[item.ref] ?: 0) <= signal.startedAt
                     }.forEach { item ->
                         key(item.ref)?.let(tombstones::add)
@@ -155,7 +158,7 @@ class AttentionRepository {
                     it.ref.scope == item.ref.scope && coalesces(it.ref, item.ref)
             }
         if (coalesced != null && coalesced.ref != item.ref) {
-            if (item.ref.serverRequestId == null) return coalesced
+            if (key(item.ref) == null) return coalesced
             aliases[coalesced.ref] = item.ref
             if (coalesced.ref in responseAttempts) responseAttempts.add(item.ref)
             if (coalesced.ref in resolvedInFlight) resolvedInFlight.add(item.ref)

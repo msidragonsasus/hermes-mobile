@@ -115,6 +115,7 @@ class ProfileScopeInterceptorTest {
             "api/dashboard/plugins",
             "api/plugins/hermes-achievements/achievements",
             "api/plugins/career-other/threads",
+            "api/plugins/mobile_worker_extra/inbox",
         )) {
             server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
             val req = Request.Builder().url(server.url(path)).build()
@@ -134,6 +135,8 @@ class ProfileScopeInterceptorTest {
                 "api/plugins/pc-power/status",
                 "api/plugins/mobile-terminal/sessions",
                 "api/plugins/today_home/plan",
+                "api/plugins/mobile_worker/escrow",
+                "api/plugins/mobile_worker/inbox",
                 "api/connections/google-workspace",
                 "api/connections/slack/status",
             )

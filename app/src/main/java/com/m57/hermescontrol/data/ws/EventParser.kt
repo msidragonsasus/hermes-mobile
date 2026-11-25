@@ -15,6 +15,7 @@ import com.m57.hermescontrol.ui.chat.extractTodosFromMap
  */
 object EventParser {
     private const val TAG = "EventParser"
+    private val eventTypeName = Regex("[a-z][a-z0-9_]*(?:[.][a-z][a-z0-9_]*)+")
 
     fun parse(
         response: JsonRpcResponse,
@@ -206,7 +207,9 @@ object EventParser {
                 // older client or test that still uses the legacy field names. (Issue #206)
                 // Batch clarify (issue #18450): gateway sends "questions" array of {qid, question, choices, multi_select}.
                 val rawQuestions = payload?.get("questions") as? List<*>
-                val clarifyId = payload?.get("clarify_id") as? String ?: payload?.get("request_id") as? String
+                val clarifyId =
+                    payload?.get("prompt_id") as? String ?: payload?.get("clarify_id") as? String
+                        ?: payload?.get("request_id") as? String
 
                 val parsedQuestions =
                     if (rawQuestions != null && rawQuestions.isNotEmpty()) {
@@ -282,6 +285,16 @@ object EventParser {
                     questionId = legacyQid,
                     multiSelect = legacyMulti,
                     questions = parsedQuestions,
+                    executionGeneration = (payload?.get("execution_generation") as? Number)?.toLong(),
+                )
+            }
+
+            "approval.settled", "clarify.settled" -> {
+                WsEvent.ServerRequestCancel(
+                    requestId = payload?.get("prompt_id") as? String,
+                    method = eventType.substringBefore('.'),
+                    reason = "resolved",
+                    sessionId = sessionId,
                 )
             }
 
@@ -292,7 +305,7 @@ object EventParser {
 
             "status.update" -> {
                 val status = payload?.get("status") as? String
-                WsEvent.StatusUpdate(status, payload)
+                WsEvent.StatusUpdate(status, payload, sessionId)
             }
 
             "error" -> {
@@ -378,7 +391,8 @@ object EventParser {
 
             else -> {
                 // PR02 / R03: event types are server-controlled, including during replay.
-                Log.w(TAG, "Unknown event type")
+                val name = eventType.takeIf { it.length <= 128 && eventTypeName.matches(it) }
+                Log.w(TAG, if (name == null) "Unknown event type" else "Unknown event type: $name")
                 WsEvent.Unknown(rawJson)
             }
         }
@@ -532,7 +546,7 @@ object EventParser {
 
         @Suppress("UNCHECKED_CAST")
         val patternKeys = (payload?.get("pattern_keys") as? List<*>)?.filterIsInstance<String>()
-        val requestId = payload?.get("request_id") as? String
+        val requestId = payload?.get("prompt_id") as? String ?: payload?.get("request_id") as? String
 
         @Suppress("UNCHECKED_CAST")
         val rawChoices =
@@ -558,6 +572,7 @@ object EventParser {
             choices,
             allowPermanent,
             smartDenied,
+            executionGeneration = (payload?.get("execution_generation") as? Number)?.toLong(),
         )
     }
 }

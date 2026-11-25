@@ -100,7 +100,13 @@ internal fun dashboardAttentionItems(
             } else {
                 listOf(
                     AttentionItem(
-                        RequestRef(scope, SessionRef(runtimeId), requestId, serverRequestId = event.serverRequestId),
+                        RequestRef(
+                            scope,
+                            SessionRef(runtimeId),
+                            requestId,
+                            serverRequestId = event.serverRequestId,
+                            executionGeneration = event.executionGeneration,
+                        ),
                         AttentionKind.APPROVAL,
                         event.description ?: event.command ?: "実行内容は未提供です",
                         details =
@@ -150,6 +156,7 @@ internal fun dashboardAttentionItems(
                             requestId,
                             if (event.questions.isEmpty()) event.questionId else question.qid,
                             event.serverRequestId,
+                            event.executionGeneration,
                         ),
                         AttentionKind.CLARIFICATION,
                         question.question,

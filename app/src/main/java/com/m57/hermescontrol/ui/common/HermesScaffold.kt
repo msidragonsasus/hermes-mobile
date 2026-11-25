@@ -149,6 +149,7 @@ fun HermesScaffold(
     drawerGesturesEnabled: Boolean = true,
     onRefresh: (() -> Unit)? = null,
     isRefreshing: Boolean = false,
+    showRefreshAction: Boolean = true,
     pinTopBar: Boolean = false,
     /** Optional compact screen-owned bar; other screens retain the Material default. */
     topBarHeight: Dp? = null,
@@ -239,7 +240,7 @@ fun HermesScaffold(
                         }
                     },
                     actions = {
-                        if (onRefresh != null) {
+                        if (onRefresh != null && showRefreshAction) {
                             IconButton(onClick = onRefresh) {
                                 Icon(
                                     imageVector = Icons.Filled.Refresh,

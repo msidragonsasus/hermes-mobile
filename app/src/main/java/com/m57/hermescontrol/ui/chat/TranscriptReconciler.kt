@@ -19,7 +19,7 @@ internal fun canonicalMessageId(
             Base64.getUrlEncoder().withoutPadding().encodeToString(it.toByteArray(Charsets.UTF_8))
         }
 
-/** One identity-only reconcile for hydrate, older pages and sync. No text/clock matching. */
+/** Shared reconciliation for hydrate, older pages and sync. */
 internal fun reconcileTranscript(
     input: ChatUiState,
     target: String,
@@ -30,9 +30,40 @@ internal fun reconcileTranscript(
     older: Boolean = false,
     recoveringReply: ChatMessage? = null,
 ): ChatUiState {
+    val addresses = raw.mapNotNull { it.id?.toLong()?.takeIf { row -> row > 0 } }
+    if (addresses.size != addresses.distinct().size) return input
+    val queue = reconcileQueuedInputs(input, target, session, raw, latest && offset == 0 && !older)
+    val transcript =
+        reconcileOrdinaryTranscript(
+            queue.state,
+            target,
+            session,
+            raw.filterNot { it.isQueuedPrompt },
+            offset,
+            latest,
+            older,
+            recoveringReply,
+            queue.repositionIds,
+            queue.boundIds,
+        )
+    val steers = reconcileSteerInputs(queue.state, transcript, target, session, raw.filterNot { it.isQueuedPrompt })
+    return if (queue.waiting.isEmpty()) steers else steers.copy(messages = steers.messages + queue.waiting)
+}
+
+private fun reconcileOrdinaryTranscript(
+    input: ChatUiState,
+    target: String,
+    session: String,
+    raw: List<SessionMessage>,
+    offset: Int,
+    latest: Boolean,
+    older: Boolean,
+    recoveringReply: ChatMessage?,
+    repositionIds: Set<String>,
+    queuedBubbleIds: Set<String>,
+): ChatUiState {
     val state = adoptRewrittenRows(input, target, session, raw, newestPage = latest && offset == 0 && !older)
     val addresses = raw.mapNotNull { it.id?.toLong()?.takeIf { row -> row > 0 } }
-    if (addresses.size != addresses.distinct().size) return state // Invalid addresses prove nothing.
     // The legacy mapper's latest-mode IDs can collide (row id == null-row
     // index). Use its unique positional IDs only as an internal provenance key;
     // filtering/reasoning folding must not change the raw position association.
@@ -69,7 +100,23 @@ internal fun reconcileTranscript(
             // retain it without using the reasoning or prose to establish identity.
             val alias = row?.let { state.responseLedger.aliases[it.toString()] }
             val antecedent = alias?.let(stateIndex::get) ?: stateIndex[id]
-            message.copy(id = id, sourceBody = source).withRetainedReasoning(antecedent) to position
+            val body = message.copy(id = id, sourceBody = source).withRetainedReasoning(antecedent)
+            val retained =
+                if (antecedent != null && alias in queuedBubbleIds &&
+                    body.role == MessageRole.USER && !body.hasServerDisplayProjection &&
+                    body.content == antecedent.content
+                ) {
+                    body.copy(
+                        sourceBody = antecedent.sourceBody,
+                        attachments =
+                            (body.attachments.orEmpty() + antecedent.attachments.orEmpty())
+                                .distinct()
+                                .takeIf { it.isNotEmpty() },
+                    )
+                } else {
+                    body
+                }
+            retained to position
         }
     val mapped = mappedWithPositions.map { it.first }
     val rawPositionById = mappedWithPositions.associate { it.first.id to it.second }
@@ -160,7 +207,7 @@ internal fun reconcileTranscript(
                 )
             }
     }
-    val windows = ledger.responses.associate { it.id to verifiedCanonicalWindow(it, ledger, messages, raw) }
+    val windows = ledger.responses.associate { it.id to verifiedCanonicalWindow(it, target, session, raw) }
     val claims =
         ledger.responses.filter { it.authority.opening != null }.associate { record ->
             record.id to
@@ -201,6 +248,7 @@ internal fun reconcileTranscript(
     val released = state.stagedCanonicalMessages
     var staged = emptyList<ChatMessage>()
     val visibleCandidates = mapped + released.filter { releasedRow -> mapped.none { it.id == releasedRow.id } }
+    messages = coalesceAcknowledgedUsers(messages, stateIndex, mapped, addressById, ledger)
     // A presentation key can name a real canonical TOOL body, never a receipt row.
     val toolDisplayKeys = selectToolDisplayKeys(state, target, session, mappedWithPositions, raw, ledger, claims)
     // Compare payload versions only AFTER an exact address/alias selected the antecedent.
@@ -269,8 +317,10 @@ internal fun reconcileTranscript(
             rootPosition >= 0 &&
                 raw
                     .subList(rootPosition, if (finalPosition > rootPosition) finalPosition + 1 else raw.size)
-                    .takeWhile { it === raw[rootPosition] || it.role != "user" || it.display_kind != null }
-                    .any { it.role != "user" && it.id?.toLong() !in rows }
+                    .takeWhile {
+                        finalPosition > rootPosition || it === raw[rootPosition] || it.role != "user" ||
+                            it.display_kind != null || it.id?.toLong() in rows
+                    }.any { it.id?.toLong() !in rows }
         if (exposedGap) {
             ledger =
                 ledger.update(record.id) {
@@ -289,13 +339,16 @@ internal fun reconcileTranscript(
         }
         if (record.authority.canonicalSuspended && windows[record.id] == null) continue
         val retiringIds = (record.messageIds + record.userIds + visibleIds).toSet()
+        val preserveControlInputs =
+            record.authority.controls.isNotEmpty() ||
+                record.authority.terminals.any { it.userRowIds.orEmpty().size > 1 }
         val knownReferences =
             messages
                 .filter { it.id in retiringIds && it.id !in physicalSupersededIds }
                 .flatMap { it.sourceMediaPaths() }
                 .toSet()
         val replacementReferences = visibleIds.flatMap { available.getValue(it).sourceMediaPaths() }.toSet()
-        if (!replacementReferences.containsAll(knownReferences)) {
+        if (!preserveControlInputs && !replacementReferences.containsAll(knownReferences)) {
             // A complete manifest proves identity, not that a stripped body covers known files.
             // Keep the antecedent readable and use the existing fail-closed coverage state.
             ledger =
@@ -363,6 +416,18 @@ internal fun reconcileTranscript(
                     )
                 }
             }
+        val (presentation, presentationAliases) =
+            if (!preserveControlInputs) {
+                replacement to emptyMap()
+            } else {
+                controlledTurnPresentation(
+                    record,
+                    ledger,
+                    messages,
+                    replacement,
+                    rows.filter { it in ledger.canonicalVisibleRows },
+                )
+            }
         val previous = (record.messageIds + record.userIds + visibleIds + canonicalIds).toSet()
         val existingSlot = messages.indexOfFirst { it.id in previous }
         // Loss of every old materialization is a coverage gap, not loss of the accepted identity.
@@ -373,18 +438,28 @@ internal fun reconcileTranscript(
         val slot = if (existingSlot >= 0) existingSlot else nextOwnerSlot ?: messages.size
         val before = messages.take(slot).filterNot { it.id in previous }
         val after = messages.drop(slot).filterNot { it.id in previous }
-        messages = (before + replacement + after).distinctBy { it.id }
+        messages = (before + presentation + after).distinctBy { it.id }
         consumed += rows
         staged = staged.filterNot { it.id in visibleIds || it.id in canonicalIds }
         ledger =
             ledger
                 .update(record.id) {
                     it.copy(
-                        messageIds = replacement.filter { m -> m.role != MessageRole.USER }.map { m -> m.id },
-                        userIds = replacement.filter { m -> m.role == MessageRole.USER }.map { m -> m.id },
+                        messageIds = presentation.filter { m -> m.role != MessageRole.USER }.map { m -> m.id },
+                        userIds = presentation.filter { m -> m.role == MessageRole.USER }.map { m -> m.id },
                         coverage = true,
                         canonicalRowIds = rows,
                         canonicalWindowVerified = windows[record.id] != null || it.canonicalWindowVerified,
+                        authority =
+                            it.authority.copy(
+                                canonical =
+                                    it.authority.canonical?.copy(
+                                        memberIds =
+                                            canonicalIds.zip(visibleIds).map { (id, displayed) ->
+                                                presentationAliases[allAddressesById[id]] ?: displayed
+                                            },
+                                    ),
+                            ),
                     )
                 }.copy(
                     aliases =
@@ -392,7 +467,8 @@ internal fun reconcileTranscript(
                             rows.associate {
                                 it.toString() to
                                     (
-                                        available[canonicalMessageId(target, session, it)]?.id
+                                        presentationAliases[it]
+                                            ?: available[canonicalMessageId(target, session, it)]?.id
                                             ?: canonicalMessageId(target, session, it)
                                     )
                             },
@@ -548,7 +624,11 @@ internal fun reconcileTranscript(
         ledger = ledger.copy(requiresCorrelation = true)
     }
     val incoming = permitted.associateBy { it.id }
-    val ordered = messages.map { incoming[it.id] ?: it }.toMutableList()
+    val ordered =
+        messages
+            .filterNot { it.id in repositionIds && it.id in incoming }
+            .map { incoming[it.id] ?: it }
+            .toMutableList()
     val page =
         visibleCandidates.map { canonical ->
             projectedBySourceId[canonical.id]?.let { return@map it }
@@ -567,6 +647,19 @@ internal fun reconcileTranscript(
         if (positions.isEmpty()) return null
         return positions.first()..positions.last()
     }
+    // The running turn's remaining rows stay above a discarded input. The next user turn starts below it.
+    val discardedQueueBoundaries =
+        ledger.queuedTranscriptInputs
+            .filter { it.discarded }
+            .mapNotNull { entry ->
+                raw
+                    .firstOrNull {
+                        it.role == "user" && it.display_kind == null && !it.isModelOnly &&
+                            (it.id?.toLong() ?: Long.MIN_VALUE) > entry.rowId
+                    }?.id
+                    ?.toLong()
+                    ?.let { entry.bubbleId to it }
+            }.toMap()
     // Weave each genuinely new row into the explicit page order using proven
     // row/response anchors. Never order USER or assistant boundaries by a clock.
     for (row in permitted) {
@@ -581,7 +674,16 @@ internal fun reconcileTranscript(
             } else {
                 before?.let { it.last + 1 } ?: after?.first ?: if (older) 0 else ordered.size
             }
-        ordered.add(slot, row)
+        // A discarded queued input has no history row to anchor it. Later rows stay below it.
+        var placed = slot
+        allAddressesById[row.id]?.let { address ->
+            while (placed < ordered.size &&
+                discardedQueueBoundaries[ordered[placed].id]?.let { it <= address } == true
+            ) {
+                placed++
+            }
+        }
+        ordered.add(placed, row)
     }
     val (foldedMessages, foldedLedger) =
         foldUnprovenLocalTurns(
@@ -601,11 +703,53 @@ internal fun reconcileTranscript(
             foldedMessages
         }
     val toolAnswerIds = recoveredToolAnswerIds(page.subList(0, mapped.size), visible, foldedLedger)
+    val serverTimes =
+        permittedWithPositions.mapNotNull { (message, position, _) ->
+            position?.let { raw[it].timestampEpochMs }?.let { message.id to it }
+        }.toMap()
+    val queuePositions = foldedLedger.queuedTranscriptInputs.mapTo(HashSet()) { it.bubbleId } + queuedBubbleIds
     return state.copy(
-        messages = visible,
+        messages = placeUnmatchedCachedRows(visible, serverTimes, foldedLedger.aliases.values.toSet(), queuePositions),
         responseLedger = foldedLedger.copy(toolAnswerIds = toolAnswerIds, approvalHistoryAnswer = historyAnswer),
         stagedCanonicalMessages = staged,
     )
+}
+
+/**
+ * Page weaving establishes server order through row and response anchors. A cached bubble
+ * without a server slot can still be stranded below a newer page row. Use its timestamp
+ * for placement only, preserving the order of both the server rows and the local bubbles.
+ */
+private fun placeUnmatchedCachedRows(
+    messages: List<ChatMessage>,
+    serverTimes: Map<String, Long>,
+    aliasedIds: Set<String>,
+    queuedBubbleIds: Set<String>,
+): List<ChatMessage> {
+    fun isServerRow(message: ChatMessage) =
+        message.id in serverTimes || message.id in aliasedIds || message.id.startsWith("canonical:") ||
+            message.id.startsWith("unaddressed:") || message.id.startsWith("disputed:") ||
+            message.id.startsWith("rest-")
+
+    val ordered = messages.toMutableList()
+    var localBoundary = 0
+    for (index in ordered.indices) {
+        val local = ordered[index]
+        if (isServerRow(local)) continue
+        if (local.id !in queuedBubbleIds && local.displayKind != "steer" && local.timestamp > 0) {
+            val slot = (localBoundary until index).firstOrNull {
+                serverTimes[ordered[it].id]?.let { timestamp -> timestamp > local.timestamp } == true
+            }
+            if (slot != null) {
+                ordered.removeAt(index)
+                ordered.add(slot, local)
+                localBoundary = slot + 1
+                continue
+            }
+        }
+        localBoundary = index + 1
+    }
+    return ordered
 }
 
 /**
@@ -842,6 +986,7 @@ private fun adoptRewrittenRows(
                         rowIds = it.rowIds.map(::moved).distinct(),
                         userRowId = it.userRowId?.let(::moved),
                         finalRowId = it.finalRowId?.let(::moved),
+                        userRowIds = it.userRowIds?.map(::moved)?.distinct(),
                     )
                 }
             // A binding or exhaustiveness conflict that only existed between a row and its
@@ -926,6 +1071,18 @@ private fun adoptRewrittenRows(
         }
         val liveIds = rawRows.map { canonicalMessageId(target, session, it) }.toSet()
         dead.removeAll(liveIds)
+        // A drain can retain an accept row's old ID as a presentation key.
+        val drainedIds =
+            ledger.queuedTranscriptInputs.filter { it.replacementRowId != null }.mapTo(
+                HashSet(),
+            ) { it.bubbleId }
+        dead.removeAll(
+            ledger.aliases
+                .filterKeys { it.toLongOrNull() in rawRows }
+                .values
+                .filter { it in drainedIds }
+                .toSet(),
+        )
         if (dead.isNotEmpty()) {
             messages = messages.filterNot { it.id in dead }
             ledger =
@@ -991,8 +1148,8 @@ private fun canonicalRowOf(
  * - each folded message keeps everything it held: a reply folds only into a server row of the
  *   proven span with the same body, compatible reasoning, attachments and display kind (a tool
  *   also needs its unique call id). Missing unprojected history reasoning is retained from the local row.
- * Folded messages are substituted in place, so unfolded local messages (interim commentary, a
- * differently stored reply, cards) keep their order. No reply authority is granted.
+ * Proven busy rows take their history slots. Other folds preserve the order of unfolded local
+ * messages (interim commentary, a differently stored reply, cards). No reply authority is granted.
  */
 private fun foldUnprovenLocalTurns(
     messages: List<ChatMessage>,
@@ -1010,7 +1167,10 @@ private fun foldUnprovenLocalTurns(
     fun isOrdinaryUser(position: Int) = raw[position].role == "user" && raw[position].display_kind == null
 
     fun spanOf(root: Int): IntRange? {
-        val end = (root + 1 until raw.size).firstOrNull(::isOrdinaryUser)
+        val end =
+            (root + 1 until raw.size).firstOrNull {
+                isOrdinaryUser(it) || (raw[it].role == "user" && raw[it].display_kind == "internal_notification")
+            }
         // An older page's last turn may continue on the newer page: never fold half a turn.
         if (end == null && older) return null
         return root until (end ?: raw.size)
@@ -1163,6 +1323,12 @@ private fun foldUnprovenLocalTurns(
             return trace.isNotEmpty() &&
                 (trace == compact(spanTrace.joinToString("")) || spanTrace.any { compact(it) == trace })
         }
+        val stoppedReply =
+            storedFinal?.takeIf {
+                !running && !older && record.finishedAt == null &&
+                    raw[span.last].finish_reason == "stop" && it.content.isNotBlank()
+            }
+        var recoveredStop: ChatMessage? = null
         for (local in replies) {
             if (local.isStreaming || local.toolStatus == ToolStatus.RUNNING ||
                 (running && local.role != MessageRole.TOOL)
@@ -1170,8 +1336,18 @@ private fun foldUnprovenLocalTurns(
                 continue
             }
             val approvalFinal = storedFinal.takeIf { shareApprovalTrace && local.id == localFinal?.id }
+            // The mapper carries a reasoning-only tool round into the next answer.
+            // Retire the sealed trace only when this addressed reply already renders it.
+            val recoveredFinal =
+                stoppedReply?.takeIf { server ->
+                    server in available && local.role == MessageRole.ASSISTANT &&
+                        local.bodyForStorage().isBlank() && local.reasoningText.isNotBlank() &&
+                        local.reasoningText == server.reasoningText &&
+                        local.copy(content = server.content).foldsLosslesslyInto(server)
+                }
             val match =
-                approvalFinal?.takeIf { it in available && local.foldsLosslesslyInto(it, traceKeptElsewhere = true) }
+                recoveredFinal
+                    ?: approvalFinal?.takeIf { it in available && local.foldsLosslesslyInto(it, traceKeptElsewhere = true) }
                     ?: available.firstOrNull { server ->
                         val uniqueCall =
                             local.toolCallId.isNotBlank() && server.toolCallId == local.toolCallId &&
@@ -1188,6 +1364,11 @@ private fun foldUnprovenLocalTurns(
             // would change on the next sync, so a folded tool is shown exactly as stored.
             substitutes[local.id] =
                 when {
+                    recoveredFinal != null -> {
+                        recoveredStop = recoveredFinal
+                        recoveredFinal
+                    }
+
                     match == approvalFinal -> {
                         match.withLocalPresentation(local).copy(
                             reasoningText = mergeObservedReasoning(local.reasoningText, match.reasoningText),
@@ -1215,7 +1396,10 @@ private fun foldUnprovenLocalTurns(
                 message.role == MessageRole.USER && message.displayKind == null && message.id !in substitutes
             }
         val serverSlotReplacements =
-            if (displayRoot >= 0 && nextDisplayUser != null) {
+            if (proven.isEmpty() || recoveredStop != null) {
+                // Keep the durable interleaving of the prompt, tool rows and prose.
+                substitutes
+            } else if (displayRoot >= 0 && nextDisplayUser != null) {
                 val turnIds = current.subList(displayRoot + 1, nextDisplayUser).mapTo(HashSet()) { it.id }
                 val laterIds = current.subList(nextDisplayUser, current.size).mapTo(HashSet()) { it.id }
                 substitutes.filter { (localId, server) -> localId in laterIds && server.id in turnIds }
@@ -1244,6 +1428,7 @@ private fun foldUnprovenLocalTurns(
                         messageIds = (it.messageIds.filterNot { id -> id in removedIds } + ownedOthers).distinct(),
                         userRowIds = (it.userRowIds + ownedRows.filter { row -> row == rootRow }).distinct(),
                         canonicalRowIds = (it.canonicalRowIds + ownedRows.filter { row -> row != rootRow }).distinct(),
+                        finishedAt = it.finishedAt ?: recoveredStop?.timestamp,
                     )
                 }.copy(
                     pendingInputs = result.pendingInputs - removedIds,
@@ -1252,6 +1437,176 @@ private fun foldUnprovenLocalTurns(
         folded += ownedRows
     }
     return current to result
+}
+
+/**
+ * A receipt addresses the server turn. An addressless control ACK only addresses its local input.
+ * Pair occurrences in the receipt's user sequence, then check disposition and payload parity.
+ * Keep an accepted input with no proved row at its local slot.
+ */
+private fun controlledTurnPresentation(
+    record: ResponseRecord,
+    ledger: ResponseLedger,
+    messages: List<ChatMessage>,
+    canonical: List<ChatMessage>,
+    rows: List<Long>,
+): Pair<List<ChatMessage>, Map<Long, String>> {
+    val members = (record.userIds + record.messageIds).toSet()
+    val local = messages.filter { it.id in members }
+    val server = rows.zip(canonical).toMap().toMutableMap()
+    val aliases = mutableMapOf<Long, String>()
+    val matched = mutableMapOf<String, Long>()
+    val controlsById =
+        record.authority.controls
+            .mapNotNull { control ->
+                control.localUserId?.let { it to control }
+            }.toMap()
+
+    val legacyControls = record.authority.controls.filter { it.localUserId == null && it.userRowId == null }
+    val legacyUsers =
+        local.filter {
+            it.displayKind == "steer" && it.id !in controlsById &&
+                it.id !in ledger.aliases.values
+        }
+    val legacyDisposition =
+        legacyControls
+            .map { it.disposition }
+            .distinct()
+            .singleOrNull()
+            ?.takeIf { legacyUsers.size == legacyControls.size }
+
+    fun merge(
+        row: Long,
+        prior: ChatMessage,
+        replacement: ChatMessage,
+        keepId: Boolean = false,
+    ) {
+        server[row] = replacement.withLocalPresentation(prior).let { if (keepId) it.copy(id = prior.id) else it }
+        matched[prior.id] = row
+        if (keepId) aliases[row] = prior.id
+    }
+
+    for ((row, stored) in rows.zip(canonical)) {
+        val alias = ledger.aliases[row.toString()]
+        val prior = local.singleOrNull { it.id == stored.id || it.id == alias } ?: continue
+        val projected = stored.copy(displayKind = stored.displayKind ?: prior.displayKind)
+        if (prior.foldsLosslesslyInto(projected, traceKeptElsewhere = true) || prior == projected) {
+            val retained =
+                projected.copy(
+                    reasoningText = mergeObservedReasoning(prior.reasoningText, projected.reasoningText),
+                )
+            merge(row, prior, retained, keepId = prior.role == MessageRole.USER)
+        }
+    }
+
+    val receiptUsers = record.receiptUsers()
+    if (receiptUsers != null) {
+        val pending =
+            local.filter { it.id !in matched }.mapNotNull { prior ->
+                val control = controlsById[prior.id]
+                val disposition =
+                    control?.takeIf { it.userRowId == null }?.disposition
+                        ?: legacyDisposition?.takeIf { prior in legacyUsers }
+                disposition?.let { prior to it }
+            }
+        val stored =
+            receiptUsers.drop(1).mapNotNull { row ->
+                server[row]
+                    ?.takeIf {
+                        it.role == MessageRole.USER && row !in matched.values && ledger.aliases[row.toString()] == null
+                    }?.let { row to it }
+            }
+        val pairs = pending.zip(stored)
+        if (pending.size == stored.size &&
+            pairs.all { (accepted, addressed) ->
+                val (prior, disposition) = accepted
+                val canonicalUser = addressed.second
+                // Redirect ACKs can also result in a steer when the agent is executing tools.
+                val compatible =
+                    canonicalUser.displayKind == "steer" ||
+                        (canonicalUser.displayKind == null && disposition == "REDIRECTED")
+                compatible && prior.foldsLosslesslyInto(canonicalUser.copy(displayKind = "steer"))
+            }
+        ) {
+            pairs.forEach { (accepted, addressed) ->
+                merge(addressed.first, accepted.first, addressed.second.copy(displayKind = "steer"), keepId = true)
+            }
+        }
+    }
+
+    val final = local.lastOrNull { it.role == MessageRole.ASSISTANT }
+    for (prior in local.filterNot { it.id in matched }) {
+        if (prior.role == MessageRole.USER || prior.isStreaming || prior.approvalInfo != null ||
+            prior.clarifyInfo != null
+        ) {
+            continue
+        }
+        val candidates = if (prior == final) rows.takeLast(1) else rows.dropLast(1)
+        val row =
+            candidates.singleOrNull { row ->
+                val stored = server.getValue(row)
+                if (row in matched.values || stored.id in members) return@singleOrNull false
+                when (prior.role) {
+                    MessageRole.TOOL -> {
+                        prior.toolCallId.isNotBlank() && prior.toolCallId == stored.toolCallId &&
+                            (prior.foldsLosslesslyInto(stored) || prior.finishedToolFoldsByCallInto(stored))
+                    }
+
+                    MessageRole.ASSISTANT -> {
+                        prior.foldsLosslesslyInto(stored, traceKeptElsewhere = true) ||
+                            (
+                                prior == final &&
+                                    prior.copy(isStreaming = true, reasoningText = "").isCoveredByStoredReply(stored)
+                            )
+                    }
+
+                    else -> {
+                        false
+                    }
+                }
+            } ?: continue
+        val stored = server.getValue(row)
+        merge(
+            row,
+            prior,
+            stored.copy(reasoningText = mergeObservedReasoning(prior.reasoningText, stored.reasoningText)),
+        )
+    }
+
+    // Previously materialized canonical rows can also have a local-only payload version.
+    // Keep it unless the stored version above was able to absorb it.
+    val canonicalById = canonical.associateBy { it.id }
+    val extras =
+        local.withIndex().filter { (_, message) ->
+            message.id !in matched &&
+                canonicalById[message.id] != message
+        }
+    val before =
+        extras.groupBy(
+            keySelector = { (index, _) ->
+                local.asSequence().drop(index + 1).firstNotNullOfOrNull { matched[it.id] } ?: rows.last()
+            },
+            valueTransform = { (_, message) -> message },
+        )
+    val presentation =
+        rows.flatMap { row ->
+            val stored = server.getValue(row)
+            val retained = before[row].orEmpty()
+            // If the same stable id holds a distinct payload, keep the local id and give the server
+            // observation its own physical-version key.
+            val observed =
+                if (local.any {
+                        it.id == stored.id && it.id !in matched && it != stored
+                    }
+                ) {
+                    disputedBodyId(stored)
+                } else {
+                    stored.id
+                }
+            if (observed != stored.id) aliases[row] = observed
+            retained + stored.copy(id = observed)
+        }
+    return presentation to aliases
 }
 
 /** Recover one unaddressed, finished queue reply using its immediate predecessor's exact final row. */
@@ -1266,7 +1621,7 @@ private fun legacyFollowUpRoot(
 ): Int? {
     val facts = record.authority
     val queued = facts.queued ?: return null
-    if (!record.serverFollowUp || record.finishedAt == null || facts.opening != null || facts.terminals.isNotEmpty() ||
+    if (!record.serverFollowUp || record.finishedAt == null || facts.opening != null ||
         queued.target != target || queued.session != session || record.canonicalRowIds.isNotEmpty()
     ) {
         return null
@@ -1281,15 +1636,24 @@ private fun legacyFollowUpRoot(
     }
     val previous = raw.indexOfFirst { it.id?.toLong() == predecessorFinal && it.role == "assistant" }
     val root = previous + 1
-    val end = root + 1
-    if (previous < 0 || end > raw.lastIndex || raw[root].role != "user" || raw[root].display_kind != null ||
-        raw[end].role != "assistant" || raw[end].display_kind != null ||
-        raw.getOrNull(end + 1)?.let { it.role != "user" || it.display_kind != null } == true
+    if (previous < 0 || root >= raw.lastIndex || raw[root].role != "user" || raw[root].display_kind != null) return null
+    val end = ((root + 1 until raw.size).firstOrNull { raw[it].role == "user" } ?: raw.size) - 1
+    if (end == root || raw[end].role != "assistant" || raw[end].display_kind != null ||
+        raw.getOrNull(end + 1)?.display_kind != null ||
+        (root + 1 until end).any { raw[it].role !in setOf("assistant", "tool", "system") }
+    ) {
+        return null
+    }
+    if (record.authority.terminals.any {
+            !it.safe || it.userRowId != raw[root].id?.toLong() || it.finalRowId != raw[end].id?.toLong() ||
+                it.rowIds != raw.subList(root, end + 1).map { row -> row.id?.toLong() }
+        }
     ) {
         return null
     }
     val user = record.userIds.singleOrNull()?.let(messages::get) ?: return null
-    val reply = record.messageIds.singleOrNull()?.let(messages::get) ?: return null
+    val reply =
+        record.messageIds.mapNotNull(messages::get).lastOrNull { it.role == MessageRole.ASSISTANT } ?: return null
     val storedUser = displayedAt(root) ?: return null
     val storedReply = displayedAt(end) ?: return null
     return root.takeIf {
@@ -1297,6 +1661,55 @@ private fun legacyFollowUpRoot(
             user.displayKind == null && reply.displayKind == null && !storedReply.hasServerDisplayProjection &&
             user.foldsLosslesslyInto(storedUser) && reply.foldsLosslesslyInto(storedReply)
     }
+}
+
+/** History may materialize a user row before the ACK supplies the alias to its local bubble. */
+private fun coalesceAcknowledgedUsers(
+    messages: List<ChatMessage>,
+    byId: Map<String, ChatMessage>,
+    mapped: List<ChatMessage>,
+    addresses: Map<String, Long>,
+    ledger: ResponseLedger,
+): List<ChatMessage> {
+    val replacements = mutableMapOf<String, ChatMessage>()
+    val retired = mutableSetOf<String>()
+    for ((position, row) in mapped.withIndex()) {
+        if (row.role != MessageRole.USER) continue
+        val address = addresses[row.id]?.toString() ?: continue
+        val alias = ledger.aliases[address]?.takeIf { it != row.id } ?: continue
+        val observed = byId[row.id] ?: continue
+        val local = byId[alias] ?: continue
+        if (ledger.aliases.any { (key, id) -> (key != address && id == alias) || id == row.id } ||
+            ledger.responses.any {
+                row.id in it.userIds || (alias in it.userIds && it.authority.revocations.isNotEmpty())
+            }
+        ) {
+            continue
+        }
+        val projected = row.copy(displayKind = row.displayKind ?: local.displayKind).withLocalPresentation(local)
+        if (local.foldsLosslesslyInto(projected) && observed.foldsLosslesslyInto(projected) &&
+            (observed.reasoningText.isBlank() || projected.reasoningText.isNotBlank())
+        ) {
+            val observedIndex = messages.indexOf(observed)
+            // A partial page may have appended the stored copy below its own reply.
+            // Only move the optimistic row later when history anchors a reply below that slot.
+            val useHistorySlot =
+                observedIndex < messages.indexOf(local) ||
+                    mapped
+                        .asSequence()
+                        .drop(position + 1)
+                        .takeWhile { it.role != MessageRole.USER || it.displayKind != null }
+                        .filter { it.role == MessageRole.ASSISTANT }
+                        .any { reply ->
+                            val replyAlias = addresses[reply.id]?.let { ledger.aliases[it.toString()] }
+                            messages.indexOfFirst { it.id == (replyAlias ?: reply.id) } > observedIndex
+                        }
+            replacements[if (useHistorySlot) row.id else local.id] = projected.copy(id = alias)
+            retired += if (useHistorySlot) local.id else row.id
+        }
+    }
+    if (replacements.isEmpty()) return messages
+    return messages.mapNotNull { replacements[it.id] ?: it.takeUnless { it.id in retired } }
 }
 
 private fun ChatMessage.isCoveredByStoredReply(server: ChatMessage): Boolean {
@@ -1522,12 +1935,12 @@ private fun disputedBodyId(canonical: ChatMessage): String {
 /**
  * Independent coverage proof, not a reinterpretation of receipt.complete=false.
  * An exact normal-input ACK alias and an explicit permitted terminal row bound a
- * single contiguous server page window. Only typed steers may occur inside it.
+ * single contiguous server page window. Untyped users need explicit turn membership.
  */
 private fun verifiedCanonicalWindow(
     record: ResponseRecord,
-    ledger: ResponseLedger,
-    messages: List<ChatMessage>,
+    target: String,
+    session: String,
     raw: List<SessionMessage>,
 ): List<Long>? {
     if (record.authority.terminals.isEmpty() || record.authority.terminals.any { !it.safe }) return null
@@ -1535,7 +1948,9 @@ private fun verifiedCanonicalWindow(
         record.authority.terminals
             .mapNotNull { it.finalRowId }
             .firstOrNull() ?: return null
-    val root = record.authority.opening?.userRowId ?: return null
+    val opening = record.authority.opening ?: return null
+    if (opening.target != target || opening.session != session) return null
+    val root = opening.userRowId ?: return null
     val first = raw.indexOfFirst { it.id?.toLong() == root }
     val last = raw.indexOfFirst { it.id?.toLong() == final }
     if (first < 0 || last <= first || raw[first].role != "user" || raw[first].display_kind != null ||
@@ -1545,10 +1960,35 @@ private fun verifiedCanonicalWindow(
     }
     val window = raw.subList(first, last + 1)
     if (window.any { it.role !in setOf("user", "assistant", "system", "tool") }) return null
-    if (window.drop(1).any { it.role == "user" && it.display_kind != "steer" }) return null
     val ids = window.map { it.id?.toLong()?.takeIf { row -> row > 0 } ?: return null }
     if (ids.size != ids.distinct().size) return null
+    val terminalUsers = record.receiptUsers()
+    val visibleUsers = window.filter { it.role == "user" && it.display_kind != "hidden" }.map { it.id!!.toLong() }
+    val addressedWindow =
+        record.authority.terminals.any {
+            it.userRowId == root && it.finalRowId == final && terminalUsers == visibleUsers &&
+                (it.userRowIds == null || it.userRowIds == terminalUsers) && it.rowIds.containsAll(visibleUsers)
+        }
+    val exactControls =
+        record.authority.controls
+            .mapNotNull { it.userRowId }
+            .toSet()
+    if (window.drop(1).any {
+            it.role == "user" && it.display_kind != "steer" && it.id?.toLong() !in exactControls &&
+                (!addressedWindow || it.display_kind != null)
+        }
+    ) {
+        return null
+    }
     return ids
+}
+
+/** Earlier cache entries kept the receipt's user addresses on the response record. */
+private fun ResponseRecord.receiptUsers(): List<Long>? {
+    val lists = authority.terminals.mapNotNull { it.userRowIds }.distinct()
+    if (lists.isNotEmpty()) return lists.singleOrNull()
+    val terminal = authority.terminals.singleOrNull() ?: return null
+    return userRowIds.takeIf { it.firstOrNull() == terminal.userRowId && terminal.rowIds.containsAll(it) }
 }
 
 /** Messages by id; an id that occurs more than once maps to nothing (as `singleOrNull` would). */

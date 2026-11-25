@@ -3,6 +3,8 @@
 
     <!-- Chat -->
     <string name="chat_send_desc">Send</string>
+    <string name="chat_mic_stop">Stop dictation</string>
+    <string name="stt_session_failed">Dictation stopped because speech recognition failed. Tap the microphone to retry.</string>
     <string name="chat_mic_listening">Listening…</string>
     <string name="stt_permission_denied">Microphone permission is required for voice input</string>
     <string name="stt_not_available">Speech recognition is not available on this device</string>

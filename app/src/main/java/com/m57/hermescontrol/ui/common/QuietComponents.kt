@@ -66,14 +66,22 @@ fun CompactListRow(
     trailing: (@Composable RowScope.() -> Unit)? = null,
     leading: (@Composable RowScope.() -> Unit)? = null,
     footer: (@Composable ColumnScope.() -> Unit)? = null,
+    rowModifier: Modifier = Modifier,
+    onClickLabel: String? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val clickModifier =
+        if (onClick != null) {
+            Modifier.clickable(onClickLabel = onClickLabel, onClick = onClick)
+        } else {
+            Modifier
+        }
     Column(modifier.fillMaxWidth()) {
         Row(
-            Modifier
+            rowModifier
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
-                .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+                .then(clickModifier)
                 .padding(vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),

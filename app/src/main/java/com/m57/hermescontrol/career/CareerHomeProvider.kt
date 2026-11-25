@@ -11,10 +11,14 @@ class CareerHomeProvider : HomeContributionProvider {
     override val id = "career"
     private val scope = AppScope.connectionKey()
     private val profile = AppScope.PROFILE
-    private val api = ApiClient.hermesApi
+    private val api get() = ApiClient.hermesApi
 
     override suspend fun read(): HomePage {
         check(AuthManager.isGatedMode())
+        val epoch = AuthManager.connectionEpoch.value
+
+        fun current() =
+            epoch % 2L == 0L && AuthManager.connectionEpoch.value == epoch && scope == AppScope.connectionKey()
         // A changed snapshot is retried once, never committed as a partial list.
         for (attempt in 0..1) {
             try {
@@ -22,9 +26,9 @@ class CareerHomeProvider : HomeContributionProvider {
                 var cursor: String? = null
                 val visited = mutableSetOf<String>()
                 do {
-                    check(scope == AppScope.connectionKey())
+                    check(current())
                     val page = api.careerHome(profile, cursor)
-                    check(scope == AppScope.connectionKey() && page.api_version == 1)
+                    check(current() && page.api_version == 1)
                     check(page.items.all { it.provider == id })
                     result = page.copy(items = result.items + page.items)
                     cursor = page.next_cursor

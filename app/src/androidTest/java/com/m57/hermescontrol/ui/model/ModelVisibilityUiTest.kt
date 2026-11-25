@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.model.ModelProvider
 import com.m57.hermescontrol.data.model.PinnedModel
@@ -53,7 +54,8 @@ class ModelVisibilityUiTest {
             setLocale(Locale.JAPANESE)
         }
     private val context = instrumentation.targetContext.createConfigurationContext(configuration)
-    private val scope = "visibility-ui-${UUID.randomUUID()}"
+    private val connection = "visibility-ui-${UUID.randomUUID()}"
+    private val scope = AppScope.connectionKey(connection, null)
     private val provider = ModelProvider("openai", "OpenAI", models = listOf("one", "two"))
     private val editLabel get() = context.getString(R.string.model_visibility_title)
     private val closeLabel get() = context.getString(R.string.action_close)
@@ -61,10 +63,9 @@ class ModelVisibilityUiTest {
     @Before
     fun preferences() {
         mockkObject(AuthManager)
-        every { AuthManager.baseUrlFlow } returns MutableStateFlow("test")
+        every { AuthManager.baseUrlFlow } returns MutableStateFlow(connection)
         every { AuthManager.selectedProfileFlow } returns MutableStateFlow(null)
         every { AuthManager.activeProfileId } returns MutableStateFlow(null)
-        every { AuthManager.uiPreferenceScope() } returns scope
         every { AuthManager.readUiPreference(scope, "model_visibility") } returns null
         every { AuthManager.writeUiPreference(scope, "model_visibility", any()) } returns Unit
     }

@@ -11,8 +11,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TranscriptAcceptanceRegressionTest {
-    private val target = "acceptance-target"
-    private val session = "acceptance-session"
+    private val target = "fixture-target"
+    private val session = "fixture-session"
 
     private fun row(
         id: Int?,

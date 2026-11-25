@@ -77,6 +77,7 @@ internal fun workerClock(
 internal fun WorkerTimeLabel(
     text: String,
     modifier: Modifier = Modifier,
+    maxLines: Int = 1,
 ) {
     Text(
         text = text,
@@ -84,7 +85,7 @@ internal fun WorkerTimeLabel(
         style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         textAlign = TextAlign.End,
-        maxLines = 1,
+        maxLines = maxLines,
     )
 }
 

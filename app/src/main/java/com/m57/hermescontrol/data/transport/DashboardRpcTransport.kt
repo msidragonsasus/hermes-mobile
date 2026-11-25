@@ -48,6 +48,9 @@ class DashboardRpcTransport :
         if (choice !in KNOWN_APPROVAL_CHOICES || ref.requestId.isBlank() || ref.questionId != null) {
             return SubmissionResult.NotSent
         }
+        if (ref.executionGeneration != null) {
+            return respondCanonical(ref, WsMethods.APPROVAL_RESPOND, "choice", choice)
+        }
         return execute(
             ref.scope,
             WsMethods.APPROVAL_RESPOND,
@@ -64,6 +67,7 @@ class DashboardRpcTransport :
 
     override suspend fun acknowledgeApproval(ref: RequestRef): SubmissionResult<Boolean> {
         if (ref.requestId.isBlank()) return SubmissionResult.NotSent
+        if (ref.executionGeneration != null) return SubmissionResult.NotSent
         return execute(
             ref.scope,
             WsMethods.APPROVAL_RECEIVED,
@@ -83,7 +87,14 @@ class DashboardRpcTransport :
         // Explicit modern batches require the typed lock API and its known-qid validation.
         if (ref.serverRequestId != null && ref.questionId != null) return SubmissionResult.NotSent
         val result =
-            if (ref.serverRequestId != null || ref.requestId.startsWith(SERVER_REQUEST_ID_PREFIX)) {
+            if (ref.executionGeneration != null) {
+                respondCanonical(
+                    ref,
+                    WsMethods.CLARIFY_RESPOND,
+                    "answer",
+                    answer ?: com.m57.hermescontrol.domain.hermes.CLARIFICATION_DECLINED_ANSWER,
+                )
+            } else if (ref.serverRequestId != null || ref.requestId.startsWith(SERVER_REQUEST_ID_PREFIX)) {
                 respondServerClarification(ref, answer)
             } else {
                 execute(
@@ -117,6 +128,31 @@ class DashboardRpcTransport :
             }
         }
     }
+
+    private suspend fun respondCanonical(
+        ref: RequestRef,
+        method: String,
+        responseField: String,
+        response: String,
+    ): SubmissionResult<Boolean> =
+        execute(
+            ref.scope,
+            method,
+            mapOf(
+                "session_id" to ref.session.runtimeId,
+                "prompt_id" to ref.requestId,
+                "execution_generation" to ref.executionGeneration,
+                responseField to response,
+            ),
+        ) { body ->
+            when (body.string("status")) {
+                "resolved" -> true
+                "already_resolved" -> false
+                else -> null
+            }
+        }.let { result ->
+            if (result is SubmissionResult.Confirmed && !result.value) SubmissionResult.Expired else result
+        }
 
     /** Compatibility for incoming srq refs; newly parsed batches always use lockClarification. */
     private suspend fun respondServerClarification(
@@ -247,6 +283,29 @@ class DashboardRpcTransport :
         }
     }
 
+    override suspend fun steerPrompt(
+        scope: ConnectionScope,
+        session: SessionRef,
+        text: String,
+    ): SubmissionResult<PromptAcceptance> {
+        if (text.isBlank()) return SubmissionResult.NotSent
+        return execute(
+            scope,
+            WsMethods.SESSION_STEER,
+            mapOf("session_id" to session.runtimeId, "text" to text),
+        ) { body ->
+            when (body.string("status")) {
+                "queued" -> {
+                    if (body.string("delivery") == "next_turn") PromptAcceptance.QUEUED else PromptAcceptance.STEERED
+                }
+
+                else -> {
+                    null
+                }
+            }
+        }
+    }
+
     override suspend fun attach(
         scope: ConnectionScope,
         session: SessionRef,
@@ -324,6 +383,11 @@ class DashboardRpcTransport :
                 )
             }
             val response = outcome as? JsonObject
+            if (method == WsMethods.SESSION_STEER && response?.string("status") == "rejected" &&
+                HermesWsClient.matchesCurrentScope(scope)
+            ) {
+                return SubmissionResult.NotSent
+            }
             val decoded = response?.let(decode)
             if (decoded != null && HermesWsClient.matchesCurrentScope(scope)) {
                 val evidence =
@@ -352,8 +416,14 @@ class DashboardRpcTransport :
             }
         } catch (e: CancellationException) {
             throw e
-        } catch (_: HermesWsClient.HermesRpcException) {
-            SubmissionResult.Unknown
+        } catch (e: HermesWsClient.HermesRpcException) {
+            if (method == WsMethods.SESSION_STEER &&
+                (e.code in setOf(4010, -32601) || (e.code == 4001 && e.message == "invalid_params"))
+            ) {
+                SubmissionResult.NotSent
+            } else {
+                SubmissionResult.Unknown
+            }
         } finally {
             call.release?.invoke()
         }

@@ -7,14 +7,13 @@ import org.junit.Test
 
 class ModelVisibilityStoreTest {
     @Test
-    fun `preferences survive recreation and stay isolated by connection and profile`() {
+    fun `preferences survive recreation and stay isolated by connection`() {
         val saved = mutableMapOf<String, String>()
         val store = ModelVisibilityStore({ saved[it] }, { scope, value -> saved[scope] = value })
         val first = store.observe("server-a/profile-1")
         store.update("server-a/profile-1") { it.setProviderVisible("openai", false) }
         assertFalse(first.value.isVisible("openai", "one"))
         assertTrue(store.observe("server-b/profile-1").value.isVisible("openai", "one"))
-        assertTrue(store.observe("server-a/profile-2").value.isVisible("openai", "one"))
         val recreated = ModelVisibilityStore({ saved[it] }, { scope, value -> saved[scope] = value })
         assertEquals(first.value, recreated.observe("server-a/profile-1").value)
     }

@@ -11,6 +11,7 @@ import com.m57.hermescontrol.data.remote.ServerEndpoint
 import com.m57.hermescontrol.data.remote.buildFakePersistentCookieJar
 import com.m57.hermescontrol.data.session.ActiveSessionHolder
 import com.m57.hermescontrol.data.transport.DashboardRpcTransport
+import com.m57.hermescontrol.domain.hermes.AttentionStatus
 import com.m57.hermescontrol.domain.hermes.ConnectionScope
 import com.m57.hermescontrol.domain.hermes.PromptAcceptance
 import com.m57.hermescontrol.domain.hermes.RequestRef
@@ -399,6 +400,11 @@ class HermesWsClientTest {
             assertEquals(malformed, (received.await() as WsEvent.Unknown).raw)
             val unknown = EventParser.parseParams(mapOf("type" to "SYNTHETIC_PRIVATE_type"), malformed)
             assertEquals(malformed, (unknown as WsEvent.Unknown).raw)
+            EventParser.parseParams(
+                mapOf("type" to "session.future_event", "payload" to mapOf("text" to "SYNTHETIC_PRIVATE_body")),
+                malformed,
+            )
+            assertTrue(logs.contains("Unknown event type: session.future_event"))
 
             val failure =
                 IOException("SYNTHETIC_PRIVATE_token=ticket", IllegalStateException("SYNTHETIC_PRIVATE_cookie"))
@@ -1497,6 +1503,110 @@ class HermesWsClientTest {
                 assertEquals(5, sent.size)
             } finally {
                 collected.cancel()
+            }
+        }
+
+    @Test
+    fun canonicalViewerGetsLiveAndResumedControlsAndCanRespond() =
+        runBlocking {
+            every { AuthManager.getSelectedProfileId() } returns null
+            every { AuthManager.activeProfileId } returns MutableStateFlow(null)
+            var socket = mockk<WebSocket>(relaxed = true)
+            var listener = diagnosticListener(socket)
+            val sent = mutableListOf<kotlinx.serialization.json.JsonObject>()
+
+            fun captureWrites() =
+                every { socket.send(any<String>()) } answers {
+                    sent.add(Json.parseToJsonElement(firstArg<String>()).jsonObject)
+                    true
+                }
+            captureWrites()
+            val repository =
+                com.m57.hermescontrol.domain.hermes
+                    .AttentionRepository()
+            val collector =
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    com.m57.hermescontrol.data.transport
+                        .normalizeDashboardAttention(HermesWsClient.scopedEvents)
+                        .collect(repository::apply)
+                }
+
+            val clarify = """{"kind":"clarify","prompt_id":"c","execution_generation":7,"question":"Synthetic?"}"""
+            val approval = """{"kind":"approval","prompt_id":"a","execution_generation":7,"choices":["once","deny"]}"""
+
+            fun receive(
+                type: String,
+                fields: String,
+            ) {
+                listener.onMessage(
+                    socket,
+                    """{"method":"event","params":{"type":"$type","session_id":"desktop","payload":$fields}}""",
+                )
+            }
+            try {
+                receive("clarify.request", clarify)
+                kotlinx.coroutines.yield()
+                assertEquals(
+                    "c",
+                    repository.items.value
+                        .single()
+                        .ref.requestId,
+                )
+                receive("clarify.settled", """{"prompt_id":"c","execution_generation":7}""")
+                kotlinx.coroutines.yield()
+                assertEquals(
+                    AttentionStatus.EXPIRED,
+                    repository.items.value
+                        .single()
+                        .status,
+                )
+
+                // The viewing socket was absent for these asks. Resume must recover them
+                // even if the event ring no longer contains either request.
+                socket = mockk<WebSocket>(relaxed = true)
+                listener = diagnosticListener(socket)
+                captureWrites()
+                val resume = HermesWsClient.request("session.resume", mapOf("session_id" to "desktop"))
+                val resumeId = sent.last()["id"]
+                val newClarify = clarify.replace("\"c\"", "\"next\"")
+                listener.onMessage(
+                    socket,
+                    """{"id":$resumeId,"result":{"session_id":"desktop","prompts":[$newClarify,$approval]}}""",
+                )
+                resume.await()
+                kotlinx.coroutines.yield()
+                val pending = repository.items.value.filter { it.status == AttentionStatus.PENDING }
+                assertEquals(setOf("next", "a"), pending.map { it.ref.requestId }.toSet())
+                for (item in pending) {
+                    val ref = item.ref
+                    assertEquals(7L, ref.executionGeneration)
+                    val reply =
+                        async(start = CoroutineStart.UNDISPATCHED) {
+                            if (ref.requestId == "a") {
+                                DashboardRpcTransport().respondApproval(ref, "once")
+                            } else {
+                                DashboardRpcTransport().respondClarification(ref, "synthetic")
+                            }
+                        }
+                    val frame = sent.last()
+                    val field = if (ref.requestId == "a") "choice" else "answer"
+                    assertEquals(
+                        setOf("session_id", "prompt_id", "execution_generation", field),
+                        frame["params"]?.jsonObject?.keys,
+                    )
+                    listener.onMessage(socket, """{"id":${frame["id"]},"result":{"status":"resolved"}}""")
+                    assertEquals(true, (reply.await() as? SubmissionResult.Confirmed)?.value)
+                }
+                receive("approval.settled", """{"prompt_id":"a","execution_generation":7}""")
+                kotlinx.coroutines.yield()
+                assertEquals(
+                    AttentionStatus.EXPIRED,
+                    repository.items.value
+                        .first { it.ref.requestId == "a" }
+                        .status,
+                )
+            } finally {
+                collector.cancel()
             }
         }
 

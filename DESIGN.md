@@ -261,6 +261,12 @@ existing code. A Material import or a rounded rectangle does not prove complianc
   remain inline. The shared Composer opens its controls while typing and
   collapses to one pill for an empty draft when the keyboard closes.
 
+- 2026-11-23: waiting dots in main and specialist chat sit at the timeline
+  tail, below any queued or steered user messages. Updating the waiting row
+  leaves the order of reply and tool content intact. The drawer's bot list
+  shows a persistent, rounded trailing thumb whenever its measured viewport
+  overflows. The thumb draws over the list and has no touch target.
+
 When the user rejects a design, record it here in the same change.
 
 ### Inputs
@@ -590,6 +596,19 @@ must not create duplicate sessions or sockets. See
   [MINIAPP_PLATFORM.md](docs/personal-ai-spec/MINIAPP_PLATFORM.md).
 
 ## Today Home task selection and completion
+
+The Home top bar opens the 「ホームの設定」 modal bottom sheet. The sheet
+contains App visibility, Today sources, and Career coverage. The Today form
+appears only in this sheet.
+
+Show confirmed work before the review and source status rows. The first task
+uses one tonal surface as an actionable object. Keep subsequent tasks in
+flat rows. Show the candidate count and the number still unverified in the same
+disclosure control. Summarize incomplete sources in a separate disclosure with
+their recovery instructions inside.
+
+Pull-to-refresh reloads Home sources and checks for app updates without starting Today LLM synthesis.
+「今の情報で調べる」 is the explicit text action for manual LLM synthesis.
 
 The daily list is the user's own work, not an inbox of recruitment advertising.
 Receiving a deadline notice does not establish interest, an application, or a

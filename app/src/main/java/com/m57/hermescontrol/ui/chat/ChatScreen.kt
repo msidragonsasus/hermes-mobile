@@ -1,13 +1,9 @@
 package com.m57.hermescontrol.ui.chat
 
-import android.Manifest
 import android.app.Activity
-import android.content.ActivityNotFoundException
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.OpenableColumns
-import android.speech.RecognizerIntent
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -56,7 +52,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
@@ -105,6 +100,7 @@ import com.m57.hermescontrol.ui.chat.components.shouldShowProgressChip
 import com.m57.hermescontrol.ui.chat.fullbleed.MainChatTimeline
 import com.m57.hermescontrol.ui.chat.fullbleed.mainChatScrollKey
 import com.m57.hermescontrol.ui.chat.fullbleed.rememberMainChatScrollPosition
+import com.m57.hermescontrol.ui.chat.voice.rememberChatDictation
 import com.m57.hermescontrol.ui.common.ActionProgressDialog
 import com.m57.hermescontrol.ui.common.AppUpdateDialog
 import com.m57.hermescontrol.ui.common.CredentialWarningBanner
@@ -225,7 +221,6 @@ fun ChatScreen(
             viewModel.consumeComposerTextRestore()
         }
     }
-    var isListening by rememberSaveable { mutableStateOf(false) }
     var lastAnimatedMessageId by rememberSaveable { mutableStateOf<String?>(null) }
     var showReloginDialog by rememberSaveable { mutableStateOf(false) }
     var showSubagentInspectionSheet by rememberSaveable { mutableStateOf(false) }
@@ -241,67 +236,6 @@ fun ChatScreen(
             launch = launch,
         )
     }
-
-    val micListeningPrompt = stringResource(R.string.chat_mic_listening)
-    val sttNotAvailableMsg = stringResource(R.string.stt_not_available)
-    val sttPermissionDeniedMsg = stringResource(R.string.stt_permission_denied)
-
-    // Speech-to-text recognition launcher (issue #194)
-    val speechLauncher =
-        rememberLauncherForActivityResult(
-            ActivityResultContracts.StartActivityForResult(),
-        ) { result ->
-            ExternalActivityLifecycleGuard.externalActivityReturned()
-            isListening = false
-            if (result.resultCode == Activity.RESULT_OK) {
-                val spokenText =
-                    result.data
-                        ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                        ?.firstOrNull()
-                        .orEmpty()
-                if (spokenText.isNotBlank()) {
-                    val merged =
-                        if (inputFieldValue.text.isBlank()) {
-                            spokenText
-                        } else {
-                            "${inputFieldValue.text} $spokenText"
-                        }
-                    inputFieldValue = ChatInputPolicy.commandFieldValue(merged)
-                }
-            }
-        }
-
-    // Mic permission launcher
-    val micPermissionLauncher =
-        rememberLauncherForActivityResult(
-            ActivityResultContracts.RequestPermission(),
-        ) { granted ->
-            ExternalActivityLifecycleGuard.externalActivityReturned()
-            if (granted) {
-                if (SpeechInputHelper.isSpeechInputAvailable(context)) {
-                    val intent = SpeechInputHelper.createSpeechIntent(micListeningPrompt)
-                    isListening = true
-                    launchExternalActivity {
-                        try {
-                            speechLauncher.launch(intent)
-                        } catch (_: ActivityNotFoundException) {
-                            isListening = false
-                            scrollScope.launch {
-                                snackbarHostState.showSnackbar(sttNotAvailableMsg)
-                            }
-                        }
-                    }
-                } else {
-                    scrollScope.launch {
-                        snackbarHostState.showSnackbar(sttNotAvailableMsg)
-                    }
-                }
-            } else {
-                scrollScope.launch {
-                    snackbarHostState.showSnackbar(sttPermissionDeniedMsg)
-                }
-            }
-        }
 
     // Multi-file picker for attachments (issue #195).
     val filePickerLauncher =
@@ -383,7 +317,6 @@ fun ChatScreen(
         openError = state.openError,
         sudoPrompt = state.sudoPrompt,
         secretPrompt = state.secretPrompt,
-        vaultPrompt = state.vaultPrompt,
         onOpenLatest = { target ->
             val targetKey = target?.let { mainChatScrollKey(chatScope, it) } ?: scrollKey
             scrollPosition.forgetAnchor(targetKey)
@@ -455,6 +388,15 @@ fun ChatScreen(
     val setupComposer =
         inSpecialistBotChat && !setupUnsupported &&
             (specialist?.blocksNormalInput != false || (specialistKnown && specialist.missing))
+    val dictation =
+        rememberChatDictation(
+            conversationKey = scrollKey,
+            enabled = !setupComposer && state.isConnected,
+            readDraft = { inputFieldValue },
+            writeDraft = { inputFieldValue = it },
+            launchExternalActivity = launchExternalActivity,
+            showError = { message -> scrollScope.launch { snackbarHostState.showSnackbar(message) } },
+        )
     val readyForSetup = state.isConnected && !state.isLoading && specialist?.sessionId != null
     var replyQuote by rememberSaveable(scrollKey, setupComposer) { mutableStateOf<String?>(null) }
     val canSendSetup = readyForSetup && specialist.canAct && specialist.turnMode != null
@@ -559,6 +501,7 @@ fun ChatScreen(
                         if (setupComposer) specialDrafts[setupKey] = it else inputFieldValue = it
                     },
                     onSend = {
+                        dictation.stop()
                         if (setupComposer) {
                             val text = quotedReplyMessage(replyQuote, specialDrafts[setupKey]?.text.orEmpty())
                             if (canSendSetup && setupController.submit(text)) {
@@ -567,48 +510,13 @@ fun ChatScreen(
                                 scrollController.jumpToBottom(animated = true)
                             }
                         } else if (!viewModel.blocksSpecialistRegularPrompt(showFeedback = true)) {
-                            viewModel.sendMessage(
-                                quotedReplyMessage(replyQuote, inputFieldValue.text),
-                                steer = !isMainProfile && busyWithKnownResponse && state.pendingAttachments.isEmpty(),
-                            )
+                            viewModel.sendMessage(quotedReplyMessage(replyQuote, inputFieldValue.text))
                             inputFieldValue = TextFieldValue("")
                             replyQuote = null
                             scrollController.jumpToBottom(animated = true)
                         }
                     },
-                    onMicTap = {
-                        if (isListening) {
-                            isListening = false
-                        } else if (
-                            ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.RECORD_AUDIO,
-                            ) == PackageManager.PERMISSION_GRANTED
-                        ) {
-                            if (SpeechInputHelper.isSpeechInputAvailable(context)) {
-                                val intent = SpeechInputHelper.createSpeechIntent(micListeningPrompt)
-                                isListening = true
-                                launchExternalActivity {
-                                    try {
-                                        speechLauncher.launch(intent)
-                                    } catch (_: ActivityNotFoundException) {
-                                        isListening = false
-                                        scrollScope.launch {
-                                            snackbarHostState.showSnackbar(sttNotAvailableMsg)
-                                        }
-                                    }
-                                }
-                            } else {
-                                scrollScope.launch {
-                                    snackbarHostState.showSnackbar(sttNotAvailableMsg)
-                                }
-                            }
-                        } else {
-                            launchExternalActivity {
-                                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                            }
-                        }
-                    },
+                    onMicTap = dictation.toggle,
                     queueOnSend = !setupComposer && (state.responseStatusUnknown || !state.isConnected),
                     allowOfflineQueue = !setupComposer,
                     attachmentsEnabled = !setupComposer,
@@ -629,7 +537,7 @@ fun ChatScreen(
                         } else {
                             null
                         },
-                    isListening = isListening,
+                    isListening = dictation.session != null,
                     isAgentTyping = state.isAgentTyping,
                     responseStatusUnknown = state.responseStatusUnknown,
                     isConnected = state.isConnected,

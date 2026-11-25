@@ -66,12 +66,6 @@ internal fun planMainChatTimeline(
             )
         }
     val footers = turns.replyFooters(ReplyLifecycle(ledger = actionLedger))
-    val waitingAfter =
-        if (waitingForFirstText && streamingSlot == null) {
-            activeTurnIndexForThinking(turns, ledger) ?: turns.lastIndex
-        } else {
-            null
-        }
     return buildList {
         var nativeTurnAnchor = "leading"
         turns.forEachIndexed { index, turn ->
@@ -132,9 +126,8 @@ internal fun planMainChatTimeline(
                     }
                 }
             }
-            if (waitingAfter == index) add(MainChatRow(MAIN_CHAT_WAITING_KEY))
         }
-        if (waitingAfter == -1) add(MainChatRow(MAIN_CHAT_WAITING_KEY))
+        if (waitingForFirstText && streamingSlot == null) add(MainChatRow(MAIN_CHAT_WAITING_KEY))
     }.asReversed()
 }
 

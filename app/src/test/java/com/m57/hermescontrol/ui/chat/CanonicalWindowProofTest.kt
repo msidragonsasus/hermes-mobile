@@ -70,8 +70,8 @@ class CanonicalWindowProofTest {
         val result =
             reconcileTranscript(
                 ChatUiState(messages = listOf(user, interim, steer, answer), responseLedger = ledger),
-                "target",
-                "session",
+                "fixture-target",
+                "fixture-session",
                 raw,
                 0,
                 true,

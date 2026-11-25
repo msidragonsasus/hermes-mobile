@@ -1,5 +1,6 @@
 package com.m57.hermescontrol.ui.model
 
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -7,7 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
-/** Uses the existing encrypted UI store, scoped by connection and profile. */
+/** Uses the existing encrypted UI store, scoped by connection. Every bot shares one picker. */
 class ModelVisibilityStore(
     private val read: (String) -> String?,
     private val write: (String, String) -> Unit,
@@ -36,10 +37,19 @@ class ModelVisibilityStore(
     }
 
     companion object {
+        private const val NAME = "model_visibility"
+        private const val LEGACY_SEPARATOR = "\n"
+
         val shared =
             ModelVisibilityStore(
-                read = { AuthManager.readUiPreference(it, "model_visibility") },
-                write = { scope, value -> AuthManager.writeUiPreference(scope, "model_visibility", value) },
+                read = { scope ->
+                    // Before main was chosen explicitly, its key carried an empty profile id.
+                    AuthManager.readUiPreference(scope, NAME)
+                        ?: scope
+                            .takeIf { it.endsWith(LEGACY_SEPARATOR + AppScope.PROFILE) }
+                            ?.let { AuthManager.readUiPreference(it.removeSuffix(AppScope.PROFILE), NAME) }
+                },
+                write = { scope, value -> AuthManager.writeUiPreference(scope, NAME, value) },
             )
     }
 }

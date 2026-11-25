@@ -93,7 +93,7 @@ fun WorkScreen(
                 )
             }
 
-            state.isAllEmpty && !state.isLoading -> {
+            state.isAllEmpty && !state.isLoading && state.partialErrorRes == null -> {
                 EmptyState(
                     icon = Icons.Filled.TaskAlt,
                     title = stringResource(R.string.worker_work_empty_title),

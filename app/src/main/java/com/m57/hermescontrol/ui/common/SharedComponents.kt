@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -63,21 +64,21 @@ fun SectionHeader(
         PaddingValues(horizontal = LocalSpacing.current.md, vertical = LocalSpacing.current.sm),
     trailing: (@Composable () -> Unit)? = null,
 ) {
-    Row(
+    FlowRow(
         modifier =
             modifier
                 .fillMaxWidth()
                 .padding(contentPadding),
         horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
     ) {
         // Mono Expressive: headings stay grey — blue is reserved for actions and progress.
         Text(
             text = title,
+            modifier = Modifier.align(Alignment.CenterVertically),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        trailing?.invoke()
+        if (trailing != null) Box(Modifier.align(Alignment.CenterVertically)) { trailing() }
     }
 }
 

@@ -37,10 +37,10 @@ class MainChatTimelinePlanTest {
         )
 
     @Test
-    fun waitingAndLiveTextRemainUnderTheActivePrompt() {
+    fun waitingFollowsTheLatestUserAndLiveTextKeepsItsResponseOrder() {
         val transcript = listOf(requestA, requestB)
         val waiting = planMainChatTimeline(transcript, null, ledger, waitingForFirstText = true)
-        assertEquals(listOf("user-B", MAIN_CHAT_WAITING_KEY, "user-A"), waiting.map { it.key })
+        assertEquals(listOf(MAIN_CHAT_WAITING_KEY, "user-B", "user-A"), waiting.map { it.key })
 
         val slot = partial.mainChatStreamingSlot()
         val live = planMainChatTimeline(transcript, slot, ledger, waitingForFirstText = false)
@@ -66,6 +66,21 @@ class MainChatTimelinePlanTest {
         assertEquals(live[1].nativeIdentity, result[1].nativeIdentity)
         assertEquals(committed, result[1].message)
         assertFalse(result[1].live)
+    }
+
+    @Test
+    fun waitingFollowsSteeredAndQueuedBubblesWithoutMovingRenderedOutput() {
+        val steer = requestB.copy(id = "steer", displayKind = "steer")
+        val transcript = listOf(requestA, steer, requestB)
+        val waiting = planMainChatTimeline(transcript, null, ledger, waitingForFirstText = true)
+        assertEquals(listOf(MAIN_CHAT_WAITING_KEY, "user-B", "user-steer", "user-A"), waiting.map { it.key })
+
+        val tool = ChatMessage(id = "tool", role = MessageRole.TOOL, content = """{"brainstorm_id":"brainstorm-1"}""")
+        val withTool = listOf(requestA, tool, steer, requestB)
+        val visible = planMainChatTimeline(withTool, null, ledger, waitingForFirstText = false)
+        val working = planMainChatTimeline(withTool, null, ledger, waitingForFirstText = true)
+        assertEquals(listOf("user-B", "user-steer", "brainstorm-tool", "user-A"), visible.map { it.key })
+        assertEquals(listOf(MAIN_CHAT_WAITING_KEY) + visible.map { it.key }, working.map { it.key })
     }
 
     @Test
@@ -141,8 +156,8 @@ class MainChatTimelinePlanTest {
 
         assertEquals(
             listOf(
-                "user-B",
                 MAIN_CHAT_WAITING_KEY,
+                "user-B",
                 "sys-clarify",
                 "user-A",
                 "sys-$SPECIALIST_SETUP_REVIEW",

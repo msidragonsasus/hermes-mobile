@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="vault_prompt_login_title">Sign in to this site</string>
-    <string name="vault_prompt_login_body">Hermes needs your login for this site. Save it encrypted on the connected Hermes server and continue. Your password is sent directly to the vault, outside the conversation.</string>
-    <string name="vault_prompt_save_continue">Save and continue</string>
+    <string name="vault_prompt_login_title">Add a password</string>
+    <string name="vault_prompt_site_for">For %1$s</string>
+    <string name="vault_prompt_next">Next</string>
+    <string name="vault_prompt_show_password">Show password</string>
+    <string name="vault_prompt_hide_password">Hide password</string>
     <string name="vault_prompt_decline">Skip this request</string>
     <string name="vault_prompt_send_failed">Could not send. Check the connection and try again while this request is still open.</string>
     <string name="vault_prompt_code_title">Enter verification code</string>

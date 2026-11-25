@@ -1,79 +1,65 @@
 package com.m57.hermescontrol.home
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.EditNote
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.lifecycle.Lifecycle
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.m57.hermescontrol.HermesControlApp
 import com.m57.hermescontrol.NavigationController
 import com.m57.hermescontrol.R
-import com.m57.hermescontrol.career.CareerHomeProvider
-import com.m57.hermescontrol.career.CareerLocalStore
-import com.m57.hermescontrol.career.careerScope
+import com.m57.hermescontrol.SettingsConnection
+import com.m57.hermescontrol.WorkScreen
 import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
-import com.m57.hermescontrol.data.remote.ApiClient
 import com.m57.hermescontrol.domain.hermes.AttentionItem
+import com.m57.hermescontrol.domain.hermes.AttentionKind
 import com.m57.hermescontrol.domain.hermes.AttentionStatus
 import com.m57.hermescontrol.domain.hermes.LinkState
 import com.m57.hermescontrol.navigation.AttentionDetailKey
 import com.m57.hermescontrol.theme.LocalSpacing
-import com.m57.hermescontrol.ui.chat.MarkdownText
-import com.m57.hermescontrol.ui.chat.components.DiffViewCard
+import com.m57.hermescontrol.ui.common.CompactListRow
 import com.m57.hermescontrol.ui.common.HermesScaffold
-import com.m57.hermescontrol.ui.common.OverviewHeading
-import com.m57.hermescontrol.ui.common.OverviewRow
+import com.m57.hermescontrol.ui.common.InlineNotice
+import com.m57.hermescontrol.ui.common.NoticeTone
+import com.m57.hermescontrol.ui.common.SectionHeader
 import com.m57.hermescontrol.ui.common.ToastEffect
 import com.m57.hermescontrol.ui.common.sharedAppUpdateViewModel
-import com.m57.hermescontrol.worker.EscrowDecision
 import com.m57.hermescontrol.worker.EscrowRecord
 import com.m57.hermescontrol.worker.ScheduledWorkRow
+import com.m57.hermescontrol.worker.WorkUiState
 import com.m57.hermescontrol.worker.WorkViewModel
-import com.m57.hermescontrol.worker.WorkerApprovalObject
 import com.m57.hermescontrol.worker.WorkerScheduledJob
+import com.m57.hermescontrol.worker.WorkerSourceStatus
 import com.m57.hermescontrol.worker.upcomingOrder
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
-import kotlinx.serialization.encodeToString
-import retrofit2.HttpException
 import java.time.Instant
+import java.time.ZoneId
 
 @Composable
 fun HomeScreen() {
@@ -81,9 +67,11 @@ fun HomeScreen() {
     val repository = app.homeRepository
     val auth by AuthManager.contextFlow.collectAsState()
     val profile by AuthManager.activeProfileId.collectAsState()
-    val scope = remember(auth) { AppScope.connectionKey() }
-    val chatScope = remember(auth, profile) { AuthManager.uiPreferenceScope() }
+    val epoch by AuthManager.connectionEpoch.collectAsStateWithLifecycle()
+    val scope = remember(auth, epoch) { AppScope.connectionKey() }
+    val chatScope = remember(auth, profile, epoch) { AuthManager.uiPreferenceScope() }
     val today = rememberTodayPlanState(scope, repository)
+    val career = remember(scope, repository) { HomeCareerSource(scope, app, repository) }
     val rows by remember(scope) { repository.dao.observe(scope) }.collectAsState(emptyList())
     val reads by remember(scope) { repository.dao.reads(scope) }.collectAsState(emptyList())
     val providers by remember(scope) { repository.dao.providers(scope) }.collectAsState(emptyList())
@@ -96,65 +84,32 @@ fun HomeScreen() {
     val updater = sharedAppUpdateViewModel()
     val updateCandidate by updater.homeUpdateCandidate.collectAsStateWithLifecycle()
     val coroutine = rememberCoroutineScope()
-    val lifecycle = LocalLifecycleOwner.current
-    // Same activity-scoped instance as the Work screen, so a decision made here is gone there too.
+
+    // The activity-scoped instance is shared with Work, including approval decisions.
     val worker: WorkViewModel = viewModel { WorkViewModel() }
-    val workState by worker.uiState.collectAsStateWithLifecycle()
+    val workerSnapshot by worker.uiState.collectAsStateWithLifecycle()
+    val workState = if (worker.ownsScope(scope)) workerSnapshot else WorkUiState()
     val workerToast = workState.toastMessageRes?.let { stringResource(it) }
     ToastEffect(toastMessage = workerToast, onClearToast = worker::clearToast)
-    // Routines and helpers come over the socket: a cold start polls before it is connected,
-    // so reload once the link comes up instead of waiting for the next minute's poll.
     val linkState = connection.connection.state
-    LaunchedEffect(linkState) {
-        if (linkState == LinkState.CONNECTED) worker.refresh()
-    }
-    var error by remember(scope) { mutableStateOf<String?>(null) }
-    var loading by remember(scope) { mutableStateOf(false) }
-    var refresh by remember(scope) { mutableStateOf(0) }
-    var careerEnabled by remember(scope) { mutableStateOf(false) }
     var now by remember(scope) { mutableStateOf(Instant.now()) }
+    var manualToken by remember(scope) { mutableIntStateOf(0) }
+    var showSettingsSheet by rememberSaveable(scope) { mutableStateOf(false) }
+    var settingsError by remember(scope) { mutableStateOf<String?>(null) }
     val careerVisible = providers.firstOrNull { it.scope == scope && it.provider == "career" }?.enabled != false
     val chatVisible = chatProviders.firstOrNull { it.scope == chatScope && it.provider == "chat" }?.enabled != false
-    LaunchedEffect(scope, refresh, careerVisible, lifecycle) {
-        lifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            do {
-                now = Instant.now()
-                worker.refresh()
-                try {
-                    careerEnabled = CareerLocalStore(app, careerScope()).enabled()
-                    if (careerEnabled && careerVisible) {
-                        loading = true
-                        val page = CareerHomeProvider().read()
-                        if (scope != AppScope.connectionKey()) return@repeatOnLifecycle
-                        repository.dao.replace(
-                            scope,
-                            page.items.map { HomeRow(scope, "career", it.id, repository.json.encodeToString(it)) },
-                            repository.json.encodeToString(page.copy(items = emptyList())),
-                        )
-                    }
-                    error = null
-                } catch (failure: Exception) {
-                    if (failure is CancellationException) throw failure
-                    error =
-                        when {
-                            failure is HttpException && failure.code() == 404 -> "就活のホーム連携にはサーバーの更新が必要です。"
-
-                            failure is HttpException && failure.code() in
-                                setOf(
-                                    401,
-                                    403,
-                                )
-                            -> "就活情報を確認できません。接続設定を確認してください。"
-
-                            else -> "就活情報を読み直せません。前回の情報を表示しています。"
-                        }
-                } finally {
-                    loading = false
-                }
-                delay(60_000)
-            } while (true)
-        }
-    }
+    val reloadKey = HomeReloadKey(epoch, linkState == LinkState.CONNECTED, careerVisible, manualToken)
+    var isManualRefreshing by remember(scope, reloadKey) { mutableStateOf(false) }
+    HomeRefreshEffect(
+        scope = scope,
+        reloadKey = reloadKey,
+        lifecycle = LocalLifecycleOwner.current.lifecycle,
+        today = today,
+        loadCareer = career::load,
+        refreshWorker = worker::refreshAndAwait,
+        onManualRefreshChanged = { isManualRefreshing = it },
+        onPoll = { now = it },
+    )
     val metadata =
         providers
             .firstOrNull { it.scope == scope && it.provider == "career" }
@@ -164,7 +119,7 @@ fun HomeScreen() {
     val items =
         homeItems(
             (
-                rows.filter { it.scope == scope && it.provider == "career" && careerVisible && careerEnabled } +
+                rows.filter { it.scope == scope && it.provider == "career" && careerVisible && career.careerEnabled } +
                     chatRows.filter { it.scope == chatScope && it.provider == "chat" && chatVisible }
             ).map { repository.json.decodeFromString<HomeItem>(it.payload) },
             (
@@ -178,65 +133,108 @@ fun HomeScreen() {
             it.ref.scope == connection.connection.scope &&
                 it.status !in setOf(AttentionStatus.CONFIRMED, AttentionStatus.EXPIRED)
         }
-    val actions = items.filter { it.category == "action" }
-    // Career action titles are often generic ("相談への回答が必要です"); show which consultation it is.
-    val threadIds = actions.mapNotNull { it.target.thread_id }.toSet()
-    var threadTitles by remember(scope) { mutableStateOf<Map<String, String>>(emptyMap()) }
-    LaunchedEffect(scope, threadIds) {
-        if (threadIds.isEmpty() || threadIds.all { it in threadTitles }) return@LaunchedEffect
-        try {
-            val list = ApiClient.hermesApi.careerThreads(AppScope.PROFILE)
-            if (scope == AppScope.connectionKey()) {
-                threadTitles = list.threads.filter { it.title.isNotBlank() }.associate { it.id to it.title }
-            }
-        } catch (failure: Exception) {
-            if (failure is CancellationException) throw failure
+    val notice =
+        homeStatusOf(
+            linkState,
+            storageError ?: settingsError,
+            today.failure,
+            career.failure,
+            career.careerEnabled,
+            careerVisible,
+            workState.approvalsStatus,
+            workState.routinesStatus,
+        ) ?: (workState.partialErrorRes ?: workState.fatalErrorRes)?.let {
+            HomeStatusNotice(NoticeTone.Warning, stringResource(it), HomeNoticeAction.Retry)
         }
-    }
-    val results = items.filter { it.category == "result" }.sortedByDescending { it.updated_at }
+    val retry: () -> Unit = { manualToken++ }
+    val connectionSettings: () -> Unit = { NavigationController.navigateTo(SettingsConnection) }
     HermesScaffold(
         title = { Text("ホーム") },
         drawerGesturesEnabled = false,
-        actions = { HomeUpdateAction(updateCandidate?.versionName, updater::openUpdateDialog) },
+        isRefreshing = isManualRefreshing,
+        onRefresh = {
+            retry()
+            updater.checkForUpdate()
+        },
+        showRefreshAction = false,
+        actions = {
+            HomeUpdateAction(updateCandidate?.versionName, updater::openUpdateDialog)
+            IconButton(onClick = { showSettingsSheet = true }, modifier = Modifier.testTag("home_settings")) {
+                Icon(Icons.Outlined.Tune, contentDescription = "ホームの設定")
+            }
+        },
     ) {
         HomeFeedContent(
             scope = scope,
-            actions = actions,
-            results = results,
+            actions = items.filter { it.category == "action" },
+            results = items.filter { it.category == "result" }.sortedByDescending { it.updated_at },
             pending = pending,
-            linkState = connection.connection.state,
-            loading = loading,
-            error = error,
-            storageError = storageError,
-            metadata = metadata,
-            careerVisible = careerVisible,
-            careerEnabled = careerEnabled,
-            chatVisible = chatVisible,
-            onRefresh = {
-                refresh++
-                if (today.settings?.enabled == true) coroutine.launch { today.refresh() }
-                updater.checkForUpdate()
-            },
-            onProviderChange = { id, enabled ->
-                coroutine.launch {
-                    try {
-                        repository.dao.setEnabled(if (id == "chat") chatScope else scope, id, enabled)
-                    } catch (failure: Exception) {
-                        if (failure is CancellationException) throw failure
-                        error = "表示設定を保存できませんでした。"
-                    }
+            linkState = linkState,
+            now = now,
+            hasTodayFocus =
+                today.settings?.enabled != false && today.plan
+                    ?.groups(now)
+                    ?.actionable
+                    ?.isNotEmpty() == true,
+            decisionsConfirmed =
+                linkState == LinkState.CONNECTED &&
+                    career.failure == null &&
+                    workState.approvalsStatus in setOf(WorkerSourceStatus.Ok, WorkerSourceStatus.Unavailable),
+            notice = notice,
+            onNoticeAction = { action ->
+                when (action) {
+                    HomeNoticeAction.ConnectionSettings -> connectionSettings()
+                    HomeNoticeAction.Retry -> retry()
                 }
             },
             onOpen = { openHomeItem(it, scope) },
             onAttention = { NavigationController.navigateTo(AttentionDetailKey(it.ref)) },
-            onConnectionSettings = { NavigationController.navigateTo(com.m57.hermescontrol.SettingsConnection) },
             approvals = workState.escrows,
             busyApprovalIds = workState.busyEscrowIds,
-            onDecide = worker::decideEscrow,
             upcoming = upcomingOrder(workState.scheduledJobs).filter { it.enabled && !it.nextRunAt.isNullOrBlank() },
-            onOpenWork = { NavigationController.navigateTo(com.m57.hermescontrol.WorkScreen) },
+            subagentCount = workState.subagents.size,
+            onOpenWork = { NavigationController.navigateTo(WorkScreen) },
+            today = { focusOccupied, timeline ->
+                TodayPlanPanel(
+                    state = today,
+                    now = now,
+                    blockedByAuth =
+                        epoch % 2L != 0L || linkState == LinkState.AUTH_REQUIRED ||
+                            today.failure in
+                            setOf(HomeFailure.AuthRequired, HomeFailure.NotGated, HomeFailure.ProfileUnavailable),
+                    failureCovered = notice?.coversToday == true,
+                    showFocus = !focusOccupied,
+                    offline = linkState == LinkState.OFFLINE,
+                    additionalTimeline = timeline,
+                    onConfigure = { showSettingsSheet = true },
+                    onReload = retry,
+                )
+            },
+            threadTitles = career.threadTitles,
+        )
+    }
+    if (showSettingsSheet) {
+        HomeSettingsSheet(
+            scope = scope,
             today = today,
-            threadTitles = threadTitles,
+            chatVisible = chatVisible,
+            careerVisible = careerVisible,
+            careerEnabled = career.careerEnabled,
+            metadata = metadata,
+            onProviderChange = { id, enabled ->
+                coroutine.launch {
+                    try {
+                        repository.dao.setEnabled(if (id == "chat") chatScope else scope, id, enabled)
+                        settingsError = null
+                    } catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                        settingsError = "表示設定を保存できませんでした。"
+                    }
+                }
+            },
+            saveSettings = { value -> coroutine.async { today.save(value) }.await() },
+            onRetry = retry,
+            onDismiss = { showSettingsSheet = false },
         )
     }
 }
@@ -248,79 +246,184 @@ internal fun HomeFeedContent(
     results: List<HomeItem>,
     pending: List<AttentionItem>,
     linkState: LinkState,
-    loading: Boolean,
-    error: String?,
-    storageError: String?,
-    metadata: HomePage?,
-    careerVisible: Boolean,
-    careerEnabled: Boolean,
-    chatVisible: Boolean,
-    onRefresh: () -> Unit,
-    onProviderChange: (String, Boolean) -> Unit,
     onOpen: (HomeItem) -> Unit,
     onAttention: (AttentionItem) -> Unit,
-    onConnectionSettings: () -> Unit,
+    now: Instant = Instant.now(),
+    hasTodayFocus: Boolean = false,
+    decisionsConfirmed: Boolean = linkState == LinkState.CONNECTED,
+    notice: HomeStatusNotice? = null,
+    onNoticeAction: (HomeNoticeAction) -> Unit = {},
     approvals: List<EscrowRecord> = emptyList(),
     busyApprovalIds: Set<String> = emptySet(),
-    onDecide: (EscrowRecord, EscrowDecision) -> Unit = { _, _ -> },
     upcoming: List<WorkerScheduledJob> = emptyList(),
+    subagentCount: Int = 0,
     onOpenWork: () -> Unit = {},
-    today: TodayPlanState? = null,
+    today: (@Composable (focusOccupied: Boolean, timeline: List<HomeTimelineItem>) -> Unit)? = null,
     threadTitles: Map<String, String> = emptyMap(),
 ) {
-    var settings by rememberSaveable(scope) { mutableStateOf(false) }
-    var showCoverage by rememberSaveable(scope) { mutableStateOf(false) }
+    var expandDecisions by rememberSaveable(scope) { mutableStateOf(false) }
     var expandActions by rememberSaveable(scope) { mutableStateOf(false) }
     var expandResults by rememberSaveable(scope) { mutableStateOf(false) }
     var openGroups by rememberSaveable(scope) { mutableStateOf(emptyList<String>()) }
     val spacing = LocalSpacing.current
-    LazyColumn(
-        modifier = Modifier.testTag("home_list"),
-        contentPadding = PaddingValues(start = spacing.lg, end = spacing.lg, top = spacing.md, bottom = spacing.xl),
-        verticalArrangement = Arrangement.spacedBy(spacing.sm),
-    ) {
-        if (today != null) {
-            item(key = "today_plan") { TodayPlanPanel(scope, today) }
+    val expiryOrder = compareBy<HomeDecision> { it.expiresAt ?: Instant.MAX }
+    // Career's Home feed publishes waiting_user runs as conversation actions.
+    val careerReplies =
+        actions.filter {
+            it.provider == "career" && it.target.kind == "conversation" &&
+                !it.target.run_id.isNullOrBlank()
         }
-        item {
-            HomeToolbar(linkState, loading, onRefresh) { settings = !settings }
-            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-        }
-        if (settings) {
-            item {
-                listOf("chat" to "チャット", "career" to "就活").forEach { (id, name) ->
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(spacing.md),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("$name をホームに表示", Modifier.weight(1f))
-                        Switch(
-                            checked = if (id == "career") careerVisible else chatVisible,
-                            onCheckedChange = { onProviderChange(id, it) },
-                        )
-                    }
+    val decisions =
+        (
+            pending.map { item ->
+                HomeDecision(
+                    title = item.title,
+                    source = if (item.kind == AttentionKind.APPROVAL) "チャットの承認" else "チャットの回答",
+                    status = item.status,
+                    expiresAt = item.expiresAt?.let(Instant::ofEpochMilli),
+                    approval = item.kind == AttentionKind.APPROVAL,
+                    open = { onAttention(item) },
+                )
+            } +
+                approvals.map { record ->
+                    HomeDecision(
+                        title =
+                            record.display.title.trim().ifBlank {
+                                stringResource(
+                                    R.string.worker_approval_default_title,
+                                )
+                            },
+                        source = record.job_name?.takeIf(String::isNotBlank) ?: "作業の承認",
+                        status =
+                            if (record.id in
+                                busyApprovalIds
+                            ) {
+                                AttentionStatus.SUBMITTING
+                            } else {
+                                AttentionStatus.PENDING
+                            },
+                        expiresAt = homeDeadlineInstant(record.expires_at),
+                        approval = true,
+                        open = onOpenWork,
+                    )
+                } +
+                careerReplies.map { item ->
+                    HomeDecision(
+                        title = item.target.thread_id?.let(threadTitles::get) ?: item.detail.ifBlank { item.title },
+                        source = "就活の回答",
+                        status = AttentionStatus.PENDING,
+                        expiresAt = null,
+                        approval = false,
+                        open = { onOpen(item) },
+                    )
                 }
-                Text("取得・通知設定は変更しません。承認・回答待ちは表示を続けます。")
+        ).sortedWith(expiryOrder)
+    val urgent =
+        decisions.filter {
+            it.approval && it.status != AttentionStatus.SUBMITTING && it.expiresAt?.isHomeDecisionSoon(now) == true
+        }
+    val decisionFocus = urgent.firstOrNull()
+    val japan = ZoneId.of("Asia/Tokyo")
+    val date = now.atZone(japan).toLocalDate()
+
+    fun dueToday(value: String?): Boolean =
+        when (val deadline = todayDeadline(value)) {
+            is TodayDeadline.At -> deadline.instant.atZone(japan).toLocalDate() == date
+            is TodayDeadline.Day -> deadline.date == date
+            else -> false
+        }
+    val careerDueToday = actions.filter { it.provider == "career" && dueToday(it.deadline) }
+    val careerFocus =
+        careerDueToday
+            .firstOrNull { it.target.kind in setOf("company", "mail") }
+            .takeIf { decisionFocus == null && !hasTodayFocus }
+    val timelineActions = if (today == null) emptyList() else careerDueToday.filterNot { it == careerFocus }
+    val timelineRoutines =
+        if (today ==
+            null
+        ) {
+            emptyList()
+        } else {
+            upcoming.filter {
+                dueToday(it.nextRunAt) &&
+                    homeDeadlineInstant(it.nextRunAt)?.isAfter(now) == true
             }
         }
-        if (approvals.isNotEmpty() || pending.isNotEmpty() || actions.isNotEmpty()) {
-            item { OverviewHeading("対応が必要") }
-            // Worker approvals are decided in place: the card already shows everything the decision binds to.
-            items(approvals, key = { "escrow:${it.id}" }) { record ->
-                WorkerApprovalObject(
-                    record = record,
-                    busy = record.id in busyApprovalIds,
-                    onApprove = { onDecide(record, EscrowDecision.APPROVE) },
-                    onDeny = { onDecide(record, EscrowDecision.DENY) },
+    val timeline =
+        timelineActions.map { item ->
+            HomeTimelineItem(item.title, requireNotNull(item.deadline), "就活") { onOpen(item) }
+        } +
+            timelineRoutines.map { job ->
+                HomeTimelineItem(job.name, requireNotNull(job.nextRunAt), "Hermes の定期作業", onOpenWork)
+            }
+    val remainingActions = actions.filterNot { it == careerFocus || it in timelineActions || it in careerReplies }
+    val laterRoutines = upcoming - timelineRoutines.toSet()
+    val hasActions = remainingActions.isNotEmpty()
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().testTag("home_list"),
+        contentPadding = PaddingValues(start = spacing.md, end = spacing.md, top = spacing.sm, bottom = spacing.xl),
+    ) {
+        item(key = "decision_status") {
+            HomeStatusPill(
+                pendingCount =
+                    decisions.count {
+                        it.status == AttentionStatus.PENDING && it.expiresAt?.isAfter(now) != false
+                    },
+                hasDecisions = decisions.isNotEmpty(),
+                confirmed = decisionsConfirmed,
+                expanded = expandDecisions,
+                onToggle = { expandDecisions = !expandDecisions },
+            )
+        }
+        if (expandDecisions) {
+            items(decisions) { decision ->
+                HomeDecisionRow(decision, now, ready = linkState == LinkState.CONNECTED)
+            }
+        }
+        notice?.let {
+            item(key = "home_status") {
+                InlineNotice(
+                    it.text,
+                    tone = it.tone,
+                    actionLabel = it.action?.label,
+                    onAction =
+                        it.action?.let { action ->
+                            { onNoticeAction(action) }
+                        },
                 )
             }
-            items(if (expandActions) pending else pending.take(5)) {
-                HomeAttentionEntry(it, ready = linkState == LinkState.CONNECTED) { onAttention(it) }
+        }
+        if (decisionFocus != null) {
+            item(key = "decision_focus") {
+                HomeFocusAction(
+                    title = decisionFocus.title,
+                    details = homeFocusDeadline(decisionFocus.expiresAt.toString(), now),
+                    actionLabel = "承認内容を確認",
+                    onOpen = decisionFocus.open,
+                )
             }
-            // Same-titled actions collapse into one row with a count.
-            val groups = homeActionGroups(actions)
-            val visibleGroups = if (expandActions) groups else groups.take((5 - pending.size).coerceAtLeast(0))
+        } else if (careerFocus != null) {
+            item(key = "career_focus") {
+                HomeFocusAction(
+                    title = careerFocus.title,
+                    details = homeFocusDeadline(careerFocus.deadline, now),
+                    actionLabel = "内容を確認",
+                    onOpen = { onOpen(careerFocus) },
+                )
+            }
+        }
+        if (!expandDecisions) {
+            items(urgent.drop(1)) { decision ->
+                HomeDecisionRow(decision, now, ready = linkState == LinkState.CONNECTED)
+            }
+        }
+        if (today != null) {
+            item(key = "today_plan") { today(decisionFocus != null || careerFocus != null, timeline) }
+        }
+        if (hasActions) {
+            item(key = "actions_heading") { HomeSectionHeader("対応が必要", first = today == null) }
+            val groups = homeActionGroups(remainingActions)
+            val visibleGroups = if (expandActions) groups else groups.take(5)
             visibleGroups.forEach { group ->
                 val first = group.first()
                 if (group.size == 1) {
@@ -346,35 +449,39 @@ internal fun HomeFeedContent(
                     }
                 }
             }
-            if (!expandActions && pending.size + groups.size > 5) {
-                item {
-                    TextButton(
-                        onClick = { expandActions = true },
-                        shapes = ButtonDefaults.shapes(),
-                    ) { Text("残り${pending.size + groups.size - 5}件を表示") }
+            val rest = groups.size - 5
+            if (rest > 0) {
+                item(key = "more_actions") {
+                    HomeFoldRow(
+                        if (expandActions) "追加の対応を閉じる" else "残り${rest}件を表示",
+                        expanded = expandActions,
+                        onToggle = { expandActions = !expandActions },
+                    )
                 }
             }
         }
-        // Background work reports in the main conversation (AUTONOMOUS_WORKER.md §8.3), not here.
         if (results.isNotEmpty()) {
-            item { OverviewHeading("届いた結果") }
-            val visibleCount = if (expandResults) results.size else 5
-            items(results.take(visibleCount), key = {
-                "result:${it.provider}:${it.id}"
-            }) { HomeEntry(it) { onOpen(it) } }
-            val totalResults = results.size
-            if (!expandResults && totalResults > 5) {
-                item {
-                    TextButton(
-                        onClick = { expandResults = true },
-                        shapes = ButtonDefaults.shapes(),
-                    ) { Text("残り${totalResults - 5}件を表示") }
+            item(key = "results_heading") { HomeSectionHeader("届いた結果", first = today == null && !hasActions) }
+            items(if (expandResults) results else results.take(5), key = { "result:${it.provider}:${it.id}" }) {
+                HomeEntry(it) { onOpen(it) }
+            }
+            if (results.size > 5) {
+                item(key = "more_results") {
+                    HomeFoldRow(
+                        if (expandResults) "追加の結果を閉じる" else "残り${results.size - 5}件を表示",
+                        expanded = expandResults,
+                        onToggle = { expandResults = !expandResults },
+                    )
                 }
             }
         }
-        if (upcoming.isNotEmpty()) {
-            item { OverviewHeading("このあと") }
-            items(upcoming.take(3), key = { "upcoming:${it.id}:${it.name}" }) { job ->
+        if (laterRoutines.isNotEmpty() || subagentCount > 0) {
+            item(key = "upcoming_heading") {
+                HomeSectionHeader("このあと", first = today == null && !hasActions && results.isEmpty()) {
+                    TextButton(onClick = onOpenWork) { Text("すべての作業") }
+                }
+            }
+            items(laterRoutines.take(3), key = { "upcoming:${it.id}:${it.name}" }) { job ->
                 ScheduledWorkRow(
                     job = job,
                     japanese = true,
@@ -384,75 +491,28 @@ internal fun HomeFeedContent(
                     onClick = onOpenWork,
                 )
             }
-            item {
-                TextButton(
-                    onClick = onOpenWork,
-                    shapes = ButtonDefaults.shapes(),
-                ) { Text("すべての作業") }
-            }
-        }
-        if (!loading &&
-            results.isEmpty() &&
-            actions.isEmpty() &&
-            pending.isEmpty() &&
-            approvals.isEmpty()
-        ) {
-            item {
-                Text(
-                    if (error != null ||
-                        metadata?.coverage?.any { it.state !in setOf("updated", "unchanged", "disabled") } == true
-                    ) {
-                        "一部の情報を確認できていません。下の確認状況をご覧ください。"
-                    } else {
-                        "確認できた情報には、ホームに表示する対応・結果はありません。"
-                    },
-                )
-            }
-        }
-        item {
-            storageError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (careerVisible) {
-                error?.let {
-                    Text(it, color = MaterialTheme.colorScheme.error)
-                    TextButton(
-                        onClick = onConnectionSettings,
-                        shapes = ButtonDefaults.shapes(),
-                    ) {
-                        Text("接続設定を開く")
-                    }
-                }
-                metadata?.takeIf { careerEnabled }?.let { page ->
-                    val incomplete = page.coverage.any { it.state !in setOf("updated", "unchanged", "disabled") }
-                    OverviewHeading("確認状況")
-                    Text(
-                        if (incomplete) "就活：一部の情報を確認できていません" else "就活：保存情報を確認済み",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    TextButton(
-                        onClick = { showCoverage = !showCoverage },
-                        shapes = ButtonDefaults.shapes(),
-                    ) { Text(if (showCoverage) "確認状況を閉じる" else "確認状況") }
-                    if (showCoverage) {
-                        Text("ホーム確認：${homeTime(page.checked_at)}", style = MaterialTheme.typography.bodySmall)
-                        page.coverage.forEach { coverage ->
-                            Text(
-                                "${coverage.label}：${coverageLabel(coverage.state)}",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                            coverage.last_success_at?.let {
-                                Text(
-                                    "最終取得：${homeTime(it)}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                        }
+            if (subagentCount > 0) {
+                item(key = "active_helpers") {
+                    CompactListRow(onClick = onOpenWork, trailing = { HomeChevron() }) {
+                        Text("手伝い中の作業 ${subagentCount}件", style = MaterialTheme.typography.bodyLarge)
                     }
                 }
             }
-            Text("チャットは端末が受信した回答が対象です。", style = MaterialTheme.typography.bodySmall)
-            Text("日時は日本時間で表示しています。", style = MaterialTheme.typography.bodySmall)
         }
     }
+}
+
+@Composable
+private fun HomeSectionHeader(
+    title: String,
+    first: Boolean,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    SectionHeader(
+        title,
+        contentPadding = PaddingValues(top = if (first) 8.dp else 24.dp, bottom = 4.dp),
+        trailing = trailing,
+    )
 }
 
 /** Groups same provider + title actions without a deadline, keeping list order. */
@@ -464,17 +524,6 @@ internal fun homeActionGroups(actions: List<HomeItem>): List<List<HomeItem>> {
     }
     return groups.values.toList()
 }
-
-private fun coverageLabel(state: String): String =
-    when (state) {
-        "updated", "unchanged" -> "取得済み"
-        "running" -> "取得中"
-        "partial" -> "一部取得・未確認の情報があります"
-        "failed" -> "最新情報を取得できていません"
-        "auth_required" -> "接続の確認が必要"
-        "disabled" -> "取得停止中"
-        else -> "まだ確認できていません"
-    }
 
 @Composable
 internal fun HomeCard(

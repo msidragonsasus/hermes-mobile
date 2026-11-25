@@ -1,5 +1,7 @@
 package com.m57.hermescontrol.home
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import java.time.Instant
 import java.time.LocalDate
@@ -203,6 +205,15 @@ internal fun todayTaskMeta(
 ): String {
     val deadline = todayDeadline(task.deadline)
     val expired = deadline?.isPast(now) == true
+    val reason = task.reviewReason()
+    if (task.source == "gmail") {
+        val showDecision = reason in setOf("closed", "dismissed") || (reason == "expired" && !expired)
+        return listOfNotNull(
+            todayReviewLabel(reason).takeIf { candidate && !task.done && showDecision },
+            deadline?.let { deadlineText(it, expired, now) },
+            "メール",
+        ).joinToString(" · ")
+    }
     return buildList {
         when {
             task.done -> {
@@ -210,7 +221,6 @@ internal fun todayTaskMeta(
             }
 
             candidate -> {
-                val reason = task.reviewReason()
                 // An expired deadline already says why; do not repeat 期限切れ.
                 if (!(expired && reason == "expired")) add(todayReviewLabel(reason))
                 deadline?.let { add(deadlineText(it, expired, now)) }
@@ -231,7 +241,7 @@ internal fun todayTaskMeta(
                 deadline?.let { add(deadlineText(it, false, now)) }
             }
         }
-        add(if (task.source == "gmail") "メール" else "manaba")
+        add("manaba")
         if (stale) add("前回の情報")
     }.joinToString(" · ")
 }
@@ -254,11 +264,12 @@ data class TodayCoverage(
     val checked_at: String = "",
 )
 
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class TodaySettings(
-    val email: String = "",
-    val manaba_url: String = "",
-    val enabled: Boolean = false,
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) val email: String = "",
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) val manaba_url: String = "",
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) val enabled: Boolean = false,
 )
 
 @Serializable
@@ -271,6 +282,8 @@ data class TodayRefresh(
 data class TodayCompletion(
     val done: Boolean,
 )
+
+internal fun TodayPlan.runFailed(): Boolean = state in setOf("failed", "interrupted", "uncertain")
 
 internal fun TodayPlan.isCurrent(now: Instant = Instant.now()): Boolean =
     fresh && plan_day == now.atZone(ZoneId.of("Asia/Tokyo")).toLocalDate().toString()

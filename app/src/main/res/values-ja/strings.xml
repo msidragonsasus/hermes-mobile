@@ -2,6 +2,8 @@
 <resources>
     <string name="app_name">Hermes Mobile</string>
     <string name="chat_send_desc">送信</string>
+    <string name="chat_mic_stop">音声入力を停止</string>
+    <string name="stt_session_failed">音声認識でエラーが発生したため、音声入力を停止しました。マイクを押して再試行してください。</string>
     <string name="chat_mic_listening">聞き取り中…</string>
     <string name="stt_permission_denied">音声入力にはマイクの権限が必要です</string>
     <string name="stt_not_available">この端末では音声認識を利用できません</string>

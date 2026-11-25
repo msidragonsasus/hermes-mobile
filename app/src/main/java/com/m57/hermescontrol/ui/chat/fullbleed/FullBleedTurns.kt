@@ -82,7 +82,8 @@ private fun ChatMessage.isPlainUserTurn(): Boolean =
     role == MessageRole.USER && displayKind == null && !isSyntheticSystemRow()
 
 private fun ResponseLedger.followUpUserIds(): Set<String> =
-    responses.filter { it.serverFollowUp }.flatMapTo(mutableSetOf()) { it.userIds }
+    responses.filter { it.serverFollowUp }.flatMapTo(mutableSetOf()) { it.userIds } +
+        queuedTranscriptInputs.filter { it.replacementRowId == null && !it.discarded }.map { it.bubbleId }
 
 /**
  * Keep every response's assistant/tool entries directly under its own user message
@@ -164,50 +165,6 @@ private fun alignOwnedEntriesToUserAnchors(
         insertAfterIndex[index]?.let { aligned.addAll(it) }
     }
     return aligned
-}
-
-/**
- * Returns the turn index that owns the currently active response when another user
- * turn already sits below it, so the thinking indicator stays attached to the active
- * turn instead of appearing under the newer user message.
- */
-internal fun activeTurnIndexForThinking(
-    turns: List<ChatTurn>,
-    ledger: ResponseLedger,
-): Int? {
-    val activeId = ledger.activeId ?: return null
-    val active = ledger.responses.singleOrNull { it.id == activeId } ?: return null
-    if (active.finishedAt != null) return null
-    val ownedMessageIds = active.messageIds.toHashSet()
-    val ownedUserIds = active.userIds.toHashSet() + ledger.pendingInputs.filterValues { it == active.id }.keys
-    if (ownedMessageIds.isEmpty() && ownedUserIds.isEmpty()) return null
-    val matchIndex =
-        turns.indexOfLast { turn ->
-            when (turn) {
-                is ChatTurn.User -> {
-                    turn.message.id in ownedUserIds
-                }
-
-                is ChatTurn.Agent -> {
-                    turn.entries.any { entry ->
-                        when (entry) {
-                            is AgentEntry.Prose -> entry.message.id in ownedMessageIds
-                            is AgentEntry.ToolRow -> entry.message.id in ownedMessageIds
-                            is AgentEntry.SystemEvent -> entry.message.id in ownedMessageIds
-                            is AgentEntry.ConnectionEvents -> entry.messages.any { it.id in ownedMessageIds }
-                        }
-                    }
-                }
-            }
-        }
-    if (matchIndex !in 0 until turns.lastIndex) return null
-    val followUpUsers = ledger.followUpUserIds()
-    return matchIndex.takeIf {
-        turns.subList(matchIndex + 1, turns.size).any { turn ->
-            turn is ChatTurn.User &&
-                turn.message.id in followUpUsers
-        }
-    }
 }
 
 private fun groupIntoTurnsForPresentation(

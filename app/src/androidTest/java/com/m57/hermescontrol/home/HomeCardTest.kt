@@ -53,11 +53,11 @@ class HomeCardTest {
                 "action",
                 "書類提出",
                 HomeTarget("company", company_id = "c"),
-                deadline = "2026-09-15",
+                deadline = "2020-09-15",
                 overdue = true,
             )
         compose.setContent { HomeCard(item, "scope") }
-        compose.onNodeWithText("期限超過・未完了：2026-09-15").assertIsDisplayed()
+        compose.onNodeWithText("期限超過・未完了：2020年9月15日").assertIsDisplayed()
         compose.onNodeWithText("対応完了").assertDoesNotExist()
         compose.onNodeWithText(item.title).assertHasClickAction().performClick()
         verify(exactly = 1) { NavigationController.navigateTo(HomeDetailKey("scope", item)) }

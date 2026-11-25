@@ -16,6 +16,7 @@ class FakeSubmissionTransport : HermesSubmissionTransport {
     var nextPromptResult: SubmissionResult<PromptAcceptance>? = null
     var nextAttachmentResult: SubmissionResult<String?>? = null
     var beforePrompt: (suspend () -> Unit)? = null
+    var steer: (suspend (String) -> SubmissionResult<PromptAcceptance>)? = null
 
     /** Opt-in fixture for tests that require two distinguishable server runs. */
     var addressedPromptAcks = false
@@ -24,6 +25,13 @@ class FakeSubmissionTransport : HermesSubmissionTransport {
     override fun configuredScope() = scope
 
     override fun isReady(scope: ConnectionScope) = ready && this.scope == scope
+
+    override suspend fun steerPrompt(
+        scope: ConnectionScope,
+        session: SessionRef,
+        text: String,
+    ): SubmissionResult<PromptAcceptance> =
+        if (isReady(scope)) steer?.invoke(text) ?: SubmissionResult.NotSent else SubmissionResult.NotSent
 
     override suspend fun submitPrompt(
         scope: ConnectionScope,

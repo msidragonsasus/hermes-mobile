@@ -22,6 +22,8 @@ data class ResponseRecord(
     val authority: ReplyAuthorityFacts = ReplyAuthorityFacts(),
     /** An ordinary busy send shown immediately. Admission and coverage still require evidence. */
     val serverFollowUp: Boolean = false,
+    /** A serial start after a turn with unresolved steer inputs, pending history confirmation. */
+    val steerPredecessorId: String? = null,
 )
 
 @Serializable
@@ -54,6 +56,11 @@ data class ResponseLedger(
     val toolAnswerIds: Map<String, String> = emptyMap(),
     /** Approval rows are local activity and do not establish transcript or reply authority. */
     val approvalPlacements: Map<String, ApprovalPlacement> = emptyMap(),
+    val queuedTranscriptInputs: List<QueuedTranscriptInput> = emptyList(),
+    val steerTranscriptRows: List<SteerTranscriptRow> = emptyList(),
+    val stoppedSteerIds: Set<String> = emptySet(),
+    /** Idle was confirmed. These inputs still participate in transcript matching. */
+    val settledSteerIds: Set<String> = emptySet(),
     /** REST may observe the same final answer before the live terminal is delivered. */
     @Transient val approvalHistoryAnswer: ApprovalHistoryAnswer? = null,
 ) {

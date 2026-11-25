@@ -124,20 +124,9 @@ fun FullBleedChatList(
             )
         val toolMilestones = plan.milestones
         val turns = plan.turns
-        val thinkingTurnIndex =
-            if (showThinkingIndicator) {
-                activeTurnIndexForThinking(turns, replyLifecycle.ledger) ?: turns.lastIndex
-            } else {
-                -1
-            }
+        // The activity row carries the indicator only at the tail. A newer user bubble keeps it below that bubble.
         val thinkingInActivity =
-            showThinkingIndicator && (turns.getOrNull(thinkingTurnIndex) as? ChatTurn.Agent)?.hasActivity() == true
-        val inlineThinkingAfterTurn =
-            if (showThinkingIndicator && !thinkingInActivity && thinkingTurnIndex in 0 until turns.lastIndex) {
-                thinkingTurnIndex
-            } else {
-                null
-            }
+            showThinkingIndicator && (turns.lastOrNull() as? ChatTurn.Agent)?.hasActivity() == true
         val replyFooters = plan.replyFooters
         val duplicateBrainstormIds = BrainstormParser.duplicateBrainstormMessageIds(turns)
         val mergedBrainstorms = BrainstormParser.collectMergedFromMessages(messages, brainstormsById)
@@ -283,7 +272,7 @@ fun FullBleedChatList(
                                             showTimestamp = false,
                                         )
                                         AgentTurnActivityRow(
-                                            thinking = thinkingInActivity && turnIndex == thinkingTurnIndex,
+                                            thinking = thinkingInActivity && turnIndex == turns.lastIndex,
                                             expanded = activityExpanded,
                                             hasReasoning = reasoningMessages.isNotEmpty(),
                                             toolCount =
@@ -513,16 +502,11 @@ fun FullBleedChatList(
                             }
                         }
                     }
-                    if (inlineThinkingAfterTurn == turnIndex) {
-                        item(key = "thinking-indicator") {
-                            ThinkingIndicator(modifier = Modifier.padding(bottom = 6.dp))
-                        }
-                    }
                 }
 
                 // 「思考中」 after everything the turn already shows, including
                 // interim commentary and folded tool rows, while it still works.
-                if (showThinkingIndicator && !thinkingInActivity && inlineThinkingAfterTurn == null) {
+                if (showThinkingIndicator && !thinkingInActivity) {
                     item(key = "thinking-indicator") {
                         ThinkingIndicator(modifier = Modifier.padding(bottom = 6.dp))
                     }

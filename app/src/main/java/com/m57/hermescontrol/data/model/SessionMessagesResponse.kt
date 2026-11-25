@@ -63,6 +63,7 @@ data class SessionMessage(
      * transcript under NEW row ids and deactivates the old rows; the uid stays the same.
      */
     val message_uid: String? = null,
+    val finish_reason: String? = null,
 ) {
     val timestampText: String?
         get() = (timestamp as? JsonPrimitive)?.content
@@ -91,28 +92,33 @@ data class SessionMessage(
         get() = if (hasDisplayProjection) messageContentText(display_content) else contentText
 
     val isModelOnly: Boolean
-        get() {
-            val metadata =
-                when (val raw = display_metadata) {
-                    is JsonObject -> {
-                        raw
-                    }
+        get() = displayMetadataFlag("model_only")
 
-                    is JsonPrimitive -> {
-                        if (raw.isString) {
-                            runCatching { Json.parseToJsonElement(raw.content) }.getOrNull() as? JsonObject
-                        } else {
-                            null
-                        }
-                    }
+    val isQueuedPrompt: Boolean
+        get() = role == "user" && displayMetadataFlag("_queued_prompt")
 
-                    else -> {
+    private fun displayMetadataFlag(key: String): Boolean {
+        val metadata =
+            when (val raw = display_metadata) {
+                is JsonObject -> {
+                    raw
+                }
+
+                is JsonPrimitive -> {
+                    if (raw.isString) {
+                        runCatching { Json.parseToJsonElement(raw.content) }.getOrNull() as? JsonObject
+                    } else {
                         null
                     }
                 }
-            val flag = metadata?.get("model_only") as? JsonPrimitive
-            return flag?.isString == false && flag.booleanOrNull == true
-        }
+
+                else -> {
+                    null
+                }
+            }
+        val flag = metadata?.get(key) as? JsonPrimitive
+        return flag?.isString == false && flag.booleanOrNull == true
+    }
 
     val reasoningText: String
         get() =

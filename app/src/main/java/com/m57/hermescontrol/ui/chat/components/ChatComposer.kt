@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.Badge
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
@@ -70,6 +71,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
@@ -393,7 +395,56 @@ fun ChatInputBar(
                     }
                 }
             }
+            val listeningLabel = stringResource(R.string.chat_mic_listening)
             val trailingControls: @Composable () -> Unit = {
+                if (isListening) {
+                    FilledIconButton(
+                        onClick = onMicTap,
+                        shapes = IconButtonDefaults.shapes(),
+                        colors =
+                            IconButtonDefaults.filledIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
+                            ),
+                        modifier =
+                            Modifier
+                                .padding(
+                                    vertical = actionPadding,
+                                ).size(style.actionSize)
+                                .semantics { stateDescription = listeningLabel }
+                                .testTag("mic_stop_button"),
+                    ) {
+                        Box {
+                            Icon(
+                                Icons.Default.Stop,
+                                contentDescription = stringResource(R.string.chat_mic_stop),
+                            )
+                            Badge(
+                                modifier = Modifier.align(Alignment.TopEnd),
+                                containerColor = MaterialTheme.colorScheme.onError,
+                            )
+                        }
+                    }
+                } else if (microphoneEnabled ||
+                    (!canSend && !showSendWhenEmpty && !(isAgentTyping && onStop != null))
+                ) {
+                    IconButton(
+                        onClick = onMicTap,
+                        enabled = isConnected && microphoneEnabled,
+                        modifier =
+                            Modifier
+                                .padding(
+                                    vertical = actionPadding,
+                                ).size(style.actionSize)
+                                .testTag("mic_button"),
+                    ) {
+                        Icon(
+                            Icons.Default.Mic,
+                            contentDescription = "Mic",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 if (!canSend && isAgentTyping && onStop != null) {
                     FilledIconButton(
                         onClick = onStop,
@@ -430,41 +481,6 @@ fun ChatInputBar(
                                     if (queueOnSend) R.string.draft_add_queue else R.string.chat_send_desc,
                                 ),
                             modifier = Modifier.size(20.dp),
-                        )
-                    }
-                } else if (isListening) {
-                    FilledIconButton(
-                        onClick = onMicTap,
-                        shapes = IconButtonDefaults.shapes(),
-                        colors =
-                            IconButtonDefaults.filledIconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.error,
-                                contentColor = MaterialTheme.colorScheme.onError,
-                            ),
-                        modifier =
-                            Modifier
-                                .padding(
-                                    vertical = actionPadding,
-                                ).size(style.actionSize)
-                                .testTag("mic_stop_button"),
-                    ) {
-                        Icon(Icons.Default.Stop, contentDescription = "Stop listening")
-                    }
-                } else {
-                    IconButton(
-                        onClick = onMicTap,
-                        enabled = isConnected && microphoneEnabled,
-                        modifier =
-                            Modifier
-                                .padding(
-                                    vertical = actionPadding,
-                                ).size(style.actionSize)
-                                .testTag("mic_button"),
-                    ) {
-                        Icon(
-                            Icons.Default.Mic,
-                            contentDescription = "Mic",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }

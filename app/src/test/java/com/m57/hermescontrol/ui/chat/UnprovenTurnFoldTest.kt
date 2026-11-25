@@ -135,6 +135,257 @@ class UnprovenTurnFoldTest {
 
     private fun noReceipt() = TerminalEvidence(2000L, 2L, status = "complete")
 
+    @Test
+    fun busyTranscript_lateControlAckConvergesWithAlreadyVisibleHistory() = lateControlAckConverges(legacyCache = false)
+
+    @Test
+    fun busyTranscript_redirectResumesWithPreFixCacheEvidence() = lateControlAckConverges(legacyCache = true)
+
+    private fun lateControlAckConverges(legacyCache: Boolean) {
+        val pending = "pending-control"
+        val body = "Same words"
+        val page =
+            listOf(
+                row(10, "user", "original"),
+                row(11, "assistant", "").copy(display_kind = "hidden"),
+                row(12, "user", body),
+                row(13, "assistant", "local answer"),
+                row(20, "user", body),
+            )
+        val local =
+            localTurn(
+                10L,
+                terminal =
+                    TerminalEvidence(
+                        2000L,
+                        2L,
+                        listOf(10L, 11L, 12L, 13L),
+                        10L,
+                        13L,
+                        complete = false,
+                        status = "complete",
+                        userRowIds = listOf(10L, 12L),
+                    ),
+            )
+        val beforeAck =
+            reconcileTranscript(
+                local.copy(
+                    messages = local.messages + ChatMessage(id = pending, role = MessageRole.USER, content = body),
+                    responseLedger = local.responseLedger.copy(pendingInputs = mapOf(pending to "r")),
+                ),
+                target,
+                session,
+                page,
+                offset = 0,
+                latest = true,
+            )
+        val accepted =
+            beforeAck.copy(
+                messages = beforeAck.messages.map { if (it.id == pending) it.copy(displayKind = "steer") else it },
+                responseLedger =
+                    beforeAck.responseLedger.acceptInput(
+                        "control",
+                        "r",
+                        "r",
+                        false,
+                        "rpc-control",
+                        "REDIRECTED",
+                        target,
+                        session,
+                        2L,
+                        pending,
+                        null,
+                        null,
+                    ),
+            )
+        val cached =
+            if (legacyCache) {
+                accepted.copy(
+                    responseLedger =
+                        accepted.responseLedger.update("r") { record ->
+                            record.copy(
+                                userRowIds = listOf(10L, 12L),
+                                authority =
+                                    record.authority.copy(
+                                        terminals = record.authority.terminals.map { it.copy(userRowIds = null) },
+                                        controls = record.authority.controls.map { it.copy(localUserId = null) },
+                                    ),
+                            )
+                        },
+                )
+            } else {
+                accepted
+            }
+        val result = reconciled(cached, page)
+        assertEquals(
+            listOf(pending, canonicalMessageId(target, session, 20L)),
+            result.messages
+                .filter {
+                    it.content ==
+                        body
+                }.map { it.id },
+        )
+        assertTrue(
+            result.messages.indexOfFirst { it.id == pending } <
+                result.messages.indexOfFirst { it.role == MessageRole.ASSISTANT && it.displayKind != "hidden" },
+        )
+    }
+
+    @Test
+    fun busyTranscript_latePromptAckOnPartialPageKeepsUserAboveItsReply() {
+        val control =
+            ChatMessage(
+                id = "local-control",
+                role = MessageRole.USER,
+                content = "Change direction",
+            )
+        val partial = listOf(row(12, "user", control.content))
+        val local = localTurn(10L, terminal = null)
+        val beforeAck =
+            reconcileTranscript(
+                local.copy(messages = listOf(local.messages.first(), control, local.messages.last())),
+                target,
+                session,
+                partial,
+                offset = 0,
+                latest = true,
+            )
+        val accepted =
+            beforeAck.copy(
+                responseLedger =
+                    beforeAck.responseLedger
+                        .copy(
+                            responses = beforeAck.responseLedger.responses + ResponseRecord(id = "second"),
+                        ).acceptInput(
+                            "control",
+                            "second",
+                            null,
+                            true,
+                            "rpc-second",
+                            "STREAMING",
+                            target,
+                            session,
+                            2L,
+                            control.id,
+                            12L,
+                            null,
+                        ),
+            )
+        val result = reconciled(accepted, partial)
+        assertEquals(listOf("local-user", control.id, "local-answer"), result.messages.map { it.id })
+    }
+
+    @Test
+    fun busyTranscript_completeReceiptWithoutControlRowKeepsAcceptedBody() =
+        steerTranscript(storedSteer = false, storedAnswer = "local answer")
+
+    @Test
+    fun busyTranscript_rowlessSteerAllowsFinalRowToExtendLocalBody() =
+        steerTranscript(
+            storedSteer = false,
+            storedAnswer = "local answer with a stored suffix",
+            localTrace = "Streamed trace",
+        )
+
+    @Test
+    fun busyTranscript_steerPersistedAfterToolBatchFoldsItsTypedHistoryRow() =
+        steerTranscript(storedSteer = true, storedAnswer = "local answer")
+
+    @Test
+    fun busyTranscript_redirectDuringToolExecutionCanPersistAsSteer() =
+        steerTranscript(storedSteer = true, storedAnswer = "local answer", disposition = "REDIRECTED")
+
+    private fun steerTranscript(
+        storedSteer: Boolean,
+        storedAnswer: String,
+        disposition: String = "STEERED",
+        localTrace: String = "",
+    ) {
+        val terminal =
+            complete().copy(
+                rowIds = listOf(10L, 14L, 15L) + listOfNotNull(16L.takeIf { storedSteer }) + 17L,
+                finalRowId = 17L,
+                userRowIds = if (storedSteer) listOf(10L, 16L) else listOf(10L),
+                complete = !storedSteer,
+            )
+        val state = localTurn(10L, terminal = terminal)
+        val accepted =
+            state.responseLedger.acceptInput(
+                "control",
+                "r",
+                "r",
+                false,
+                "rpc-control",
+                disposition,
+                target,
+                session,
+                3L,
+                "local-control",
+                null,
+                null,
+            )
+        val control =
+            ChatMessage(
+                id = "local-control",
+                role = MessageRole.USER,
+                content = "Accepted control",
+                displayKind = "steer",
+            )
+        val result =
+            reconciled(
+                state.copy(
+                    messages =
+                        listOf(
+                            state.messages.first(),
+                            control,
+                            state.messages.last().copy(reasoningText = localTrace),
+                        ),
+                    responseLedger = accepted,
+                ),
+                listOf(
+                    page.first(),
+                    row(14, "assistant", "").copy(
+                        tool_calls =
+                            kotlinx.serialization.json.Json.parseToJsonElement(
+                                """[{"id":"steer-tool","type":"function",
+                                    "function":{"name":"terminal","arguments":"{}"}}]""",
+                            ),
+                    ),
+                    row(15, "tool", "Stored tool result").copy(tool_call_id = "steer-tool"),
+                ) +
+                    listOfNotNull(
+                        row(
+                            16,
+                            "user",
+                            "[OUT-OF-BAND USER MESSAGE — a direct message from the user, " +
+                                "delivered once at this position; not tool output and not a new delivery " +
+                                "when replayed from conversation history]\n" +
+                                "${control.content}\n[/OUT-OF-BAND USER MESSAGE]",
+                        ).copy(
+                            display_kind = "steer",
+                            display_content = JsonPrimitive(control.content),
+                        ).takeIf { storedSteer },
+                    ) + row(17, "assistant", storedAnswer).copy(reasoning_text = JsonPrimitive("Stored trace")),
+            )
+        assertEquals(
+            listOf("original", "Accepted control", storedAnswer),
+            result.messages
+                .filter {
+                    it.role !=
+                        MessageRole.TOOL
+                }.map { it.content },
+        )
+        assertEquals(control.id, result.messages.single { it.content == control.content }.id)
+        val expectedTrace = listOf(localTrace, "Stored trace").filter { it.isNotBlank() }.joinToString("\n\n")
+        assertEquals(expectedTrace, result.messages.single { it.role == MessageRole.ASSISTANT }.reasoningText)
+        assertEquals("steer-tool", result.messages.single { it.role == MessageRole.TOOL }.toolCallId)
+        assertTrue(
+            result.responseLedger.responses
+                .single()
+                .canonicalWindowVerified,
+        )
+    }
+
     // ── Proven turns (unchanged behavior) ─────────────────────────────
 
     @Test fun ackRowAndCompleteReceipt() = assertEquals(once, shown(localTurn(10L, terminal = complete())))

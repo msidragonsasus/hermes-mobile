@@ -366,6 +366,7 @@ internal fun List<ChatMessage>.dedupeById(): List<ChatMessage> = associateBy { i
 internal fun canSendNativeAction(state: ChatUiState): Boolean =
     state.isConnected && !state.isAgentTyping && !state.responseStatusUnknown && !state.isLoading &&
         state.currentSessionId != null &&
+        state.blockingSteerIds().isEmpty() &&
         state.outgoingDrafts.none { it.state == DraftState.QUEUED && it.savedSessionId == state.currentSessionId }
 
 data class ChatUiState(
@@ -871,6 +872,7 @@ class ChatViewModel(
 
     private var lastFollowUpDispatch: FollowUpDispatch? = null
     private val activePromptIntents = ConcurrentHashMap<String, OutgoingDraft>()
+    private val steerInputsAtStop = ConcurrentHashMap<String, Set<String>>()
     private var hasObservedActiveResponse = false
     private var transcriptOwner: TranscriptOwner? = null
     private var transcriptOpening = false
@@ -961,6 +963,7 @@ class ChatViewModel(
         val continuationId: String? = null,
         val ordinary: Boolean = false,
         val serverFollowUp: Boolean = false,
+        val steer: Boolean = false,
     )
 
     private val turnLifecycleVersion =
@@ -973,6 +976,8 @@ class ChatViewModel(
     // Only a create ACK, idle resume ACK or a terminal turn event releases a queue.
     private var queueExecutionIdle = false
     private var queueTurnObserved = false
+
+    @Volatile private var compressingGeneration: Long? = null
     private val queueClaims = ConcurrentHashMap.newKeySet<String>()
     private var lastQueueTimestamp = 0L
     private var pendingCreateQueueOrigin: Pair<Long, String?>? = null
@@ -1702,6 +1707,7 @@ class ChatViewModel(
             complete?.responseTransformed,
             complete?.status,
             sessionScope?.generation,
+            receipt?.userRowIds,
         )
     }
 
@@ -1731,15 +1737,19 @@ class ChatViewModel(
         ownerId: String,
         finalized: ChatMessage,
         finalRow: Long,
+        serialSteerSuccessor: Boolean = false,
     ): ReducerResult {
         val state = result.state
         val ledger = state.responseLedger.revokeExclusiveClaims()
         val owner = ledger.responses.singleOrNull { it.id == ownerId } ?: return result
         val facts = owner.authority
-        val admission = facts.opening ?: facts.queued?.takeIf { owner.serverFollowUp } ?: return result
         val scope = sessionScope ?: return result
-        if (admission.target != scope.draftTargetKey() || admission.session != state.currentSessionId ||
-            admission.connectionGeneration != scope.generation || admission.observationProcessId != scope.processId ||
+        val session = state.currentSessionId ?: return result
+        val admission = facts.opening ?: facts.queued?.takeIf { owner.serverFollowUp }
+        val scopedAdmission =
+            admission != null && admission.target == scope.draftTargetKey() && admission.session == session &&
+                admission.connectionGeneration == scope.generation && admission.observationProcessId == scope.processId
+        if ((!serialSteerSuccessor && !scopedAdmission) ||
             facts.terminals.isEmpty() || facts.terminals.any { !it.safe } || facts.revocations.isNotEmpty()
         ) {
             return result
@@ -1760,7 +1770,7 @@ class ChatViewModel(
         ) {
             return result
         }
-        val canonicalId = canonicalMessageId(admission.target, admission.session, finalRow)
+        val canonicalId = canonicalMessageId(scope.draftTargetKey(), session, finalRow)
         val boundLedger = ledger.copy(aliases = ledger.aliases + (key to finalized.id))
         if (canonicalId == finalized.id ||
             (state.messages + state.stagedCanonicalMessages).none { it.id == canonicalId }
@@ -1866,7 +1876,17 @@ class ChatViewModel(
                 }
             } else {
                 // A remotely observed run has identity, but no invented exhaustive historical coverage.
-                _uiState.update { it.copy(responseLedger = it.responseLedger.open().gap()) }
+                val predecessor = currentLedgerAtStart.activeId
+                val possibleSteerDrain = predecessor != null && currentLedgerAtStart.mayDrainSteer(predecessor)
+                _uiState.update { state ->
+                    val next = state.responseLedger.open().gap()
+                    state.copy(
+                        responseLedger =
+                            next.update(next.activeId) {
+                                it.copy(steerPredecessorId = predecessor.takeIf { possibleSteerDrain })
+                            },
+                    )
+                }
             }
         }
         val receipt = (event as? WsEvent.MessageComplete)?.persistedTurn
@@ -1962,13 +1982,31 @@ class ChatViewModel(
             receipt?.submissionId != null || receipt?.userRowId != null || !receipt?.userRowIds.isNullOrEmpty()
         val followUpPredecessorId =
             lastFollowUpDispatch?.takeIf { it.generation == sessionGeneration }?.predecessorId
+        // The addressless queue ACK cannot bind the receipt to a local submission.
+        // Retain a new serial turn's addresses for the history adjacency check.
+        val steerSuccessor = activeResponse?.steerPredecessorId != null
+        val followUpReceipt =
+            activeResponse?.takeIf { steerSuccessor || isPendingServerFollowUp(it) }?.let { followUp ->
+                receipt?.takeIf { proof ->
+                    proof.userRowId != null && proof.userRowIds == listOf(proof.userRowId) &&
+                        proof.rowIds.firstOrNull() == proof.userRowId && proof.finalAssistantRowId != null &&
+                        proof.rowIds.lastOrNull() == proof.finalAssistantRowId &&
+                        currentLedger.responses.none { other ->
+                            other.id != followUp.id &&
+                                other.authority.terminals.any { terminal ->
+                                    terminal.rowIds.any { it in proof.rowIds }
+                                }
+                        }
+                }
+            }
         val orderedFollowUpTerminal =
-            event is WsEvent.MessageComplete && !hasTerminalIdentity && event.sessionId != null &&
+            event is WsEvent.MessageComplete && (!hasTerminalIdentity || followUpReceipt != null) &&
+                event.sessionId != null &&
                 sessionScope != null && sessionScope == submissionTransport.configuredScope() &&
                 queueTurnObserved && !_streamingState.value.turnEnded && !_uiState.value.responseStatusUnknown &&
                 activeResponse != null && activeResponse.finishedAt == null &&
                 (
-                    activeResponse.serverFollowUp ||
+                    activeResponse.serverFollowUp || steerSuccessor ||
                         activeResponse.id == followUpPredecessorId ||
                         currentLedger.responses.any { it.serverFollowUp && it.finishedAt == null }
                 )
@@ -2205,7 +2243,9 @@ class ChatViewModel(
             ledger =
                 ledger.update(ledger.activeId) {
                     val finished =
-                        if (correlated != null || compatibleFirstTerminal) {
+                        if (correlated != null || compatibleFirstTerminal ||
+                            (orderedFollowUpTerminal && followUpReceipt != null)
+                        ) {
                             it.admitTerminal(terminalEvidence(event, observedAt, eventOrdinal))
                         } else {
                             it.copy(
@@ -2230,15 +2270,24 @@ class ChatViewModel(
                             it.id == _streamingState.value.previewedFinalCandidateId
                     )
             }
-        if (!lateFrame && aliasableFinalRow != null && correlated != null &&
-            correlated.id == ledger.activeId && finalized != null
+        val serialSteerFinal =
+            steerSuccessor && orderedFollowUpTerminal && followUpReceipt != null && correlated == null
+        val finalOwner = correlated?.id ?: ledger.activeId.takeIf { serialSteerFinal }
+        if (!lateFrame && aliasableFinalRow != null && finalOwner != null &&
+            correlated
+                ?.authority
+                ?.controls
+                .orEmpty()
+                .isEmpty() &&
+            receipt.userRowIds.orEmpty().size <= 1 && finalOwner == ledger.activeId && finalized != null
         ) {
             result =
                 bindObservedFinal(
                     result.copy(state = result.state.copy(responseLedger = ledger)),
-                    correlated.id,
+                    finalOwner,
                     finalized,
                     aliasableFinalRow,
+                    serialSteerFinal,
                 )
             ledger = result.state.responseLedger
         }
@@ -2403,13 +2452,12 @@ class ChatViewModel(
                 streamingController.beginStreamingMessage()
             }
 
-            is WsEvent.MessageComplete -> {
+            is WsEvent.MessageComplete, is WsEvent.MessageDone -> {
                 // Buffers cleared before reduce; ViewModel resets them after
                 streamingController.resetStreaming()
-            }
-
-            is WsEvent.MessageDone -> {
-                streamingController.resetStreaming()
+                if (!lateFrame && _uiState.value.blockingSteerIds().isNotEmpty()) {
+                    syncCurrentSession(includeSubagents = false)
+                }
             }
 
             is WsEvent.ToolStart -> {
@@ -2448,6 +2496,15 @@ class ChatViewModel(
 
             is WsEvent.SessionUpdated -> {
                 loadSessions()
+            }
+
+            is WsEvent.StatusUpdate -> {
+                if (event.sessionId != null && isCurrentSession(event.sessionId)) {
+                    when (event.status) {
+                        "compressing" -> compressingGeneration = sessionGeneration
+                        "ready", "compacted" -> compressingGeneration = null
+                    }
+                }
             }
 
             is WsEvent.ClarifyRequest -> {
@@ -2557,6 +2614,7 @@ class ChatViewModel(
     ) {
         cancelResumeDeadline(id)
         val method = idToMethod.remove(id) ?: return
+        val stoppedSteers = steerInputsAtStop.remove(id).orEmpty()
         val request = sessionRequestById.remove(id)
         if (request != null && isStaleSessionRequest(request)) {
             if (BuildConfig.DEBUG) Log.d(TAG, "drop stale $method ${staleReason(request)}")
@@ -2675,15 +2733,26 @@ class ChatViewModel(
                 // pre-tool text behind on interrupt; with that seal gone, the
                 // partial would otherwise vanish entirely.
                 sealStreamingMessageIfAny()
+                val confirmed = (result as? Map<*, *>)?.get("status") == "interrupted"
                 _uiState.update {
                     it.copy(
                         isAgentTyping = false,
                         responseStatusUnknown = false,
+                        responseLedger =
+                            if (confirmed && stoppedSteers.isNotEmpty()) {
+                                it.responseLedger.copy(
+                                    stoppedSteerIds =
+                                        it.responseLedger.stoppedSteerIds + stoppedSteers,
+                                )
+                            } else {
+                                it.responseLedger
+                            },
                     )
                 }
                 _streamingState.update { StreamingState(turnEnded = true) }
                 streamingController.resetStreaming()
                 addSystemMessage("Session interrupted")
+                if (confirmed && stoppedSteers.isNotEmpty()) persistTranscript()
             }
 
             WsMethods.COMMANDS_CATALOG -> {
@@ -2889,6 +2958,7 @@ class ChatViewModel(
         error: Any?,
     ) {
         cancelResumeDeadline(id)
+        steerInputsAtStop.remove(id)
         val method = idToMethod.remove(id) ?: return
         pendingReasoningSelections.remove(id)
         val failedModelSwitch = pendingModelSwitchRequests.remove(id)
@@ -2990,7 +3060,11 @@ class ChatViewModel(
         }
         val state = _uiState.value
         val scope = submissionTransport.configuredScope()
-        if (activePromptIntents.values.any {
+        val blockingSteers = state.blockingSteerIds()
+        val wasStreaming = state.isAgentTyping
+        val knownActive = wasStreaming && hasObservedActiveResponse && !state.responseStatusUnknown
+        if (!knownActive &&
+            activePromptIntents.values.any {
                 scope != null && it.targetKey == scope.draftTargetKey() &&
                     it.savedSessionId == state.currentSessionId &&
                     it.text == text && it.attachments == attachments
@@ -2998,16 +3072,14 @@ class ChatViewModel(
         ) {
             return
         }
-        val wasStreaming = state.isAgentTyping
-        val knownActive = wasStreaming && hasObservedActiveResponse && !state.responseStatusUnknown
         val hasQueue =
-            state.outgoingDrafts.any {
-                it.state == DraftState.QUEUED && it.savedSessionId == state.currentSessionId
-            }
+            (state.outgoingDrafts.asSequence() + activePromptIntents.values.asSequence()).any {
+                it.state == DraftState.QUEUED && it.savedSessionId == state.currentSessionId && it.scope == scope
+            } || state.hasUncertainSteer()
         val canSubmitNow =
             scope != null && sessionScope == scope && submissionTransport.isReady(scope) && runtimeSessionId != null &&
                 !state.isLoading && !state.responseStatusUnknown
-        if (knownActive && canSubmitNow && BotConversations.activeProfile() == "default") {
+        if (knownActive && canSubmitNow) {
             val directive = BusyTurnDirective.classify(trimmed, explicitSteer = steer)
             val hasServerFollowUp =
                 state.responseLedger.responses.any {
@@ -3039,22 +3111,34 @@ class ChatViewModel(
                 )
                 return
             }
-            if (!hasQueue && attachments.none { it.isImage }) {
+            val active = state.responseLedger.responses.singleOrNull { it.id == state.responseLedger.activeId }
+            val runningRoot = active?.userIds?.firstOrNull()?.let { id -> state.messages.firstOrNull { it.id == id } }
+            // The gateway suppresses a text-only copy of its current root when it demotes to queue.
+            val repeatsRoot = attachments.isEmpty() && runningRoot?.content?.trim() == trimmed
+            val mergeInTurn =
+                attachments.isEmpty() && !hasServerFollowUp && trimmed.isNotEmpty() &&
+                    compressingGeneration != sessionGeneration &&
+                    (
+                        blockingSteers.isEmpty() ||
+                            (
+                                active != null && active.finishedAt == null &&
+                                    state.blockingSteerIds(active.id).containsAll(blockingSteers)
+                            )
+                    )
+            if (!hasQueue && !repeatsRoot && attachments.none { it.isImage } &&
+                (mergeInTurn || blockingSteers.isEmpty())
+            ) {
                 val message =
                     ChatMessage(
                         role = MessageRole.USER,
                         content = text,
                         timestamp = clock(),
                         attachments = attachments.takeIf { it.isNotEmpty() },
+                        displayKind = "steer".takeIf { mergeInTurn },
                     )
                 clearAttachments()
-                val queuedRecord = ResponseRecord(userIds = listOf(message.id), serverFollowUp = true)
-                val continuation =
-                    _uiState.value.responseLedger.let { ledger ->
-                        ledger.responses
-                            .singleOrNull { it.id == ledger.activeId && it.finishedAt == null }
-                            ?.id
-                    }
+                val queuedRecord = ResponseRecord(userIds = listOf(message.id), serverFollowUp = !mergeInTurn)
+                val continuation = active?.takeIf { it.finishedAt == null }?.id
                 val turnOpening =
                     TurnOpening(
                         version = turnLifecycleVersion.get(),
@@ -3063,6 +3147,7 @@ class ChatViewModel(
                         responseId = queuedRecord.id,
                         continuationId = continuation,
                         serverFollowUp = true,
+                        steer = mergeInTurn,
                     )
                 _uiState.update { current ->
                     current.copy(
@@ -3070,7 +3155,7 @@ class ChatViewModel(
                         responseLedger =
                             current.responseLedger.copy(
                                 responses = current.responseLedger.responses + queuedRecord,
-                                requiresCorrelation = true,
+                                requiresCorrelation = current.responseLedger.requiresCorrelation || !mergeInTurn,
                             ),
                     )
                 }
@@ -3080,19 +3165,18 @@ class ChatViewModel(
                     wasStreaming = true,
                     message = message,
                     turnOpening = turnOpening,
-                    queued = true,
+                    queued = !mergeInTurn,
                     redirect = false,
                 )
                 return
             }
         }
-        if ((!steer || !knownActive || attachments.isNotEmpty()) &&
-            (
-                wasStreaming || state.responseStatusUnknown || scope == null ||
-                    !submissionTransport.isReady(scope) || hasQueue || runtimeSessionId == null ||
-                    state.isLoading || state.responseLedger.responses.any(::isPendingServerFollowUp) ||
-                    (!queueExecutionIdle && !knownActive && !canRetryRefusedAdmission())
-            )
+        if (wasStreaming || state.responseStatusUnknown || scope == null ||
+            !submissionTransport.isReady(scope) || hasQueue || runtimeSessionId == null ||
+            compressingGeneration == sessionGeneration ||
+            state.isLoading || state.responseLedger.responses.any(::isPendingServerFollowUp) ||
+            blockingSteers.isNotEmpty() ||
+            (!queueExecutionIdle && !knownActive && !canRetryRefusedAdmission())
         ) {
             enqueuePrompt(text, attachments)
             return
@@ -3118,7 +3202,6 @@ class ChatViewModel(
             message,
             turnOpening,
             queued = queueNewInput,
-            redirect = knownActive && attachments.isEmpty(),
         )
     }
 
@@ -3137,7 +3220,9 @@ class ChatViewModel(
         }
         val scope = sessionScope ?: submissionTransport.configuredScope() ?: return false
         if (!submissionTransport.isReady(scope) || runtimeSessionId == null ||
-            state.responseLedger.responses.any(::isPendingServerFollowUp) ||
+            state.responseLedger.responses.any(
+                ::isPendingServerFollowUp,
+            ) ||
             (!queueExecutionIdle && !canRetryRefusedAdmission())
         ) {
             return false
@@ -3326,11 +3411,14 @@ class ChatViewModel(
         val storageId = state.currentSessionId ?: return
         val runtimeId = runtimeSessionId ?: return
         if (!queueExecutionIdle || state.isAgentTyping || state.responseStatusUnknown || state.isLoading ||
+            compressingGeneration == sessionGeneration ||
             sessionScope != scope || !submissionTransport.isReady(scope) ||
             state.clarifyRequest != null || state.sudoPrompt != null || state.secretPrompt != null ||
             state.vaultPrompt != null ||
             state.activeDraftIds.isNotEmpty() || state.draftStorageError ||
-            state.responseLedger.responses.any(::isPendingServerFollowUp)
+            state.responseLedger.responses.any(
+                ::isPendingServerFollowUp,
+            ) || state.blockingSteerIds().isNotEmpty()
         ) {
             return
         }
@@ -3452,7 +3540,9 @@ class ChatViewModel(
                 runtimeSessionId = runtimeSessionId,
                 text = text,
                 attachments = attachments,
-                createdAt = existing?.createdAt ?: System.currentTimeMillis(),
+                createdAt =
+                    existing?.createdAt
+                        ?: if (turnOpening.serverFollowUp) nextQueueTimestamp() else System.currentTimeMillis(),
                 queued = effectiveQueued,
             )
         val generation = sessionGeneration
@@ -3466,6 +3556,14 @@ class ChatViewModel(
                                 listOfNotNull(message?.id?.let { it to (turnOpening.responseId ?: "") }).toMap(),
                         pendingSubmissions =
                             state.responseLedger.pendingSubmissions + (draft.id to (turnOpening.responseId ?: "")),
+                        possibleContinuations =
+                            state.responseLedger.possibleContinuations +
+                                listOfNotNull(
+                                    turnOpening.continuationId?.takeIf { turnOpening.steer }?.let {
+                                        draft.id to
+                                            it
+                                    },
+                                ).toMap(),
                     ),
             )
         }
@@ -3489,6 +3587,13 @@ class ChatViewModel(
                         restoreTyping = !turnOpening.serverFollowUp,
                     )
                     if (turnOpening.serverFollowUp) forgetUnsentAuthority(draft.id, message?.id, generation)
+                    finishDraftAttempt(draft.id)
+                    return@launch
+                }
+                if (turnOpening.steer && generation == sessionGeneration &&
+                    (!submissionTransport.isReady(scope) || _uiState.value.responseStatusUnknown)
+                ) {
+                    deferUnsentFollowUp(draft, message, generation)
                     finishDraftAttempt(draft.id)
                     return@launch
                 }
@@ -3552,6 +3657,23 @@ class ChatViewModel(
         }
     }
 
+    private suspend fun deferUnsentFollowUp(
+        draft: OutgoingDraft,
+        bubble: ChatMessage?,
+        generation: Long,
+    ) {
+        val queued = draft.copy(state = DraftState.QUEUED, queued = true, runtimeSessionId = null)
+        activePromptIntents[draft.id] = queued
+        try {
+            withContext(ioDispatcher) { draftStore.save(queued) }
+            forgetUnsentAuthority(draft.id, bubble?.id, generation, retireProvisional = true)
+            removeUnsentBubble(bubble, wasStreaming = true, generation, restoreTyping = false)
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            retainUnstoredDraft(queued.copy(state = DraftState.DRAFT), bubble, true, generation, restoreTyping = false)
+        }
+    }
+
     private fun dispatchPrompt(
         draft: OutgoingDraft,
         wasStreaming: Boolean,
@@ -3612,6 +3734,14 @@ class ChatViewModel(
             var remoteAttachment = false
             try {
                 if (outgoing != draft) draftStore.save(outgoing)
+                if (turnOpening.serverFollowUp && !turnOpening.steer &&
+                    _uiState.value.blockingSteerIds().isNotEmpty()
+                ) {
+                    withContext(Dispatchers.Main.immediate) {
+                        deferUnsentFollowUp(outgoing, userMessage, dispatchGeneration)
+                    }
+                    return@launch
+                }
                 for (attachment in outgoing.attachments) {
                     when (val result = prepareAttachment(attachment)) {
                         is PrepareAttachmentResult.Success -> {
@@ -3678,13 +3808,13 @@ class ChatViewModel(
                 draftStore.save(outgoing.copy(state = DraftState.UNKNOWN))
                 activePromptIntents[outgoing.id] = outgoing.copy(state = DraftState.UNKNOWN)
                 canRollbackOpening = turnOpening.streamVersion == streamObservationVersion.get()
-                streamVersion = streamObservationVersion.incrementAndGet()
+                if (!turnOpening.steer) streamVersion = streamObservationVersion.incrementAndGet()
                 // queued is a wire disposition, not proof of established work.
                 if (!wasStreaming && !redirect && turnOpening.version == turnLifecycleVersion.get()) {
                     pendingAdmission = PendingAdmission(dispatchGeneration, agentSessionId)
                 }
                 attempted = true
-                queueExecutionIdle = false
+                if (!turnOpening.steer) queueExecutionIdle = false
                 val fileRefs = mutableListOf<String>()
                 for ((attachment, file) in prepared) {
                     val dataUrl = "data:${attachment.mimeType};base64,${file.readText(Charsets.US_ASCII)}"
@@ -3720,8 +3850,11 @@ class ChatViewModel(
                     } else {
                         fileRefs.joinToString("\n") + if (outgoing.text.isBlank()) "" else "\n\n${outgoing.text}"
                     }
-                when (
-                    val result =
+                val result =
+                    if (turnOpening.steer) {
+                        submitSteerOrQueue(outgoing, session, userMessage, dispatchGeneration, turnOpening)
+                            ?: return@launch
+                    } else {
                         submissionTransport.submitPrompt(
                             outgoing.scope,
                             session,
@@ -3729,7 +3862,8 @@ class ChatViewModel(
                             redirect,
                             queued,
                         )
-                ) {
+                    }
+                when (result) {
                     is SubmissionResult.Confirmed -> {
                         // The durable draft already protected the content before sending. Cache only
                         // confirmed user messages so a definitely-unsent draft cannot reappear as sent.
@@ -3740,7 +3874,9 @@ class ChatViewModel(
                                     com.m57.hermescontrol.domain.hermes.PromptAcceptance.REDIRECTED,
                                     -> message.copy(displayKind = "steer")
 
-                                    else -> message
+                                    PromptAcceptance.QUEUED -> message.copy(displayKind = null)
+
+                                    else -> if (turnOpening.steer) message.copy(displayKind = null) else message
                                 }
                             }
 
@@ -3761,31 +3897,52 @@ class ChatViewModel(
                                     )
                                 ) {
                                     _uiState.update { state ->
+                                        val acceptedId = acceptedMessage?.id
+                                        val drain =
+                                            state.responseLedger.steerTranscriptRows.firstOrNull {
+                                                it.nextTurn && acceptedId != null && acceptedId in it.bubbleIds
+                                            }
+                                        val displayedInput =
+                                            if (drain?.bubbleIds?.firstOrNull() == acceptedId) {
+                                                acceptedMessage?.copy(displayKind = null)
+                                            } else {
+                                                acceptedMessage
+                                            }
+                                        var ledger =
+                                            state.responseLedger.acceptInput(
+                                                outgoing.id,
+                                                turnOpening.responseId,
+                                                turnOpening.continuationId,
+                                                turnOpening.ordinary,
+                                                result.requestId,
+                                                result.value.name,
+                                                outgoing.scope.draftTargetKey(),
+                                                storageSessionId,
+                                                dispatchGeneration,
+                                                acceptedId,
+                                                result.promptEvidence?.userRowId,
+                                                result.promptEvidence?.submissionId,
+                                                outgoing.scope.generation,
+                                                outgoing.scope.processId,
+                                                result.proofSource,
+                                            )
+                                        if (result.value == PromptAcceptance.STEERED && turnOpening.steer) {
+                                            ledger = ledger.retireUnusedProvisional(turnOpening.responseId)
+                                            if (drain != null && acceptedId != null) {
+                                                ledger =
+                                                    ledger.update(turnOpening.continuationId) {
+                                                        it.copy(userIds = it.userIds - acceptedId)
+                                                    }
+                                            }
+                                        }
                                         state.copy(
-                                            responseLedger =
-                                                state.responseLedger.acceptInput(
-                                                    outgoing.id,
-                                                    turnOpening.responseId,
-                                                    turnOpening.continuationId,
-                                                    turnOpening.ordinary,
-                                                    result.requestId,
-                                                    result.value.name,
-                                                    outgoing.scope.draftTargetKey(),
-                                                    storageSessionId,
-                                                    dispatchGeneration,
-                                                    acceptedMessage?.id,
-                                                    result.promptEvidence?.userRowId,
-                                                    result.promptEvidence?.submissionId,
-                                                    outgoing.scope.generation,
-                                                    outgoing.scope.processId,
-                                                    result.proofSource,
-                                                ),
+                                            responseLedger = ledger,
                                             messages =
                                                 state.messages.map {
                                                     if (it.id ==
-                                                        acceptedMessage?.id
+                                                        displayedInput?.id
                                                     ) {
-                                                        acceptedMessage
+                                                        displayedInput
                                                     } else {
                                                         it
                                                     }
@@ -3804,7 +3961,7 @@ class ChatViewModel(
                                         }
                                         _uiState.update { it.copy(isAgentTyping = true) }
                                     }
-                                    if (streamVersion == streamObservationVersion.get() &&
+                                    if (!turnOpening.steer && streamVersion == streamObservationVersion.get() &&
                                         result.value != com.m57.hermescontrol.domain.hermes.PromptAcceptance.QUEUED
                                     ) {
                                         hasObservedActiveResponse = true
@@ -3934,6 +4091,60 @@ class ChatViewModel(
         }
     }
 
+    /** Null means the existing durable queue now owns the unsent input. */
+    private suspend fun submitSteerOrQueue(
+        outgoing: OutgoingDraft,
+        session: SessionRef,
+        bubble: ChatMessage?,
+        generation: Long,
+        opening: TurnOpening,
+    ): SubmissionResult<PromptAcceptance>? {
+        fun ChatUiState.isSameTurn() =
+            generation == sessionGeneration && isAgentTyping && !responseStatusUnknown &&
+                responseLedger.activeId == opening.continuationId
+
+        val before = _uiState.value
+        val earlierQueued = before.responseLedger.responses.any(::isPendingServerFollowUp)
+        if (before.isSameTurn() && !earlierQueued && compressingGeneration != generation) {
+            val result = submissionTransport.steerPrompt(outgoing.scope, session, outgoing.text.trim())
+            if (result != SubmissionResult.NotSent) return result
+        }
+
+        val ready =
+            withContext(Dispatchers.Main.immediate) {
+                val current = _uiState.value
+                if (!current.isSameTurn() || !submissionTransport.isReady(outgoing.scope) ||
+                    current.responseLedger.blockingAcceptedSteerIds().isNotEmpty() || current.hasUncertainSteer()
+                ) {
+                    // Unused steer text can be appended by the server after its existing queue.
+                    // Wait for evidence of the earlier input before giving it another queue entry.
+                    deferUnsentFollowUp(outgoing, bubble, generation)
+                    false
+                } else {
+                    val ledger = current.responseLedger.update(opening.responseId) { it.copy(serverFollowUp = true) }
+                    _uiState.value =
+                        current.copy(
+                            responseLedger = ledger.copy(requiresCorrelation = true),
+                            messages =
+                                current.messages.map {
+                                    if (it.id == bubble?.id) it.copy(displayKind = null) else it
+                                },
+                        )
+                    true
+                }
+            }
+        return if (ready) {
+            submissionTransport.submitPrompt(
+                outgoing.scope,
+                session,
+                outgoing.text,
+                queued = true,
+            )
+        } else {
+            null
+        }
+    }
+
     private fun forgetUnsentAuthority(
         attemptUid: String,
         userId: String?,
@@ -3976,7 +4187,16 @@ class ChatViewModel(
         withContext(Dispatchers.Main.immediate) {
             if (generation != sessionGeneration) return@withContext
             if (opening.serverFollowUp) {
-                _uiState.update { it.copy(responseStatusUnknown = true) }
+                _uiState.update { state ->
+                    // A late steer result cannot make the next turn (or an idle session) uncertain.
+                    if (opening.steer &&
+                        (_streamingState.value.turnEnded || opening.continuationId != state.responseLedger.activeId)
+                    ) {
+                        state
+                    } else {
+                        state.copy(responseStatusUnknown = true)
+                    }
+                }
                 return@withContext
             }
             if (streamVersion == streamObservationVersion.get()) {
@@ -4169,10 +4389,13 @@ class ChatViewModel(
     ) {
         if (request == null || request.streamVersion != streamObservationVersion.get()) return
         val running = result?.get("running") as? Boolean ?: return
+        val state = _uiState.value
+        val pendingSteers = state.pendingSteerInputs().values
         if (!running &&
             activePromptIntents.values.any {
-                it.state == DraftState.UNKNOWN && it.savedSessionId == _uiState.value.currentSessionId &&
-                    it.targetKey == submissionTransport.configuredScope()?.draftTargetKey()
+                it.state == DraftState.UNKNOWN && it.savedSessionId == state.currentSessionId &&
+                    it.targetKey == submissionTransport.configuredScope()?.draftTargetKey() &&
+                    state.responseLedger.pendingSubmissions[it.id] !in pendingSteers
             }
         ) {
             return
@@ -4197,7 +4420,13 @@ class ChatViewModel(
             streamingController.resetStreaming()
             _streamingState.value = StreamingState(turnEnded = true)
             _uiState.update {
-                it.copy(isAgentTyping = false, responseStatusUnknown = false, isThinking = false, thinkingText = "")
+                val resumed = if (isIdle) it.settleSteerOrdering() else it
+                resumed.copy(
+                    isAgentTyping = false,
+                    responseStatusUnknown = false,
+                    isThinking = false,
+                    thinkingText = "",
+                )
             }
         }
     }
@@ -4984,11 +5213,22 @@ class ChatViewModel(
 
     fun interruptSession() {
         val sessionId = runtimeSessionId ?: return
+        val state = _uiState.value
+        val generation = sessionGeneration
+        val inputs =
+            state.responseLedger.unresolvedSteerIds() +
+                state.messages
+                    .filter {
+                        it.displayKind == "steer" && it.id in state.responseLedger.pendingInputs
+                    }.map { it.id }
         viewModelScope.launch(ioDispatcher) {
             wsClient.send(
                 WsMethods.SESSION_INTERRUPT,
                 mapOf("session_id" to sessionId),
-                onSent = { id -> trackRequest(id, WsMethods.SESSION_INTERRUPT) },
+                onSent = { id ->
+                    if (inputs.isNotEmpty()) steerInputsAtStop[id] = inputs
+                    trackSessionRequest(id, WsMethods.SESSION_INTERRUPT, generation, sessionId = state.currentSessionId)
+                },
             )
         }
     }
@@ -6455,6 +6695,10 @@ class ChatViewModel(
         val state = _uiState.value
         val sessionId = state.currentSessionId ?: return
         val generation = sessionGeneration
+        val scope = sessionScope
+        val streamVersion = streamObservationVersion.get()
+        // A read that started before the terminal or crossed another turn cannot release the hold.
+        val startedAfterTerminal = _streamingState.value.turnEnded && !state.isAgentTyping && !queueTurnObserved
         if (isSyncingMessages || state.isLoading || state.isLoadingOlder ||
             (!state.responseStatusUnknown && (state.isAgentTyping || _streamingState.value.streamingMessage != null))
         ) {
@@ -6489,12 +6733,26 @@ class ChatViewModel(
                     is NetworkResult.Success -> {
                         if (!isCurrentSessionRequest(sessionId, generation)) return@launch
                         val incoming = result.data.messages.orEmpty()
-                        if (incoming.isEmpty()) return@launch
                         _uiState.update { current ->
                             if (!isCurrentSessionRequest(sessionId, generation)) return@update current
-                            reconcileCurrentTranscript(current, sessionId, incoming, nextOffset, latestPaging)
+                            val reconciled =
+                                if (incoming.isEmpty()) {
+                                    current
+                                } else {
+                                    reconcileCurrentTranscript(current, sessionId, incoming, nextOffset, latestPaging)
+                                }
+                            if (startedAfterTerminal && scope != null && sessionScope == scope &&
+                                submissionTransport.isReady(scope) && streamVersion == streamObservationVersion.get() &&
+                                !queueTurnObserved && !current.isAgentTyping &&
+                                !current.responseStatusUnknown &&
+                                current.responseLedger.responses.none(::isPendingServerFollowUp)
+                            ) {
+                                reconciled.settleSteerOrdering()
+                            } else {
+                                reconciled
+                            }
                         }
-                        clearRecoveredLiveReply()
+                        if (incoming.isNotEmpty()) clearRecoveredLiveReply()
                     }
 
                     is NetworkResult.Failure -> {}
@@ -6801,6 +7059,7 @@ class ChatViewModel(
                     requestId,
                     questionId = event.questionId.takeIf { event.questions.isEmpty() },
                     serverRequestId = event.serverRequestId,
+                    executionGeneration = event.executionGeneration,
                 )
             } else {
                 null
@@ -6881,7 +7140,13 @@ class ChatViewModel(
         val requestId = event.requestId?.takeIf { it.isNotBlank() }
         val ref =
             if (sourceScope != null && runtimeId != null && requestId != null) {
-                RequestRef(sourceScope, SessionRef(runtimeId), requestId, serverRequestId = event.serverRequestId)
+                RequestRef(
+                    sourceScope,
+                    SessionRef(runtimeId),
+                    requestId,
+                    serverRequestId = event.serverRequestId,
+                    executionGeneration = event.executionGeneration,
+                )
             } else {
                 null
             }
@@ -7500,6 +7765,7 @@ class ChatViewModel(
     private fun forgetRequest(id: String) {
         idToMethod.remove(id)
         sessionRequestById.remove(id)
+        steerInputsAtStop.remove(id)
     }
 
     // ── Search ────────────────────────────────────────────────────────────

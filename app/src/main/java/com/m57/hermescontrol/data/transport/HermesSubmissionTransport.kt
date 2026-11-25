@@ -27,6 +27,13 @@ interface HermesSubmissionTransport {
         surface: String? = null,
     ): SubmissionResult<PromptAcceptance>
 
+    /** A definite refusal permits queue fallback. A missing ACK does not permit a second write. */
+    suspend fun steerPrompt(
+        scope: ConnectionScope,
+        session: SessionRef,
+        text: String,
+    ): SubmissionResult<PromptAcceptance> = SubmissionResult.NotSent
+
     suspend fun attach(
         scope: ConnectionScope,
         session: SessionRef,

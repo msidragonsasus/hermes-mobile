@@ -24,6 +24,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.m57.hermescontrol.R
+import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.model.ModelProvider
 import com.m57.hermescontrol.theme.LocalSpacing
@@ -50,8 +51,8 @@ class ModelVisibilityController(
 fun rememberModelVisibility(): ModelVisibilityController {
     val baseUrl by AuthManager.baseUrlFlow.collectAsStateWithLifecycle()
     val selectedProfile by AuthManager.selectedProfileFlow.collectAsStateWithLifecycle()
-    val activeProfile by AuthManager.activeProfileId.collectAsStateWithLifecycle()
-    val preferenceScope = remember(baseUrl, selectedProfile, activeProfile) { AuthManager.uiPreferenceScope() }
+    // Picker visibility belongs to the connection, so switching bots keeps the same list.
+    val preferenceScope = remember(baseUrl, selectedProfile) { AppScope.connectionKey() }
     val store = ModelVisibilityStore.shared
     val result = remember(preferenceScope) { runCatching { store.observe(preferenceScope) } }
     val value = result.getOrNull()?.collectAsStateWithLifecycle()?.value ?: ModelVisibility()

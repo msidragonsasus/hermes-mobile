@@ -1,37 +1,33 @@
 package com.m57.hermescontrol.home
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -45,7 +41,6 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.m57.hermescontrol.NavigationController
@@ -53,11 +48,11 @@ import com.m57.hermescontrol.SettingsGoogleConnection
 import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.theme.LocalHermesStatusColors
 import com.m57.hermescontrol.theme.LocalSpacing
-import com.m57.hermescontrol.ui.common.HermesTextField
+import com.m57.hermescontrol.ui.common.EmptyState
 import com.m57.hermescontrol.ui.common.InlineNotice
+import com.m57.hermescontrol.ui.common.LoadingState
 import com.m57.hermescontrol.ui.common.NoticeTone
-import com.m57.hermescontrol.ui.common.OverviewHeading
-import kotlinx.coroutines.delay
+import com.m57.hermescontrol.ui.common.SectionHeader
 import kotlinx.coroutines.launch
 import java.net.URI
 import java.time.Instant
@@ -69,29 +64,34 @@ import java.util.Locale
 
 @Composable
 internal fun TodayPlanPanel(
-    scope: String,
     state: TodayPlanState,
+    now: Instant,
+    blockedByAuth: Boolean,
+    failureCovered: Boolean,
+    showFocus: Boolean,
+    offline: Boolean,
+    additionalTimeline: List<HomeTimelineItem>,
+    onConfigure: () -> Unit,
+    onReload: () -> Unit,
 ) {
     val coroutine = rememberCoroutineScope()
-    val spacing = LocalSpacing.current
-    var configure by rememberSaveable(scope) { mutableStateOf(false) }
-    val settings = state.settings
-    // Deadlines expire while Home stays open; re-evaluate labels each minute.
-    val now by produceState(Instant.now()) {
-        while (true) {
-            delay(60_000)
-            value = Instant.now()
-        }
-    }
-    Column(verticalArrangement = Arrangement.spacedBy(spacing.sm), modifier = Modifier.testTag("today_plan")) {
+    Column(Modifier.testTag("today_plan")) {
         TodayPlanContent(
             plan = state.plan,
             busy = state.busy,
-            error = state.error,
-            enabled = settings?.enabled == true,
+            failure = state.failure,
+            enabled = state.settings?.enabled == true,
+            settingsKnown = state.settings != null,
+            blockedByAuth = blockedByAuth,
+            failureCovered = failureCovered,
+            showFocus = showFocus,
+            offline = offline,
+            additionalTimeline = additionalTimeline,
             onRefresh = { coroutine.launch { state.refresh() } },
-            onConfigure = { configure = !configure },
+            onConfigure = onConfigure,
+            onReload = onReload,
             onChange = { task, change -> coroutine.launch { state.write(task, change) } },
+            cacheWriteFailed = state.cacheWriteFailed,
             profile = AppScope.PROFILE,
             pending = state.pending,
             failures = state.failures,
@@ -99,13 +99,6 @@ internal fun TodayPlanPanel(
             onRetry = { coroutine.launch { state.retry(it) } },
             now = now,
         )
-        AnimatedVisibility(configure || settings?.enabled == false) {
-            if (settings != null) {
-                TodayPlanSettings(scope, settings, state.busy || state.plan?.state == "running") {
-                    coroutine.launch { state.save(it) }
-                }
-            }
-        }
     }
 }
 
@@ -113,7 +106,7 @@ internal fun TodayPlanPanel(
 internal fun TodayPlanContent(
     plan: TodayPlan?,
     busy: Boolean,
-    error: String?,
+    failure: HomeFailure?,
     enabled: Boolean,
     onRefresh: () -> Unit,
     onConfigure: () -> Unit,
@@ -124,17 +117,26 @@ internal fun TodayPlanContent(
     recent: TodayRecent? = null,
     onRetry: (TodayTask) -> Unit = { task -> failures[task.id]?.let { onChange(task, it.change) } },
     now: Instant = Instant.now(),
+    settingsKnown: Boolean = true,
+    blockedByAuth: Boolean = false,
+    failureCovered: Boolean = false,
+    onReload: () -> Unit = {},
+    showFocus: Boolean = true,
+    offline: Boolean = false,
+    additionalTimeline: List<HomeTimelineItem> = emptyList(),
+    cacheWriteFailed: Boolean = false,
 ) {
     val spacing = LocalSpacing.current
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val today = now.atZone(ZoneId.of("Asia/Tokyo")).toLocalDate()
-    val date = today.format(DateTimeFormatter.ofPattern("M月d日（E）", Locale.JAPAN))
     val source = plan ?: TodayPlan()
     val groups = remember(source, now) { source.groups(now) }
-    val active = groups.actionable
+    val available = enabled || !settingsKnown
+    val active = if (available) groups.actionable else emptyList()
     val completed = groups.done
     val running = plan?.state == "running"
-    val oldPlan = error != null || plan?.plan_day != today.toString()
+    val runFailed = plan?.runFailed() == true
+    val oldPlan = offline || failure != null || plan?.isCurrent(now) != true || runFailed
     var showReview by rememberSaveable { mutableStateOf(false) }
     var showExcluded by rememberSaveable { mutableStateOf(false) }
     var showDone by rememberSaveable { mutableStateOf(false) }
@@ -143,10 +145,12 @@ internal fun TodayPlanContent(
     fun row(
         task: TodayTask,
         role: TodayRowRole,
+        focus: Boolean = false,
     ) {
         TodayTaskRow(
             task = task,
             role = role,
+            focus = focus,
             stale = oldPlan || task.stale,
             now = now,
             pending = pending[task.id],
@@ -156,96 +160,115 @@ internal fun TodayPlanContent(
         )
     }
 
-    OverviewHeading("今日やること", date)
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(spacing.sm)) {
-        Button(
-            onClick = onRefresh,
-            enabled = enabled && !busy && !running,
-            shapes = ButtonDefaults.shapes(),
-            modifier = Modifier.testTag("today_refresh"),
-        ) { Text(if (running) "確認しています…" else "今の情報で調べる") }
-        TextButton(onClick = onConfigure, shapes = ButtonDefaults.shapes()) { Text("確認する情報源") }
+    val focus = active.firstOrNull().takeIf { showFocus }
+    val upcomingTasks = if (available) groups.today.filterNot { it.id == focus?.id } else emptyList()
+    val overdue = if (available) groups.overdue.filterNot { it.id == focus?.id } else emptyList()
+    if (focus != null) {
+        row(focus, TodayRowRole.Active, focus = true)
     }
-    if (running || busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-    error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-    // One quiet summary line instead of separate count / timestamp lines.
-    val summary =
-        buildList {
-            if (groups.today.isNotEmpty()) add("今日 ${groups.today.size}件")
-            if (groups.overdue.isNotEmpty()) add("期限切れ ${groups.overdue.size}件")
-            if (groups.review.isNotEmpty()) add("候補 ${groups.review.size}件")
-            if (plan?.checked_at?.isNotBlank() == true) {
-                val label = if (plan.isCurrent(now) && error == null) "整理 " else "整理（一部未確認） "
-                add(label + todayShortTime(plan.checked_at, today))
+    SectionHeader(
+        title = "今日のタイムライン",
+        contentPadding = PaddingValues(top = spacing.md, bottom = spacing.xs),
+        trailing = {
+            if (running) {
+                Text("確認しています…", style = MaterialTheme.typography.bodySmall, color = muted)
+            } else {
+                TextButton(
+                    onClick = onRefresh,
+                    enabled = enabled && !busy && !blockedByAuth && !offline,
+                    modifier = Modifier.testTag("today_refresh"),
+                    shapes = ButtonDefaults.shapes(),
+                    colors = ButtonDefaults.textButtonColors(contentColor = muted),
+                ) { Text("今の情報で調べる") }
             }
-        }.joinToString(" · ")
-    if (summary.isNotEmpty()) {
-        Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        },
+    )
+    if (running) LinearProgressIndicator(Modifier.fillMaxWidth())
+    val timeline =
+        upcomingTasks.map { task ->
+            TodayTimelineEntry(task.deadline) { row(task, TodayRowRole.Active) }
+        } +
+            additionalTimeline.map { item ->
+                TodayTimelineEntry(item.time) { HomeTimelineRow(item, now) }
+            }
+    timeline.sortedBy { homeDeadlineInstant(it.time) ?: Instant.MAX }.forEach { it.content() }
+    if (overdue.isNotEmpty()) {
+        TodaySectionLabel("期限切れ")
+        overdue.forEach { row(it, TodayRowRole.Active) }
     }
-    if (plan?.state in setOf("failed", "interrupted")) {
-        Text("確認を完了できませんでした。前回の一覧を残しています。", color = MaterialTheme.colorScheme.error)
+    if (!available) {
+        Text(
+            "メール・manabaの確認先を設定すると、今日の対応をここにまとめます。",
+            style = MaterialTheme.typography.bodyMedium,
+            color = muted,
+        )
+        TextButton(onClick = onConfigure, shapes = ButtonDefaults.shapes()) { Text("設定する") }
+        return
     }
-    // Unverified candidates are disclosed, never silently folded away: an empty today list
-    // must not read as "no coursework due".
-    val unverifiedNotice =
-        when {
-            groups.legacy && groups.review.isNotEmpty() -> {
-                "このサーバーは項目の分類に未対応のため、${groups.review.size}件を必要か未確認の候補にしています。" +
-                    "課題など必要な対応が含まれている可能性があります。"
-            }
-
-            groups.unverified > 0 -> {
-                "必要か確認できていない候補が${groups.unverified}件あります。課題など必要な対応が含まれている可能性があります。"
-            }
-
-            else -> {
-                null
-            }
-        }
-    unverifiedNotice?.let {
+    val showStale = settingsKnown && failure != null && !failureCovered
+    val unverified = (groups.legacy && groups.review.isNotEmpty()) || groups.unverified > 0
+    val verified = !oldPlan && plan.coverage.all { it.state in setOf("updated", "checked") }
+    if (!settingsKnown && failure != null && !failureCovered) {
         InlineNotice(
-            text = it,
+            text = "今日やることを読み込めませんでした。",
             tone = NoticeTone.Warning,
-            actionLabel = if (showReview) null else "候補を表示",
-            onAction = { showReview = true },
-            modifier = Modifier.testTag("today_unverified_notice"),
+            actionLabel = "再試行",
+            onAction = onReload,
         )
     }
-    if (active.isEmpty()) {
-        Text(
+    if (active.isEmpty() && plan == null && failure == null && !blockedByAuth && !offline) {
+        LoadingState(modifier = Modifier.padding(vertical = spacing.md), subtitle = "今日の情報を確認しています…")
+    } else if (active.isEmpty() && (plan != null || enabled)) {
+        val emptyMessage =
             when {
-                !enabled -> {
-                    "メール・manabaの確認先を設定すると、今日の対応をここにまとめます。"
-                }
-
                 running -> {
                     "メールや課題を確認して、優先順位を整理しています。"
                 }
 
-                unverifiedNotice != null -> {
+                unverified -> {
                     "今日の対応として確認できた項目はありません。候補に必要な対応がないかは未確認です。"
                 }
 
-                plan?.isCurrent(now) == true && error == null -> {
+                verified -> {
                     if (completed.isNotEmpty()) "確認できた対応は完了しています。" else "確認した範囲では、今日必要な対応は見つかりませんでした。"
                 }
 
                 else -> {
                     "まだ確認できていない情報があります。「やることなし」とは判断していません。"
                 }
-            },
-        )
-    } else {
-        // Every confirmed task is listed, overdue ones included: candidates were moved out, so
-        // nothing serious hides behind a fold here.
-        val firstOverdue = groups.overdue.firstOrNull()?.id
-        Column(Modifier.fillMaxWidth()) {
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            active.forEach { task ->
-                if (task.id == firstOverdue) TodaySectionLabel("期限切れ")
-                row(task, TodayRowRole.Active)
+            }
+        if (verified && !unverified && !running) {
+            if (timeline.isEmpty()) EmptyState(title = emptyMessage)
+        } else {
+            Text(emptyMessage, style = MaterialTheme.typography.bodyMedium, color = muted)
+        }
+    }
+    val freshness =
+        when {
+            runFailed -> {
+                "前回の一覧 · 確認を完了できませんでした"
+            }
+
+            showStale -> {
+                "最新情報を確認できませんでした"
+            }
+
+            plan?.checked_at?.isNotBlank() == true -> {
+                val label = if (plan.isCurrent(now) && failure == null) "最終確認 " else "前回の確認 "
+                label + todayShortTime(plan.checked_at, today)
+            }
+
+            else -> {
+                null
             }
         }
+    if (freshness != null) {
+        Text(
+            freshness,
+            modifier = Modifier.padding(top = spacing.sm),
+            style = MaterialTheme.typography.bodySmall,
+            color = if (runFailed || showStale) LocalHermesStatusColors.current.warning else muted,
+        )
     }
     recent?.let { change ->
         (active + groups.review + groups.excluded + completed).firstOrNull { it.id == change.id }?.let { task ->
@@ -253,11 +276,18 @@ internal fun TodayPlanContent(
         }
     }
     if (groups.review.isNotEmpty()) {
-        TextButton(
-            onClick = { showReview = !showReview },
-            shapes = ButtonDefaults.shapes(),
+        HomeFoldRow(
+            label = if (showReview) "候補を閉じる" else "候補${groups.review.size}件を表示",
+            supporting =
+                when {
+                    groups.legacy -> "必要か未確認 ${groups.review.size}件 · サーバーが分類に未対応"
+                    groups.unverified > 0 -> "必要か未確認 ${groups.unverified}件"
+                    else -> null
+                },
+            expanded = showReview,
+            onToggle = { showReview = !showReview },
             modifier = Modifier.testTag("today_review_toggle"),
-        ) { Text(if (showReview) "候補を閉じる" else "候補${groups.review.size}件を表示") }
+        )
         AnimatedVisibility(showReview) {
             Column(Modifier.testTag("today_review")) {
                 Text(
@@ -270,19 +300,22 @@ internal fun TodayPlanContent(
         }
     }
     if (groups.excluded.isNotEmpty()) {
-        TextButton(
-            onClick = { showExcluded = !showExcluded },
-            shapes = ButtonDefaults.shapes(),
+        HomeFoldRow(
+            label = if (showExcluded) "対象外を閉じる" else "対象外${groups.excluded.size}件を表示",
+            expanded = showExcluded,
+            onToggle = { showExcluded = !showExcluded },
             modifier = Modifier.testTag("today_excluded_toggle"),
-        ) { Text(if (showExcluded) "対象外を閉じる" else "対象外${groups.excluded.size}件を表示") }
+        )
         AnimatedVisibility(showExcluded) {
             Column { groups.excluded.forEach { row(it, TodayRowRole.Excluded) } }
         }
     }
     if (completed.isNotEmpty()) {
-        TextButton(onClick = { showDone = !showDone }, shapes = ButtonDefaults.shapes()) {
-            Text(if (showDone) "完了した項目を閉じる" else "完了した${completed.size}件を表示")
-        }
+        HomeFoldRow(
+            label = if (showDone) "完了した項目を閉じる" else "完了した${completed.size}件を表示",
+            expanded = showDone,
+            onToggle = { showDone = !showDone },
+        )
         AnimatedVisibility(showDone) {
             Column {
                 completed.forEach { row(it, TodayRowRole.Done) }
@@ -290,7 +323,15 @@ internal fun TodayPlanContent(
         }
     }
     TodayCoverageNotice(plan?.coverage.orEmpty(), profile)
+    if (cacheWriteFailed) {
+        Text("オフライン用の保存を確認できませんでした。", style = MaterialTheme.typography.bodySmall, color = muted)
+    }
 }
+
+private data class TodayTimelineEntry(
+    val time: String?,
+    val content: @Composable () -> Unit,
+)
 
 /** Which list a row sits in; decides its controls so the same role behaves the same everywhere. */
 private enum class TodayRowRole { Active, Candidate, Excluded, Done }
@@ -334,7 +375,7 @@ private fun TodayRecentLine(
         horizontalArrangement = Arrangement.spacedBy(LocalSpacing.current.sm),
     ) {
         Text(
-            "$text：${task.title}",
+            "$text：${if (task.source == "gmail") task.mailCopy().title else task.title}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 2,
@@ -361,13 +402,14 @@ private fun TodaySectionLabel(text: String) {
 }
 
 /**
- * Title + one meta line. Reason, full title, fetch time, the row's actions and the source link
- * open on tap. Completion is only for confirmed work; candidates are added or excluded instead.
+ * The focus button and compact rows expand the same details and source link.
+ * Completion is only for confirmed work; candidates are added or excluded instead.
  */
 @Composable
 private fun TodayTaskRow(
     task: TodayTask,
     role: TodayRowRole,
+    focus: Boolean,
     stale: Boolean,
     now: Instant,
     pending: TodayChange?,
@@ -378,64 +420,108 @@ private fun TodayTaskRow(
     val spacing = LocalSpacing.current
     val uriHandler = LocalUriHandler.current
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
-    val warning = LocalHermesStatusColors.current.warning
+    val mail = remember(task) { if (task.source == "gmail") task.mailCopy() else null }
+    val title = mail?.title ?: task.title
     var expanded by rememberSaveable(task.id) { mutableStateOf(false) }
     var linkError by rememberSaveable(task.id) { mutableStateOf(false) }
-    val expired = todayDeadline(task.deadline)?.isPast(now) == true
     val checkable = role == TodayRowRole.Active || role == TodayRowRole.Done
     val candidate = role == TodayRowRole.Candidate || role == TodayRowRole.Excluded
-    val urgent = role == TodayRowRole.Active && !task.done && (expired || task.priority == 1)
-    val inset = if (checkable) 48.dp else 0.dp
+    val leadingCheckbox = role == TodayRowRole.Done
+    val inset = if (leadingCheckbox) 48.dp else 0.dp
     val idle = pending == null
+    val titleLines =
+        when {
+            mail != null && title.length > 42 -> 2
+            expanded || role == TodayRowRole.Active -> Int.MAX_VALUE
+            else -> 3
+        }
+
+    @Composable
+    fun completion() {
+        Checkbox(
+            checked = (pending as? TodayChange.Done)?.done ?: task.done,
+            enabled = idle,
+            onCheckedChange = { onChange(TodayChange.Done(it)) },
+            modifier =
+                Modifier.testTag("today_complete_${task.id}").semantics {
+                    contentDescription = (if (task.done) "未完了に戻す：" else "完了にする：") + title
+                    if (!idle) stateDescription = "保存中"
+                },
+        )
+    }
     Column(Modifier.fillMaxWidth().testTag("today_task_${task.id}")) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .clickable(onClickLabel = if (expanded) "詳細を閉じる" else "詳細を開く") { expanded = !expanded }
-                .padding(vertical = 4.dp),
-            verticalAlignment = Alignment.Top,
-        ) {
-            if (checkable) {
-                // Shows the requested value at once; the plan itself changes only after the server confirms.
-                Checkbox(
-                    checked = (pending as? TodayChange.Done)?.done ?: task.done,
-                    enabled = idle,
-                    onCheckedChange = { onChange(TodayChange.Done(it)) },
-                    modifier =
-                        Modifier.testTag("today_complete_${task.id}").semantics {
-                            contentDescription = (if (task.done) "未完了に戻す：" else "完了にする：") + task.title
-                            if (!idle) stateDescription = "保存中"
-                        },
+        if (focus) {
+            val details =
+                listOfNotNull(
+                    homeFocusDeadline(task.deadline, now),
+                    "メール".takeIf { mail != null },
+                    "前回の情報".takeIf { stale && mail == null },
+                    pending?.pendingText(),
                 )
-            }
-            Column(
-                Modifier.weight(1f).padding(top = 12.dp, bottom = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                // Confirmed work is the point of the list: its title is never cut, at any font size.
-                Text(
-                    task.title,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = if (task.done || candidate) muted else MaterialTheme.colorScheme.onSurface,
-                    maxLines = if (expanded || role == TodayRowRole.Active) Int.MAX_VALUE else 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    todayTaskMeta(task, stale, now, candidate) + (pending?.let { " · " + it.pendingText() } ?: ""),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (urgent) warning else muted,
-                )
-            }
-            Icon(
-                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                contentDescription = null,
-                tint = muted,
-                modifier = Modifier.padding(top = 14.dp, start = spacing.xs).size(20.dp),
+            HomeFocusAction(
+                title = title,
+                details = details.takeIf { it.isNotEmpty() }?.joinToString(" · "),
+                actionLabel = if (expanded) "詳細を閉じる" else "詳細を見る",
+                actionModifier = Modifier.semantics { stateDescription = foldStateDescription(expanded) },
+                onOpen = { expanded = !expanded },
             )
+        } else {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .clickable(onClickLabel = if (expanded) "詳細を閉じる" else "詳細を開く") { expanded = !expanded }
+                    .semantics { stateDescription = foldStateDescription(expanded) }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                if (leadingCheckbox) completion()
+                Column(
+                    Modifier.weight(1f).padding(top = 12.dp, bottom = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    if (role == TodayRowRole.Active) HomeTimelineTime(task.deadline, now)
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = if (task.done || candidate) muted else MaterialTheme.colorScheme.onSurface,
+                        maxLines = titleLines,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val meta =
+                        if (role == TodayRowRole.Active && mail != null) {
+                            listOf("メール")
+                        } else if (role == TodayRowRole.Active) {
+                            listOfNotNull(
+                                "manaba",
+                                task.source_title.takeIf { it.isNotBlank() && it != task.title },
+                                "前回の情報".takeIf { stale },
+                            )
+                        } else {
+                            listOf(todayTaskMeta(task, stale, now, candidate))
+                        } + listOfNotNull(pending?.pendingText())
+                    if (meta.isNotEmpty()) {
+                        Text(
+                            meta.joinToString(" · "),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = muted,
+                        )
+                    }
+                }
+                Icon(
+                    if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    contentDescription = null,
+                    tint = muted,
+                    modifier = Modifier.padding(top = 14.dp, start = spacing.xs).size(20.dp),
+                )
+            }
         }
         failure?.let {
             Row(
-                Modifier.fillMaxWidth().padding(start = inset).testTag("today_task_error_${task.id}"),
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = inset)
+                    .testTag("today_task_error_${task.id}"),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(spacing.sm),
             ) {
@@ -464,25 +550,40 @@ private fun TodayTaskRow(
         }
         AnimatedVisibility(expanded) {
             Column(
-                Modifier.fillMaxWidth().padding(start = inset, bottom = spacing.sm),
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = inset)
+                    .padding(bottom = spacing.sm),
                 verticalArrangement = Arrangement.spacedBy(spacing.xs),
             ) {
-                if (task.source_title.isNotBlank() && task.source_title != task.title) {
-                    Text(
-                        (if (task.source == "gmail") "メール：" else "manaba：") + task.source_title,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = muted,
-                    )
+                if (checkable && !leadingCheckbox) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        completion()
+                        Text("完了の記録", style = MaterialTheme.typography.bodySmall, color = muted)
+                    }
                 }
-                if (task.reason.isNotBlank()) {
-                    Text(task.reason, style = MaterialTheme.typography.bodyMedium, color = muted)
+                if (mail != null) {
+                    mail.facts.forEach { Text(it, style = MaterialTheme.typography.bodyMedium, color = muted) }
+                } else {
+                    if (task.source_title.isNotBlank() && task.source_title != task.title) {
+                        Text("manaba：" + task.source_title, style = MaterialTheme.typography.bodySmall, color = muted)
+                    }
+                    if (task.reason.isNotBlank()) {
+                        Text(
+                            task.reason,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = muted,
+                        )
+                    }
+                    val fetched =
+                        buildList {
+                            if (task.source_checked_at.isNotBlank()) {
+                                add("情報取得 " + todayShortTime(task.source_checked_at))
+                            }
+                            if (stale) add("最新の状況は未確認")
+                        }.joinToString(" · ")
+                    if (fetched.isNotEmpty()) Text(fetched, style = MaterialTheme.typography.bodySmall, color = muted)
                 }
-                val fetched =
-                    buildList {
-                        if (task.source_checked_at.isNotBlank()) add("情報取得 " + todayShortTime(task.source_checked_at))
-                        if (stale) add("最新の状況は未確認")
-                    }.joinToString(" · ")
-                if (fetched.isNotEmpty()) Text(fetched, style = MaterialTheme.typography.bodySmall, color = muted)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(spacing.xs)) {
                     TodayRowActions(task, role, now, idle, onChange)
                     TextButton(
@@ -498,9 +599,20 @@ private fun TodayTaskRow(
                     ) { Text("元の情報を開く") }
                 }
                 if (linkError) Text("元の情報を開けませんでした。", color = MaterialTheme.colorScheme.error)
+                if (mail != null && mail.additional.isNotEmpty()) {
+                    var showAdditional by rememberSaveable(task.id) { mutableStateOf(false) }
+                    HomeFoldRow(
+                        label = if (showAdditional) "補足を閉じる" else "補足を見る",
+                        expanded = showAdditional,
+                        onToggle = { showAdditional = !showAdditional },
+                    )
+                    if (showAdditional) {
+                        mail.additional.forEach { Text(it, style = MaterialTheme.typography.bodySmall, color = muted) }
+                    }
+                }
             }
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        if (!focus) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     }
 }
 
@@ -556,7 +668,7 @@ private fun TodayChange.pendingText(): String =
         is TodayChange.Interest -> if (interested) "やることに追加しています…" else "対象外として保存中…"
     }
 
-/** Only sources that are not fully checked appear, as one quiet notice. */
+/** One source summary with recovery instructions available on expansion. */
 @Composable
 private fun TodayCoverageNotice(
     coverage: List<TodayCoverage>,
@@ -565,52 +677,63 @@ private fun TodayCoverageNotice(
     val spacing = LocalSpacing.current
     val problems = coverage.filter { it.state !in setOf("updated", "checked") }
     if (problems.isEmpty()) return
+    var expanded by rememberSaveable { mutableStateOf(false) }
     var help by rememberSaveable { mutableStateOf<String?>(null) }
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceContainerLow, MaterialTheme.shapes.small)
-            .padding(horizontal = spacing.md, vertical = 6.dp)
-            .testTag("today_coverage"),
-    ) {
-        problems.forEach { item ->
-            val fixable = item.state in setOf("auth_required", "setup_required", "not_configured")
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 40.dp)
-                    .then(
-                        if (fixable) {
-                            Modifier.clickable(onClickLabel = "対処方法") { help = if (help == item.id) null else item.id }
-                        } else {
-                            Modifier
-                        },
-                    ),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(spacing.sm),
-            ) {
-                Icon(
-                    if (fixable) Icons.Outlined.ErrorOutline else Icons.Outlined.Info,
-                    contentDescription = null,
-                    tint = if (fixable) LocalHermesStatusColors.current.warning else muted,
-                    modifier = Modifier.size(20.dp),
-                )
-                Text(
-                    "${item.label}：${todayCoverageLabel(item.state)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.weight(1f),
-                )
-                if (fixable) {
-                    Text(
-                        if (help == item.id) "閉じる" else "どこで？",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
+    HomeFoldRow(
+        label = "情報源の確認状況",
+        supporting =
+            problems.takeUnless { expanded }?.joinToString(" · ") { item ->
+                val label = if (item.state == "partial") "一部未確認" else todayCoverageLabel(item.state)
+                "${item.label}：$label"
+            },
+        expanded = expanded,
+        onToggle = { expanded = !expanded },
+        modifier = Modifier.testTag("today_coverage"),
+    )
+    AnimatedVisibility(expanded) {
+        Column(Modifier.padding(start = spacing.sm)) {
+            problems.forEach { item ->
+                val fixable = item.state in setOf("auth_required", "setup_required", "not_configured")
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .then(
+                            if (fixable) {
+                                Modifier.clickable(onClickLabel = "対処方法") {
+                                    help =
+                                        if (help == item.id) null else item.id
+                                }
+                            } else {
+                                Modifier
+                            },
+                        ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(spacing.sm),
+                ) {
+                    Icon(
+                        if (fixable) Icons.Outlined.ErrorOutline else Icons.Outlined.Info,
+                        contentDescription = null,
+                        tint = if (fixable) LocalHermesStatusColors.current.warning else muted,
+                        modifier = Modifier.size(20.dp),
                     )
+                    Text(
+                        "${item.label}：${todayCoverageLabel(item.state)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (fixable) {
+                        Text(
+                            if (help == item.id) "閉じる" else "どこで？",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                 }
-            }
-            AnimatedVisibility(help == item.id) {
-                TodayCoverageHelp(item, profile)
+                AnimatedVisibility(help == item.id) {
+                    TodayCoverageHelp(item, profile)
+                }
             }
         }
     }
@@ -675,61 +798,3 @@ internal fun todayShortTime(
             else -> homeOverviewTime(value)
         }
     }.getOrDefault(homeOverviewTime(value))
-
-@Composable
-private fun TodayPlanSettings(
-    scope: String,
-    settings: TodaySettings,
-    busy: Boolean,
-    onSave: (TodaySettings) -> Unit,
-) {
-    val spacing = LocalSpacing.current
-    var email by rememberSaveable(scope, settings) { mutableStateOf(settings.email) }
-    var manaba by rememberSaveable(scope, settings) { mutableStateOf(settings.manaba_url) }
-    var enabled by rememberSaveable(scope, settings) { mutableStateOf(settings.enabled) }
-    Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
-        Text("確認する情報源", style = MaterialTheme.typography.titleMedium)
-        HermesTextField(
-            value = email,
-            onValueChange = { email = it },
-            label = { Text("確認するメールアドレス") },
-            supportingText = { Text("Google接続に登録済みのアドレス") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-            enabled = !busy,
-        )
-        TextButton(
-            onClick = { NavigationController.navigateTo(SettingsGoogleConnection) },
-            shapes = ButtonDefaults.shapes(),
-        ) {
-            Text("Google接続を確認する")
-        }
-        HermesTextField(
-            value = manaba,
-            onValueChange = { manaba = it },
-            label = { Text("manabaのホームURL") },
-            supportingText = { Text("ログイン情報を含まない https:// で始まるURL") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            enabled = !busy,
-        )
-        TextButton(
-            onClick = { manaba = "https://manaba.hit-u.ac.jp/ct/home" },
-            enabled = !busy,
-            shapes = ButtonDefaults.shapes(),
-        ) { Text("一橋大学のmanabaを使う") }
-        Text("manabaの初回ログインはサーバー側の準備が必要です。未接続の間は未確認と表示します。", style = MaterialTheme.typography.bodySmall)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("ホームを開いた日に情報を確認する", Modifier.weight(1f))
-            Switch(checked = enabled, onCheckedChange = { enabled = it }, enabled = !busy)
-        }
-        Text("1日1回、LLMがメール・課題と前回のキャッシュを見て整理します。完了チェックはこの一覧だけに保存します。", style = MaterialTheme.typography.bodySmall)
-        Button(
-            onClick = { onSave(TodaySettings(email.trim(), manaba.trim(), enabled)) },
-            enabled = !busy && (!enabled || email.isNotBlank() || manaba.isNotBlank()),
-            shapes = ButtonDefaults.shapes(),
-        ) { Text("保存する") }
-    }
-}

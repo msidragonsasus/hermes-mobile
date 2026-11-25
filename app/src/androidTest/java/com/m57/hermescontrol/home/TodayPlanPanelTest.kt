@@ -20,7 +20,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertHasNoClickAction
+import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -28,6 +32,9 @@ import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
@@ -35,9 +42,12 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeUp
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
 import com.m57.hermescontrol.navigation.ShellTab
 import com.m57.hermescontrol.theme.HermesControlTheme
@@ -46,6 +56,8 @@ import com.m57.hermescontrol.theme.ThemePreference
 import com.m57.hermescontrol.ui.common.HermesScaffold
 import com.m57.hermescontrol.ui.common.ShellBottomBar
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -86,10 +98,10 @@ class TodayPlanPanelTest {
                     Surface(Modifier.fillMaxSize()) {
                         Column(Modifier.verticalScroll(rememberScrollState())) {
                             TodayPlanContent(
-                                plan,
-                                false,
-                                null,
-                                true,
+                                plan = plan,
+                                busy = false,
+                                failure = null,
+                                enabled = true,
                                 {},
                                 {},
                                 change,
@@ -145,14 +157,20 @@ class TodayPlanPanelTest {
     fun lightShowsActionReasonSourceAndExplicitCompletion() {
         var request: Pair<TodayTask, TodayChange>? = null
         show(change = { t, c -> request = t to c })
-        compose.onNodeWithText("今日やること").assertIsDisplayed()
-        compose.onNodeWithText(task.title).assertIsDisplayed()
-        compose.onNodeWithText("今日必須 · 期限 今日 17:00", substring = true).assertIsDisplayed()
-        // The long reason stays folded until the row is opened.
+        compose.onNodeWithText("今日のタイムライン").assertIsDisplayed()
+        compose.onNodeWithText(task.title).assertIsDisplayed().assertHasNoClickAction()
+        compose.onNodeWithText("期限 今日 17:00 · 残り5時間", substring = true).assertIsDisplayed()
         compose.onNodeWithText(task.reason).assertDoesNotExist()
-        compose.onNodeWithText(task.title).performClick()
+        compose.onNodeWithTag("today_complete_one").assertDoesNotExist()
+        val action = compose.onNodeWithTag("home_focus_action")
+        action.assert(hasText("詳細を見る")).assertHeightIsAtLeast(48.dp).performClick()
+        action.assert(hasText("詳細を閉じる"))
         compose.onNodeWithText(task.reason).assertIsDisplayed()
         compose.onNodeWithText("manaba：統計学").assertIsDisplayed()
+        assertNull(request)
+        action.performClick()
+        compose.onNodeWithTag("today_complete_one").assertDoesNotExist()
+        action.performClick()
         compose.onNodeWithTag("today_complete_one").assertIsEnabled().performClick()
         assertEquals(task to TodayChange.Done(true), request)
         capture("today-home-light")
@@ -160,19 +178,20 @@ class TodayPlanPanelTest {
 
     @Test
     fun confirmedOverdueStaysVisibleButIsNeverRequiredToday() {
-        val expired = task.copy(id = "late", deadline = "2026-10-22T17:00:00+09:00")
+        val expired = task.copy(id = "late", title = "期限を過ぎた課題", deadline = "2026-10-22T17:00:00+09:00")
         show(plan = ready().copy(tasks = listOf(task, expired)))
         compose.onNodeWithText("期限切れ（昨日 17:00）", substring = true).assertIsDisplayed()
-        compose.onAllNodesWithText("今日必須", substring = true).assertCountEquals(1)
-        compose.onNodeWithText("今日 1件 · 期限切れ 1件", substring = true).assertIsDisplayed()
+        compose.onNode(hasText(task.title) and hasAnyAncestor(hasTestTag("home_focus"))).assertIsDisplayed()
+        compose.onNodeWithText(expired.title).assertIsDisplayed()
     }
 
     @Test
     fun allConfirmedTasksAreListedWithoutAFold() {
         val tasks = (1..8).map { task.copy(id = "t$it", title = "課題 $it", priority = 2) }
         show(plan = ready().copy(tasks = tasks))
+        compose.onNodeWithText("今日のタイムライン").assertIsDisplayed()
+        compose.onAllNodesWithText("課題 ", substring = true).assertCountEquals(8)
         compose.onNodeWithTag("today_task_t8").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("今日 8件", substring = true).assertIsDisplayed()
     }
 
     @Test
@@ -184,8 +203,8 @@ class TodayPlanPanelTest {
             }
         show(plan = ready().copy(tasks = legacy))
         compose.onAllNodesWithText("今日必須", substring = true).assertCountEquals(0)
-        compose.onNodeWithTag("today_unverified_notice").assertIsDisplayed()
-        compose.onNodeWithText("47件を必要か未確認の候補", substring = true).assertIsDisplayed()
+        compose.onNodeWithTag("today_review_toggle").assertIsDisplayed()
+        compose.onNodeWithText("必要か未確認 47件", substring = true).assertIsDisplayed()
         // Empty today never claims nothing is due.
         compose.onNodeWithText("候補に必要な対応がないかは未確認です。", substring = true).assertIsDisplayed()
         compose.onNodeWithText("候補47件を表示").performScrollTo().performClick()
@@ -206,7 +225,7 @@ class TodayPlanPanelTest {
         )
         compose.onNodeWithText("候補2件を表示").performScrollTo().performClick()
         compose.onNodeWithText(future.title).performScrollTo().performClick()
-        compose.onNodeWithText("参加・応募の意思が未確認 · 期限 10月25日", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("期限 10月25日 · メール").assertIsDisplayed()
         compose.onNodeWithTag("today_add_future").performScrollTo().performClick()
         compose.onNodeWithTag("today_dismiss_future").performScrollTo().performClick()
         compose.onNodeWithText(expired.title).performScrollTo().performClick()
@@ -221,10 +240,15 @@ class TodayPlanPanelTest {
     @Test
     fun confirmedTaskCanBeExcluded() {
         var request: Pair<TodayTask, TodayChange>? = null
-        show(change = { t, c -> request = t to c })
-        compose.onNodeWithText(task.title).performClick()
+        val mail = task.copy(source = "gmail", source_title = "提出期限のお知らせ")
+        show(plan = ready().copy(tasks = listOf(mail)), change = { t, c -> request = t to c })
+        compose.onNodeWithTag("home_focus_action").performClick()
+        compose.onNodeWithText("提出期限のお知らせ", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("今日17時が締切").assertIsDisplayed()
+        compose.onNodeWithText("元の情報を開く").performScrollTo().assertIsDisplayed()
+        assertNull(request)
         compose.onNodeWithTag("today_dismiss_one").performScrollTo().performClick()
-        assertEquals(task to TodayChange.Interest(false), request)
+        assertEquals(mail to TodayChange.Interest(false), request)
     }
 
     @Test
@@ -257,12 +281,18 @@ class TodayPlanPanelTest {
                         ),
                 ),
         )
-        compose.onNodeWithTag("today_complete_one").assertIsOn().assertIsNotEnabled()
         compose.onNodeWithText("完了を保存中…", substring = true).assertIsDisplayed()
+        compose.onNodeWithTag("home_focus_action").performClick()
+        compose.onNodeWithTag("today_complete_one").assertIsOn().assertIsNotEnabled()
         // Other rows stay usable while one write is in flight.
-        compose.onNodeWithTag("today_complete_two").assertIsOff().assertIsEnabled()
-        compose.onNodeWithTag("today_task_error_two").assertIsDisplayed()
-        compose.onNodeWithTag("today_retry_two").assertIsDisplayed()
+        compose.onNodeWithText(other.title).performScrollTo().performClick()
+        compose
+            .onNodeWithTag("today_complete_two")
+            .performScrollTo()
+            .assertIsOff()
+            .assertIsEnabled()
+        compose.onNodeWithTag("today_task_error_two").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("today_retry_two").performScrollTo().assertIsDisplayed()
         // An unsupported server is reported as such, with no pointless retry.
         compose.onNodeWithTag("today_task_error_three").performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("today_retry_three").assertDoesNotExist()
@@ -301,6 +331,8 @@ class TodayPlanPanelTest {
     @Test
     fun darkKeepsPartialCoverageVisible() {
         show(dark = true)
+        compose.onNodeWithText("manaba：一部未確認").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("today_coverage").performClick()
         compose.onNodeWithText("manaba：一部確認・未確認の情報があります").performScrollTo().assertIsDisplayed()
         capture("today-home-dark")
     }
@@ -308,7 +340,10 @@ class TodayPlanPanelTest {
     @Test
     fun enlargedTextKeepsSourceActionReachable() {
         show(scale = 2f)
-        compose.onNodeWithText(task.title).performScrollTo().performClick()
+        val layouts = mutableListOf<TextLayoutResult>()
+        compose.onNodeWithText(task.title).performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        assertFalse(layouts.single().hasVisualOverflow)
+        compose.onNodeWithTag("home_focus_action").performScrollTo().performClick()
         compose.onNodeWithText("元の情報を開く").performScrollTo().assertIsDisplayed()
         capture("today-home-large-text")
     }
@@ -316,6 +351,7 @@ class TodayPlanPanelTest {
     @Test
     fun manabaLoginRequiredExplainsWhereToLogIn() {
         show(plan = ready().copy(coverage = listOf(TodayCoverage("manaba", "manaba", "auth_required"))))
+        compose.onNodeWithTag("today_coverage").performScrollTo().performClick()
         compose.onNodeWithText("manaba：ログインが必要").performScrollTo().performClick()
         compose
             .onNodeWithText("manabaのログインはアプリではなく、Hermesサーバーで1回だけ行います。")
@@ -358,10 +394,10 @@ class TodayPlanPanelTest {
                                 item {
                                     Column {
                                         TodayPlanContent(
-                                            ready().copy(tasks = tasks),
-                                            false,
-                                            null,
-                                            true,
+                                            plan = ready().copy(tasks = tasks),
+                                            busy = false,
+                                            failure = null,
+                                            enabled = true,
                                             {},
                                             {},
                                             { _, _ -> },

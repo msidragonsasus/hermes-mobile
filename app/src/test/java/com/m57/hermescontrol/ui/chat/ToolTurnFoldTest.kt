@@ -1,6 +1,7 @@
 package com.m57.hermescontrol.ui.chat
 
 import com.m57.hermescontrol.data.model.SessionMessage
+import com.m57.hermescontrol.ui.chat.fullbleed.planMainChatTimeline
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -15,6 +16,83 @@ import org.junit.Test
  * result. Once the user row is proven, the turn must be shown once.
  */
 class ToolTurnFoldTest {
+    @Test fun storedStopCompletesInterruptedReasoningOnlyTurn() {
+        val cached = localTurn().let { state ->
+            state.copy(
+                messages = state.messages.map {
+                    if (it.id == "local-answer") it.copy(content = "", finishTimestamp = 2500L) else it
+                },
+                responseLedger = state.responseLedger.copy(activeId = "r").update("r") {
+                    it.copy(authority = it.authority.copy(terminals = emptyList(), deliveryGap = true), finishedAt = null)
+                },
+            )
+        }
+        val history = rows().let {
+            val previous = listOf(
+                SessionMessage(id = 7, role = "user", content = JsonPrimitive("previous question"), timestamp = JsonPrimitive(0.1)),
+                SessionMessage(
+                    id = 8,
+                    role = "assistant",
+                    content = JsonPrimitive("previous reply"),
+                    finish_reason = "stop",
+                    timestamp = JsonPrimitive(0.2),
+                ),
+            )
+            previous + it.dropLast(1) + listOf(
+                SessionMessage(id = 14, role = "assistant", content = JsonPrimitive(""), finish_reason = "tool_calls"),
+                SessionMessage(
+                    id = 15,
+                    role = "tool",
+                    content = JsonPrimitive("second result"),
+                    timestamp = JsonPrimitive(3.5),
+                ),
+                it.last().copy(id = 16, display_content = null, finish_reason = "stop"),
+                SessionMessage(
+                    id = 17,
+                    role = "user",
+                    content = JsonPrimitive("scheduled trigger"),
+                    display_kind = "internal_notification",
+                    timestamp = JsonPrimitive(5.0),
+                ),
+                SessionMessage(
+                    id = 18,
+                    role = "assistant",
+                    content = JsonPrimitive("scheduled reply"),
+                    finish_reason = "stop",
+                    timestamp = JsonPrimitive(6.0),
+                ),
+            )
+        }
+        val result = reconciled(cached, history)
+        val answer = result.messages.single { it.id == canonicalMessageId(target, session, 16L) }
+        val morningId = canonicalMessageId(target, session, 18L)
+        assertEquals(
+            listOf(canonicalMessageId(target, session, 8L), answer.id, morningId),
+            result.messages.filter { it.role == MessageRole.ASSISTANT }.map { it.id },
+        )
+        assertEquals(canonicalMessageId(target, session, 16L), answer.id)
+        assertEquals("answer", answer.content)
+        assertEquals("plan", answer.reasoningText)
+        assertEquals(morningId, result.messages.last().id)
+        assertEquals(4000L, result.responseLedger.responses.single().finishedAt)
+        val timeline = planMainChatTimeline(result.messages, null, result.responseLedger, waitingForFirstText = false)
+        assertEquals(morningId, timeline.first().message?.id)
+    }
+
+    @Test fun unmatchedCachedBubbleStaysBeforeNewerServerReply() {
+        val history = rows()
+        val hydrated = reconciled(ChatUiState(), history)
+        val cached = ChatMessage(
+            id = "local-unmatched",
+            role = MessageRole.ASSISTANT,
+            content = "",
+            reasoningText = "local-only trace",
+            timestamp = 3500L,
+        )
+        val result = reconciled(hydrated.copy(messages = hydrated.messages + cached), history)
+        assertEquals(listOf(cached.id, canonicalMessageId(target, session, 13L)), result.messages.takeLast(2).map { it.id })
+    }
+
     private val target = "synthetic-target"
     private val session = "synthetic-session"
     private val attempt = "attempt-1"
@@ -166,7 +244,7 @@ class ToolTurnFoldTest {
 
     @Test fun reasoningTheHistoryNeverStoredKeepsTheLocalAnswer() {
         val result = reconciled(localTurn(answerReasoning = "something else"))
-        assertEquals("user | assistant | tool | assistant(local)", result.shown())
+        assertEquals("user | assistant(local) | assistant | tool", result.shown())
         assertEquals("something else", result.messages.single { it.id == "local-answer" }.reasoningText)
     }
 

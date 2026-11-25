@@ -25,6 +25,7 @@ data class RequestRef(
     val requestId: String,
     val questionId: String? = null,
     val serverRequestId: String? = null,
+    val executionGeneration: Long? = null,
 )
 
 enum class ExecutionState {

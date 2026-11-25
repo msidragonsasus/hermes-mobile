@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="vault_prompt_login_title">サイトへのログイン</string>
-    <string name="vault_prompt_login_body">Hermesがこのサイトのログイン情報を必要としています。接続先のHermesに暗号化して保存し、操作を続けます。パスワードは会話に含めず、専用の保管先に直接送ります。</string>
-    <string name="vault_prompt_save_continue">保存して続ける</string>
-    <string name="vault_prompt_decline">今回は入力しない</string>
+    <string name="vault_prompt_login_title">パスワードを追加</string>
+    <string name="vault_prompt_site_for">%1$s用</string>
+    <string name="vault_prompt_next">次へ</string>
+    <string name="vault_prompt_show_password">パスワードを表示</string>
+    <string name="vault_prompt_hide_password">パスワードを隠す</string>
+    <string name="vault_prompt_decline">入力しない</string>
     <string name="vault_prompt_send_failed">送信できませんでした。接続を確認し、要求が有効な間にもう一度お試しください。</string>
     <string name="vault_prompt_code_title">確認コードの入力</string>
     <string name="vault_prompt_code">確認コード</string>

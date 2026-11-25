@@ -93,6 +93,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -15454,6 +15455,193 @@ class ChatViewModelTest {
     fun busyFollowUp_queuedReply_syncCurrentSession_doesNotDuplicateAssistantBubble_incompleteReceipt() =
         runTest { queuedReplySync(legacyAck = false) }
 
+    @Test
+    fun busyTranscript_legacyQueueWithTool_keepsDistinctIdenticalHistoryPromptOnSyncAndResume() =
+        runTest { queuedTranscriptWithTool(demotedRedirect = false) }
+
+    @Test
+    fun busyTranscript_demotedRedirectRunsAsSeparateQueuedTurn() =
+        runTest { queuedTranscriptWithTool(demotedRedirect = true) }
+
+    private suspend fun TestScope.queuedTranscriptWithTool(demotedRedirect: Boolean) {
+        val (vm, session) = startReplyBeforeFollowUp()
+        val question = "Busy follow-up"
+        val answer = "Follow-up answered"
+        if (demotedRedirect) {
+            fakeSubmission.nextPromptResult = SubmissionResult.Confirmed("rpc-demoted", PromptAcceptance.QUEUED)
+            vm.sendMessage(question, steer = true)
+            advanceUntilIdle()
+            verify(exactly = 1) { HermesWsClient.sendRedirect(session, question, any()) }
+        } else {
+            sendServerFollowUp(vm, question, legacyAck = true)
+            verify(exactly = 1) { HermesWsClient.sendMessage(session, question, any(), true) }
+        }
+        val predecessor = predecessorCompletion(session)
+        emitEvent(predecessor.copy(persistedTurn = predecessor.persistedTurn!!.copy(userRowIds = listOf(10L))))
+        emitEvent(WsEvent.MessageStart(session))
+        emitEvent(WsEvent.MessageToken(answer, session))
+        emitEvent(
+            WsEvent.MessageComplete(
+                answer,
+                session,
+                persistedTurn =
+                    PersistedTurn(
+                        rowIds = listOf(20L, 21L, 22L, 23L),
+                        complete = true,
+                        userRowId = 20L,
+                        userRowIds = listOf(20L),
+                        finalAssistantRowId = 23L,
+                    ),
+            ),
+        )
+        advanceUntilIdle()
+
+        assertBusyTranscriptThroughResume(
+            vm,
+            session,
+            listOf(
+                historyRow(10, "user", "Check prerequisites"),
+                historyRow(11, "assistant", "Prerequisites checked"),
+                historyRow(20, "user", question),
+                historyRow(21, "assistant", "").copy(
+                    tool_calls =
+                        kotlinx.serialization.json.Json.parseToJsonElement(
+                            """[{"id":"busy-tool","type":"function","function":{"name":"terminal","arguments":"{}"}}]""",
+                        ),
+                ),
+                historyRow(22, "tool", "Stored tool result").copy(tool_call_id = "busy-tool"),
+                historyRow(23, "assistant", answer).copy(reasoning_text = JsonPrimitive("Stored reasoning")),
+                historyRow(30, "user", question),
+                historyRow(31, "assistant", "Independent reply"),
+            ),
+            listOf("Check prerequisites", "Prerequisites checked", question, answer, question, "Independent reply"),
+        ) { state ->
+            assertEquals(1, state.messages.count { it.toolCallId == "busy-tool" })
+            assertEquals("Stored reasoning", state.messages.single { it.content == answer }.reasoningText)
+        }
+    }
+
+    @Test
+    fun busyTranscript_redirectWithPartialAssistantSyncsAndResumes() =
+        runTest { redirectTranscript(partialAssistant = true) }
+
+    @Test
+    fun busyTranscript_redirectWithHiddenCheckpointSyncsAndResumes() =
+        runTest { redirectTranscript(partialAssistant = false) }
+
+    @Test
+    fun busyTranscript_twoIdenticalRedirectsKeepBothOccurrences() =
+        runTest { redirectTranscript(partialAssistant = true, copies = 2) }
+
+    private suspend fun TestScope.redirectTranscript(
+        partialAssistant: Boolean,
+        copies: Int = 1,
+    ) {
+        val (vm, session) = startReplyBeforeFollowUp()
+        val question = "Change the follow-up"
+        val answer = "Follow-up answered"
+        if (partialAssistant) emitEvent(WsEvent.MessageInterim("Prerequisites checked", false, session))
+        repeat(copies) { index ->
+            fakeSubmission.nextPromptResult =
+                SubmissionResult.Confirmed("rpc-control-$index", PromptAcceptance.REDIRECTED)
+            vm.sendMessage(question, steer = true)
+            advanceUntilIdle()
+        }
+        verify(exactly = copies) { HermesWsClient.sendRedirect(session, question, any()) }
+        val history =
+            buildList {
+                add(historyRow(10, "user", "Check prerequisites"))
+                repeat(copies) { index ->
+                    val id = 11 + index * 2
+                    if (index == 0 && partialAssistant) {
+                        add(historyRow(id, "assistant", "Prerequisites checked"))
+                    } else {
+                        add(historyRow(id, "assistant", "").copy(display_kind = "hidden"))
+                    }
+                    add(historyRow(id + 1, "user", question))
+                }
+                add(historyRow(11 + copies * 2, "assistant", answer))
+            }
+        emitEvent(WsEvent.MessageToken(answer, session))
+        emitEvent(
+            WsEvent.MessageComplete(
+                answer,
+                session,
+                persistedTurn =
+                    PersistedTurn(
+                        rowIds = history.map { it.id!!.toLong() },
+                        complete = false,
+                        userRowId = 10L,
+                        userRowIds = history.filter { it.role == "user" }.map { it.id!!.toLong() },
+                        finalAssistantRowId = history.last().id!!.toLong(),
+                    ),
+            ),
+        )
+        advanceUntilIdle()
+
+        assertBusyTranscriptThroughResume(
+            vm,
+            session,
+            history,
+            listOf("Check prerequisites") +
+                listOfNotNull("Prerequisites checked".takeIf { partialAssistant }) + List(copies) { question } + answer,
+        )
+    }
+
+    private suspend fun TestScope.assertBusyTranscriptThroughResume(
+        vm: ChatViewModel,
+        session: String,
+        history: List<SessionMessage>,
+        expected: List<String>,
+        assertPayload: (ChatUiState) -> Unit = {},
+    ) {
+        fun assertTranscript(model: ChatViewModel) {
+            val state = model.uiState.value
+            val rows =
+                planMainChatTimeline(state.messages, null, state.responseLedger, waitingForFirstText = false)
+                    .asReversed()
+                    .mapNotNull { it.message }
+                    .filter { it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
+            assertEquals(expected, rows.map { it.content })
+            assertPayload(state)
+        }
+
+        syncReplyHistory(vm, session, *history.toTypedArray())
+        assertTranscript(vm)
+        val originalIds =
+            vm.uiState.value.messages
+                .map { it.id }
+                .toSet()
+        androidx.lifecycle.ViewModelStore().apply {
+            put("busy-transcript", vm)
+            clear()
+        }
+        val requests = captureRecoveryResumes()
+        val restored = createViewModel()
+        runCurrent()
+        restored.switchSession(session)
+        runCurrent()
+        emitEvent(
+            WsEvent.RpcResult(
+                requests.last(),
+                mapOf(
+                    "session_id" to "resumed-runtime",
+                    "resumed" to session,
+                    "running" to false,
+                    "status" to "idle",
+                ),
+            ),
+        )
+        runCurrent()
+        syncReplyHistory(restored, session, *history.toTypedArray())
+        assertTranscript(restored)
+        assertTrue(
+            restored.uiState.value.messages
+                .filter { it.role == MessageRole.USER }
+                .all { it.id in originalIds },
+        )
+    }
+
     private suspend fun TestScope.queuedReplySync(legacyAck: Boolean) {
         val (vm, session) = startReplyBeforeFollowUp()
         val question = "Install now"
@@ -15982,6 +16170,438 @@ class ChatViewModelTest {
             ) { HermesWsClient.send(WsMethods.SESSION_INTERRUPT, mapOf("session_id" to session), any()) }
             verify(exactly = 0) { HermesWsClient.sendMessage(any(), "止めて", any(), any()) }
             assertEquals(session, vm.uiState.value.currentSessionId)
+        }
+
+    @Test
+    fun busySteer_acceptsIdenticalSendsAndKeepsBothWhenServerDrainsOneMergedTurn() =
+        runTest {
+            val (vm, session) = startReplyBeforeFollowUp()
+            val sends = mutableListOf<String>()
+            fakeSubmission.steer = { text ->
+                sends += text
+                SubmissionResult.Confirmed("steer-${sends.size}", PromptAcceptance.STEERED)
+            }
+            vm.sendMessage("more")
+            vm.sendMessage("more")
+            advanceUntilIdle()
+            assertEquals(listOf("more", "more"), sends)
+            assertEquals(
+                2,
+                vm.uiState.value.messages
+                    .count { it.displayKind == "steer" && it.content == "more" },
+            )
+            verify(exactly = 0) { HermesWsClient.sendMessage(session, "more", any(), any()) }
+            verify(exactly = 0) { HermesWsClient.sendRedirect(any(), any(), any()) }
+            verify(exactly = 0) { HermesWsClient.send(WsMethods.SESSION_INTERRUPT, any(), any()) }
+
+            val originalIds =
+                vm.uiState.value.messages
+                    .filter { it.content == "more" }
+                    .map { it.id }
+            val predecessor = predecessorCompletion(session)
+            emitEvent(predecessor.copy(persistedTurn = predecessor.persistedTurn!!.copy(userRowIds = listOf(10L))))
+            emitEvent(WsEvent.MessageStart(session))
+            emitEvent(WsEvent.MessageToken("Answered both", session))
+            emitEvent(
+                WsEvent.MessageComplete(
+                    "Answered both",
+                    session,
+                    persistedTurn =
+                        PersistedTurn(
+                            rowIds = listOf(12L, 13L),
+                            complete = true,
+                            userRowId = 12L,
+                            userRowIds = listOf(12L),
+                            finalAssistantRowId = 13L,
+                        ),
+                ),
+            )
+            advanceUntilIdle()
+            assertBusyTranscriptThroughResume(
+                vm,
+                session,
+                listOf(
+                    historyRow(10, "user", "Check prerequisites"),
+                    historyRow(11, "assistant", "Prerequisites checked"),
+                    historyRow(12, "user", "more\nmore"),
+                    historyRow(13, "assistant", "Answered both"),
+                ),
+                listOf("Check prerequisites", "Prerequisites checked", "more", "more", "Answered both"),
+            ) { state ->
+                assertEquals(originalIds, state.messages.filter { it.content == "more" }.map { it.id })
+            }
+        }
+
+    @Test
+    fun busySteer_unmatchedAfterIdleHistoryAllowsImmediateSend() =
+        runTest {
+            val (vm, session) = startReplyBeforeFollowUp()
+            acceptUnmatchedSteer(vm)
+            finishSteerWithMissingHistory(session)
+
+            vm.sendMessage("new input")
+            runCurrent()
+            verify(exactly = 1) { HermesWsClient.sendMessage(session, "new input", any(), false) }
+            assertTrue(
+                vm.uiState.value.outgoingDrafts
+                    .none { it.text == "new input" && it.state == DraftState.QUEUED },
+            )
+        }
+
+    @Test
+    fun busySteer_failedHistoryRetriesAndIdleReconnectReleasesQueuedSend() =
+        runTest {
+            val (vm, session) = startReplyBeforeFollowUp()
+            acceptUnmatchedSteer(vm)
+            val api = ApiClient.hermesApi
+            coEvery { api.getSessionMessages(session, any(), any(), any(), any()) } returns
+                Response.error(403, "History unavailable".toResponseBody())
+            emitEvent(predecessorCompletion(session))
+            runCurrent()
+            vm.sendMessage("after reconnect")
+            runCurrent()
+            vm.syncCurrentSession(includeSubagents = false)
+            runCurrent()
+            coVerify(exactly = 2) { api.getSessionMessages(session, any(), any(), any(), any()) }
+            verify(exactly = 0) { HermesWsClient.sendMessage(session, "after reconnect", any(), any()) }
+
+            val resumes = captureRecoveryResumes()
+            mockConnectionStatus.value = ConnectionStatus.RECONNECTING
+            runCurrent()
+            mockConnectionStatus.value = ConnectionStatus.CONNECTED
+            emitEvent(WsEvent.GatewayReady(null))
+            runCurrent()
+            recoveryAck(resumes.last(), running = false, runtimeId = session)
+            runCurrent()
+            verify(exactly = 1) { HermesWsClient.sendMessage(session, "after reconnect", any(), true) }
+        }
+
+    @Test
+    fun busySteer_cachedLedgerFromBeforeSettlementAllowsNativeSendOnIdleResume() =
+        runTest {
+            val (vm, session) = startReplyBeforeFollowUp()
+            acceptUnmatchedSteer(vm)
+            val bubble =
+                vm.uiState.value.messages
+                    .single { it.content == "unmatched steer" }
+            androidx.lifecycle.ViewModelStore().apply {
+                put("unresolved-steer", vm)
+                clear()
+            }
+            stubEmptySessionRests(session)
+            val restored = createViewModel()
+            runCurrent()
+            mockConnectionStatus.value = ConnectionStatus.CONNECTED
+            val resumes = captureRecoveryResumes()
+            restored.switchSession(session)
+            runCurrent()
+            recoveryAck(resumes.last(), running = false, runtimeId = session)
+            runCurrent()
+
+            assertEquals(
+                bubble.id,
+                restored.uiState.value.messages
+                    .single { it.content == bubble.content }
+                    .id,
+            )
+            assertTrue(restored.sendNativeAction("native follow-up"))
+            runCurrent()
+            verify(exactly = 1) { HermesWsClient.sendMessage(session, "native follow-up", any(), false) }
+        }
+
+    @Test
+    fun busySteer_lateRowAfterReleaseKeepsOriginalBubbleOnce() =
+        runTest {
+            val (vm, session) = startReplyBeforeFollowUp()
+            acceptUnmatchedSteer(vm)
+            val bubble =
+                vm.uiState.value.messages
+                    .single { it.content == "unmatched steer" }
+            stubEmptySessionRests(session)
+            val terminal = predecessorCompletion(session)
+            emitEvent(
+                terminal.copy(
+                    persistedTurn =
+                        terminal.persistedTurn!!.copy(
+                            rowIds = listOf(10, 11, 12),
+                            userRowIds = listOf(10, 11),
+                            finalAssistantRowId = 12,
+                        ),
+                ),
+            )
+            runCurrent()
+            fakeSubmission.nextPromptResult =
+                SubmissionResult.Confirmed("rpc-native", PromptAcceptance.STREAMING, PromptEvidence(userRowId = 20L))
+            assertTrue(vm.sendNativeAction("native follow-up"))
+            runCurrent()
+            emitEvent(WsEvent.MessageStart(session))
+            emitEvent(
+                WsEvent.MessageComplete(
+                    "Done",
+                    session,
+                    persistedTurn =
+                        PersistedTurn(
+                            rowIds = listOf(20, 21),
+                            complete = true,
+                            userRowId = 20,
+                            finalAssistantRowId = 21,
+                        ),
+                ),
+            )
+            runCurrent()
+
+            syncReplyHistory(
+                vm,
+                session,
+                historyRow(10, "user", "Check prerequisites"),
+                historyRow(11, "user", "[OUT-OF-BAND USER MESSAGE]").copy(
+                    display_kind = "steer",
+                    display_content = JsonPrimitive(bubble.content),
+                ),
+                historyRow(12, "assistant", "Prerequisites checked"),
+            )
+            val state = vm.uiState.value
+            assertEquals(listOf(bubble.id), state.messages.filter { it.content == bubble.content }.map { it.id })
+            assertEquals(
+                listOf(bubble.id),
+                state.responseLedger.steerTranscriptRows
+                    .single()
+                    .bubbleIds,
+            )
+        }
+
+    @Test
+    fun busySteer_historyInFlightCannotReleaseHoldDuringServerFollowUp() =
+        runTest {
+            val (vm, session) = startReplyBeforeFollowUp()
+            acceptUnmatchedSteer(vm)
+            val page = CompletableDeferred<Response<SessionMessagesResponse>>()
+            coEvery { ApiClient.hermesApi.getSessionMessages(session, any(), any(), any(), any()) } coAnswers
+                { page.await() }
+            emitEvent(predecessorCompletion(session))
+            runCurrent()
+            emitEvent(WsEvent.MessageStart(session))
+            runCurrent()
+            page.complete(Response.success(SessionMessagesResponse(messages = emptyList())))
+            runCurrent()
+            vm.sendMessage("after server follow-up")
+            runCurrent()
+            assertEquals(
+                DraftState.QUEUED,
+                vm.uiState.value.outgoingDrafts
+                    .single()
+                    .state,
+            )
+            verify(exactly = 0) { HermesWsClient.sendMessage(session, "after server follow-up", any(), any()) }
+
+            emitEvent(
+                WsEvent.MessageComplete(
+                    "Follow-up done",
+                    session,
+                    persistedTurn =
+                        PersistedTurn(
+                            rowIds = listOf(20, 21),
+                            complete = true,
+                            userRowId = 20,
+                            userRowIds = listOf(20),
+                            finalAssistantRowId = 21,
+                        ),
+                ),
+            )
+            runCurrent()
+            verify(exactly = 1) { HermesWsClient.sendMessage(session, "after server follow-up", any(), true) }
+        }
+
+    @Test
+    fun busySteer_unknownSettlesAtIdleAndPreservesRecoveryWithoutResend() =
+        runTest {
+            val (vm, session) = startReplyBeforeFollowUp()
+            val attempts = mutableListOf<String>()
+            fakeSubmission.steer = { text ->
+                attempts += text
+                SubmissionResult.Unknown
+            }
+            vm.sendMessage("maybe delivered")
+            runCurrent()
+            vm.sendMessage("next input")
+            runCurrent()
+            finishSteerWithMissingHistory(session)
+
+            verify(exactly = 1) { HermesWsClient.sendMessage(session, "next input", any(), true) }
+            verify(exactly = 0) { HermesWsClient.sendMessage(session, "maybe delivered", any(), any()) }
+            assertEquals(listOf("maybe delivered"), attempts)
+            assertEquals(
+                DraftState.UNKNOWN,
+                vm.uiState.value.outgoingDrafts
+                    .single()
+                    .state,
+            )
+            assertEquals(
+                1,
+                vm.uiState.value.messages
+                    .count { it.content == "maybe delivered" },
+            )
+        }
+
+    private fun TestScope.acceptUnmatchedSteer(vm: ChatViewModel) {
+        fakeSubmission.steer = { SubmissionResult.Confirmed("steer-unmatched", PromptAcceptance.STEERED) }
+        vm.sendMessage("unmatched steer")
+        runCurrent()
+        assertEquals(
+            1,
+            vm.uiState.value.messages
+                .count { it.content == "unmatched steer" },
+        )
+    }
+
+    private suspend fun TestScope.finishSteerWithMissingHistory(session: String) {
+        stubEmptySessionRests(session)
+        emitEvent(predecessorCompletion(session))
+        runCurrent()
+    }
+
+    @Test
+    fun busySteer_unknownWriteDoesNotResendAndLaterSendWaitsInDurableQueue() =
+        runTest {
+            val (vm, session) = startReplyBeforeFollowUp()
+            val sends = mutableListOf<String>()
+            fakeSubmission.steer = { text ->
+                sends += text
+                SubmissionResult.Unknown
+            }
+            vm.sendMessage("maybe delivered")
+            advanceUntilIdle()
+            assertTrue(vm.uiState.value.responseStatusUnknown)
+            vm.sendMessage("later")
+            advanceUntilIdle()
+            assertEquals(listOf("maybe delivered"), sends)
+            assertEquals(
+                mapOf("maybe delivered" to DraftState.UNKNOWN, "later" to DraftState.QUEUED),
+                vm.uiState.value.outgoingDrafts
+                    .associate { it.text to it.state },
+            )
+            verify(exactly = 0) { HermesWsClient.sendMessage(session, any(), any(), true) }
+        }
+
+    @Test
+    fun busySteer_imageAttachmentAndEarlierQueuePreventSteering() =
+        runTest {
+            val (vm, session) = startReplyBeforeFollowUp()
+            fakeSubmission.steer = { error("Neither send may overtake the queue") }
+            val attachment = Attachment("content://test/image", "image.jpg", "image/jpeg", 10)
+            vm.addAttachments(listOf(attachment))
+            vm.sendMessage("attached")
+            vm.sendMessage("later")
+            advanceUntilIdle()
+            val drafts =
+                vm.uiState.value.outgoingDrafts
+                    .filter { it.state == DraftState.QUEUED }
+            assertEquals(listOf("attached", "later"), drafts.sortedBy { it.createdAt }.map { it.text })
+            assertEquals(listOf(attachment), drafts.single { it.text == "attached" }.attachments)
+            verify(exactly = 0) { HermesWsClient.sendMessage(session, any(), any(), true) }
+        }
+
+    @Test
+    fun busySteerDemotionUsesTheServerFollowUpLedger() =
+        runTest {
+            val (vm, _) = startReplyBeforeFollowUp()
+            val predecessor = vm.uiState.value.responseLedger.activeId
+            fakeSubmission.steer = { SubmissionResult.Confirmed("demoted", PromptAcceptance.QUEUED) }
+
+            vm.sendMessage("follow up")
+            advanceUntilIdle()
+
+            val state = vm.uiState.value
+            val bubble = state.messages.single { it.content == "follow up" }
+            val queued = state.responseLedger.responses.single { bubble.id in it.userIds }
+            assertNull(bubble.displayKind)
+            assertTrue(queued.serverFollowUp)
+            assertEquals(predecessor, state.responseLedger.activeId)
+            assertEquals(predecessor, queued.authority.queued?.continuationId)
+            assertEquals("QUEUED", queued.authority.queued?.disposition)
+            assertTrue(queued.authority.controls.isEmpty())
+        }
+
+    @Test
+    fun busyRedirectDemotionOpensASeparateQueuedResponse() =
+        runTest {
+            val (vm, session) = startReplyBeforeFollowUp()
+            val predecessor = vm.uiState.value.responseLedger.activeId
+            fakeSubmission.nextPromptResult = SubmissionResult.Confirmed("demoted-redirect", PromptAcceptance.QUEUED)
+
+            vm.sendMessage("redirect: follow up")
+            advanceUntilIdle()
+
+            verify(exactly = 1) { HermesWsClient.sendRedirect(session, "redirect: follow up", any()) }
+            val state = vm.uiState.value
+            val bubble = state.messages.single { it.content == "redirect: follow up" }
+            val queued = state.responseLedger.responses.single { bubble.id in it.userIds }
+            assertNull(bubble.displayKind)
+            assertTrue(queued.serverFollowUp)
+            assertTrue(state.responseLedger.requiresCorrelation)
+            assertEquals(predecessor, state.responseLedger.activeId)
+            assertEquals(predecessor, queued.authority.queued?.continuationId)
+        }
+
+    @Test
+    fun busySteer_knownCompressionUsesExistingServerQueue() =
+        runTest {
+            val (vm, session) = startReplyBeforeFollowUp()
+            fakeSubmission.steer = { error("Compression must queue") }
+            emitEvent(WsEvent.StatusUpdate("compressing", mapOf("status" to "compressing"), session))
+            advanceUntilIdle()
+
+            sendServerFollowUp(vm, "after compression", legacyAck = true)
+
+            verify(exactly = 1) { HermesWsClient.sendMessage(session, "after compression", any(), true) }
+        }
+
+    @Test
+    fun busySteer_refusalBehindAcceptedSteerWaitsLocallyUntilTheOlderInputIsObserved() =
+        runTest {
+            val (vm, session) = startReplyBeforeFollowUp()
+            fakeSubmission.steer = { text ->
+                if (text == "first") {
+                    SubmissionResult.Confirmed("steer-first", PromptAcceptance.STEERED)
+                } else {
+                    SubmissionResult.NotSent
+                }
+            }
+            vm.sendMessage("first")
+            vm.sendMessage("second")
+            advanceUntilIdle()
+            assertEquals(
+                listOf("second"),
+                vm.uiState.value.outgoingDrafts
+                    .filter { it.state == DraftState.QUEUED }
+                    .map { it.text },
+            )
+            verify(exactly = 0) { HermesWsClient.sendMessage(session, "second", any(), any()) }
+            val predecessor = predecessorCompletion(session)
+            emitEvent(
+                predecessor.copy(
+                    persistedTurn =
+                        predecessor.persistedTurn!!.copy(
+                            rowIds = listOf(10, 11, 12),
+                            userRowIds = listOf(10, 11),
+                            finalAssistantRowId = 12,
+                        ),
+                ),
+            )
+            advanceUntilIdle()
+            verify(exactly = 0) { HermesWsClient.sendMessage(session, "second", any(), any()) }
+
+            syncReplyHistory(
+                vm,
+                session,
+                historyRow(10, "user", "Check prerequisites"),
+                historyRow(11, "user", "[OUT-OF-BAND USER MESSAGE]").copy(
+                    display_kind = "steer",
+                    display_content = JsonPrimitive("first"),
+                ),
+                historyRow(12, "assistant", "Prerequisites checked"),
+            )
+            verify(exactly = 1) { HermesWsClient.sendMessage(session, "second", any(), any()) }
         }
 
     @Test

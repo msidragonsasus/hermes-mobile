@@ -9,7 +9,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.key
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -21,8 +20,6 @@ import com.m57.hermescontrol.data.ws.ConnectionStatus
 import com.m57.hermescontrol.ui.chat.ChatViewModel
 import com.m57.hermescontrol.ui.chat.SecretPromptUi
 import com.m57.hermescontrol.ui.chat.SudoPromptUi
-import com.m57.hermescontrol.vault.VaultPromptDialog
-import com.m57.hermescontrol.vault.VaultPromptUi
 
 @Composable
 fun ChatLifecycleEffects(
@@ -33,7 +30,6 @@ fun ChatLifecycleEffects(
     openError: String?,
     sudoPrompt: SudoPromptUi?,
     secretPrompt: SecretPromptUi?,
-    vaultPrompt: VaultPromptUi?,
     onOpenLatest: (String?) -> Unit,
     snackbarHostState: SnackbarHostState,
     viewModel: ChatViewModel,
@@ -117,12 +113,6 @@ fun ChatLifecycleEffects(
     }
 
     // Sudo / secret prompt dialogs (issue #524)
-    vaultPrompt?.let { prompt ->
-        key(prompt.scope, prompt.request.id) {
-            VaultPromptDialog(prompt, onRespond = { viewModel.respondToVaultPrompt(prompt, it) })
-        }
-    }
-
     sudoPrompt?.let { prompt ->
         SudoPromptDialog(
             onConfirm = viewModel::respondToSudo,

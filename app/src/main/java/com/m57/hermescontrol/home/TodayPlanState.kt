@@ -7,14 +7,10 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.repeatOnLifecycle
 import com.m57.hermescontrol.data.local.AppScope
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.remote.ApiClient
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.encodeToString
@@ -28,94 +24,199 @@ internal class TodayPlanState(
     private val repository: HomeRepository,
 ) {
     private val profile = AppScope.PROFILE
-    private val api = ApiClient.hermesApi
+    private val api get() = ApiClient.hermesApi
     private val mutex = Mutex()
+    private var autoRequestedDay: String? = null
     private var refreshId: String? = null
+    private var busyActions = 0
     var plan by mutableStateOf<TodayPlan?>(null)
         private set
     var settings by mutableStateOf<TodaySettings?>(null)
         private set
-    var error by mutableStateOf<String?>(null)
+    var failure by mutableStateOf<HomeFailure?>(null)
+        private set
+    var loading by mutableStateOf(false)
         private set
     var busy by mutableStateOf(false)
+        private set
+    var cacheWriteFailed by mutableStateOf(false)
         private set
 
     private fun current() = scope == AppScope.connectionKey()
 
+    private fun current(epoch: Long) = current() && epoch % 2L == 0L && epoch == AuthManager.connectionEpoch.value
+
     suspend fun restore() {
         try {
             val payload = repository.dao.provider(scope, "today_home")?.metadata
-            if (!payload.isNullOrBlank() && current()) plan = repository.json.decodeFromString<TodayPlan>(payload)
+            if (!payload.isNullOrBlank() && current() && plan == null) {
+                plan = repository.json.decodeFromString<TodayPlan>(payload)
+            }
         } catch (failure: Exception) {
             if (failure is CancellationException) throw failure
         }
     }
 
-    private suspend fun accept(value: TodayPlan) {
-        if (!current()) return
+    private suspend fun accept(
+        value: TodayPlan,
+        epoch: Long,
+    ) {
+        if (!current(epoch)) return
         plan = value
-        repository.dao.cacheToday(scope, repository.json.encodeToString(value))
-    }
-
-    private suspend fun operation(action: suspend () -> Unit) {
-        mutex.withLock {
-            if (!current()) return
-            busy = true
+        // The server snapshot is authoritative. Offline caching cannot undo its acknowledgement.
+        val failed =
             try {
-                check(AuthManager.isGatedMode())
-                action()
-                if (current()) error = null
-            } catch (failure: Exception) {
-                if (failure is CancellationException) throw failure
-                if (current()) {
-                    error =
-                        when {
-                            failure is HttpException && failure.code() == 404 -> "今日やることの連携にはサーバーの更新が必要です。"
-                            failure is HttpException && failure.code() in setOf(401, 403) -> "接続の認証を確認してください。"
-                            failure is HttpException && failure.code() == 409 -> "確認中です。終了後に設定を保存してください。"
-                            else -> "最新情報を確認できません。保存済みの一覧を表示しています。"
-                        }
+                repository.dao.cacheToday(scope, repository.json.encodeToString(value))
+                false
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                true
+            }
+        if (current(epoch)) cacheWriteFailed = failed
+    }
+
+    private suspend fun operation(
+        userInitiated: Boolean,
+        publishFailure: () -> Boolean = { true },
+        action: suspend (epoch: Long) -> Unit,
+    ): HomeFailure? {
+        val epoch = AuthManager.connectionEpoch.value
+        if (!current(epoch)) return HomeFailure.Generic
+        if (userInitiated) {
+            busyActions++
+            busy = true
+        }
+        try {
+            return mutex.withLock {
+                if (!current(epoch)) return@withLock HomeFailure.Generic
+                if (!AuthManager.isGatedMode()) {
+                    if (publishFailure()) failure = HomeFailure.NotGated
+                    return@withLock HomeFailure.NotGated
                 }
-            } finally {
-                busy = false
+                if (!userInitiated) loading = true
+                try {
+                    action(epoch)
+                    if (!current(epoch)) return@withLock HomeFailure.Generic
+                    failure = null
+                    null
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    val result = (error as? ClassifiedTodayFailure)?.failure ?: homeFailureOf(error)
+                    if (current(epoch) && publishFailure()) failure = result
+                    result
+                } finally {
+                    if (!userInitiated) loading = false
+                }
+            }
+        } finally {
+            if (userInitiated) {
+                busyActions--
+                busy = busyActions > 0
             }
         }
     }
 
-    suspend fun load() =
-        operation {
+    private fun todayJst() = LocalDate.now(ZoneId.of("Asia/Tokyo")).toString()
+
+    private suspend fun autoRefresh(
+        day: String,
+        epoch: Long,
+    ) {
+        if (!current(epoch)) return
+        autoRequestedDay = day
+        val value = api.refreshToday(profile, TodayRefresh("auto:$day", automatic = true))
+        accept(value, epoch)
+    }
+
+    suspend fun load(
+        userInitiated: Boolean = false,
+        allowAutomatic: Boolean = !userInitiated,
+    ) {
+        operation(userInitiated) { epoch ->
             val value = api.todayPlan(profile)
+            if (!current(epoch)) return@operation
             val configuration = api.todaySettings(profile)
-            if (!current()) return@operation
+            if (!current(epoch)) return@operation
             settings = configuration
-            accept(value)
-            if (configuration.enabled && !value.isCurrent() && value.state != "running") {
-                val day = LocalDate.now(ZoneId.of("Asia/Tokyo")).toString()
-                accept(api.refreshToday(profile, TodayRefresh("auto:$day", automatic = true)))
+            accept(value, epoch)
+            val day = todayJst()
+            if (allowAutomatic && configuration.enabled && value.plan_day != day &&
+                value.state != "running" && autoRequestedDay != day
+            ) {
+                autoRefresh(day, epoch)
             }
         }
+    }
 
-    suspend fun refresh() =
-        operation {
-            // Retain the operation ID after an ambiguous HTTP failure. Manual retry
-            // reconciles the original operation instead of launching another model run.
+    suspend fun refresh() {
+        if (busy || plan?.state == "running") return
+        operation(userInitiated = true) { epoch ->
+            // A retry after an ambiguous failure reconciles the original operation.
             val id = refreshId ?: UUID.randomUUID().toString().also { refreshId = it }
-            accept(api.refreshToday(profile, TodayRefresh(id)))
-            if (current()) refreshId = null
-        }
+            try {
+                val value = api.refreshToday(profile, TodayRefresh(id))
+                if (current(epoch)) {
+                    refreshId = null
+                    accept(value, epoch)
+                }
+            } catch (error: HttpException) {
+                if (!current(epoch)) return@operation
+                val status = error.code()
+                val code = error.errorCode()
+                when (val result = homeHttpFailure(status, code)) {
+                    HomeFailure.RunInProgress -> {
+                        refreshId = null
+                        val value = api.todayPlan(profile)
+                        accept(value, epoch)
+                    }
 
-    suspend fun save(value: TodaySettings) =
-        operation {
-            val saved = api.saveTodaySettings(profile, value)
-            if (!current()) return@operation
-            settings = saved
-            accept(TodayPlan())
-            accept(api.todayPlan(profile))
-            if (saved.enabled) {
-                val day = LocalDate.now(ZoneId.of("Asia/Tokyo")).toString()
-                accept(api.refreshToday(profile, TodayRefresh("auto:$day", automatic = true)))
+                    HomeFailure.SetupRequired -> {
+                        refreshId = null
+                        val value = api.todaySettings(profile)
+                        if (current(epoch)) settings = value
+                    }
+
+                    else -> {
+                        throw ClassifiedTodayFailure(result)
+                    }
+                }
             }
         }
+    }
+
+    suspend fun pollRun() {
+        operation(userInitiated = false) { epoch ->
+            if (plan?.state != "running") return@operation
+            val value = api.todayPlan(profile)
+            accept(value, epoch)
+        }
+    }
+
+    suspend fun save(value: TodaySettings): TodaySaveResult {
+        var committed = false
+        val result =
+            operation(userInitiated = true, publishFailure = { committed }) { epoch ->
+                val saved = api.saveTodaySettings(profile, value)
+                if (!current(epoch)) return@operation
+                committed = true
+                settings = saved
+                refreshId = null
+                recent = null
+                failures.clear()
+                accept(TodayPlan(), epoch)
+                if (!current(epoch)) return@operation
+                val refreshed = api.todayPlan(profile)
+                if (!current(epoch)) return@operation
+                accept(refreshed, epoch)
+                if (saved.enabled) autoRefresh(todayJst(), epoch)
+            }
+        return when {
+            committed || result == null -> TodaySaveResult.Ok
+            result is HomeFailure.InvalidInput -> TodaySaveResult.InvalidInput(result.code)
+            result == HomeFailure.RunInProgress -> TodaySaveResult.RunInProgress
+            else -> TodaySaveResult.Failed(result)
+        }
+    }
 
     /** The change in flight per task. Only that row waits; the rest of the list stays usable. */
     val pending = mutableStateMapOf<String, TodayChange>()
@@ -152,14 +253,18 @@ internal class TodayPlanState(
         task: TodayTask,
         change: TodayChange,
     ) {
-        if (!current() || task.id in pending) return
+        val epoch = AuthManager.connectionEpoch.value
+        if (!current(epoch) || task.id in pending) return
         pending[task.id] = change
         failures.remove(task.id)
         var missing = false
         try {
             mutex.withLock {
-                if (!current()) return
-                check(AuthManager.isGatedMode())
+                if (!current(epoch)) return
+                if (!AuthManager.isGatedMode()) {
+                    failures[task.id] = todayRowFailure(HomeFailure.NotGated, change, missing = false)
+                    return
+                }
                 val value =
                     when (change) {
                         is TodayChange.Done -> {
@@ -170,22 +275,30 @@ internal class TodayPlanState(
                             api.setTodayInterest(profile, task.id, TodayInterest(change.interested))
                         }
                     }
-                if (!current()) return
-                accept(value)
+                if (!current(epoch)) return
+                accept(value, epoch)
+                if (!current(epoch)) return
                 val wasActionable = task.actionability == TODAY_ACTIONABLE
                 recent = if (change == TodayChange.Done(false)) null else TodayRecent(task.id, change, wasActionable)
             }
         } catch (failure: Exception) {
             if (failure is CancellationException) throw failure
-            if (current()) {
-                missing = failure is HttpException && failure.code() == 404 && failure.errorCode() == "task_missing"
-                failures[task.id] = todayRowFailure(failure, change, missing)
+            if (current(epoch)) {
+                val problem =
+                    if (failure is HttpException) {
+                        val code = failure.errorCode()
+                        missing = failure.code() == 404 && code == "task_missing"
+                        homeHttpFailure(failure.code(), code)
+                    } else {
+                        homeFailureOf(failure)
+                    }
+                failures[task.id] = todayRowFailure(problem, change, missing)
             }
         } finally {
             pending.remove(task.id)
         }
         // The server no longer has this task; show its current list rather than a dead row.
-        if (missing) load()
+        if (missing) load(allowAutomatic = false)
     }
 }
 
@@ -215,13 +328,11 @@ internal data class TodayRecent(
 )
 
 private fun todayRowFailure(
-    failure: Exception,
+    failure: HomeFailure,
     change: TodayChange,
     missing: Boolean,
 ): TodayRowFailure {
-    val code = (failure as? HttpException)?.code() ?: 0
-    // A route the server does not have: 404 without task_missing, or a method it does not accept.
-    val unsupported = !missing && code in setOf(404, 405, 501)
+    val unsupported = !missing && failure is HomeFailure.ServerOutdated
     val message =
         when {
             missing -> {
@@ -236,11 +347,15 @@ private fun todayRowFailure(
                 "このサーバーは完了の保存に未対応です。サーバーの更新後に使えます。"
             }
 
-            failure is IllegalStateException -> {
+            failure == HomeFailure.NotGated -> {
                 "この接続では保存できません。接続設定を確認してください。"
             }
 
-            code in setOf(401, 403) -> {
+            failure == HomeFailure.ProfileUnavailable -> {
+                "保存できませんでした。接続プロファイルを確認してもう一度お試しください。"
+            }
+
+            failure == HomeFailure.AuthRequired -> {
                 "保存できませんでした。接続の認証を確認してください。"
             }
 
@@ -248,15 +363,26 @@ private fun todayRowFailure(
                 "保存できませんでした。もう一度お試しください。"
             }
         }
-    return TodayRowFailure(change, message, unavailable = unsupported || failure is IllegalStateException)
+    return TodayRowFailure(change, message, unavailable = unsupported || failure == HomeFailure.NotGated)
 }
 
-private fun HttpException.errorCode(): String? =
-    runCatching {
-        // Retrofit buffers error bodies, so this reads memory, not the network.
-        val body = response()?.errorBody()?.string().orEmpty()
-        Regex("\"code\"\\s*:\\s*\"([a-z_]+)\"").find(body)?.groupValues?.get(1)
-    }.getOrNull()
+private class ClassifiedTodayFailure(
+    val failure: HomeFailure,
+) : RuntimeException()
+
+internal sealed interface TodaySaveResult {
+    data object Ok : TodaySaveResult
+
+    data class InvalidInput(
+        val code: String,
+    ) : TodaySaveResult
+
+    data object RunInProgress : TodaySaveResult
+
+    data class Failed(
+        val failure: HomeFailure,
+    ) : TodaySaveResult
+}
 
 @Composable
 internal fun rememberTodayPlanState(
@@ -264,15 +390,6 @@ internal fun rememberTodayPlanState(
     repository: HomeRepository,
 ): TodayPlanState {
     val state = remember(scope, repository) { TodayPlanState(scope, repository) }
-    val lifecycle = LocalLifecycleOwner.current
-    LaunchedEffect(state, lifecycle) {
-        state.restore()
-        lifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            while (true) {
-                state.load()
-                delay(if (state.plan?.state == "running") 3_000 else 60_000)
-            }
-        }
-    }
+    LaunchedEffect(state) { state.restore() }
     return state
 }

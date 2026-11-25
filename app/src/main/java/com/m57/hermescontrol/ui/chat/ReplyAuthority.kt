@@ -16,6 +16,7 @@ data class OpeningEvidence(
     val connectionGeneration: Int? = null,
     val rowBindingSource: String? = null,
     val observationProcessId: String? = null,
+    val continuationId: String? = null,
 )
 
 @Serializable
@@ -25,6 +26,7 @@ data class ControlInputEvidence(
     val disposition: String,
     val userRowId: Long? = null,
     val submissionId: String? = null,
+    val localUserId: String? = null,
 )
 
 @Serializable
@@ -40,6 +42,7 @@ data class TerminalEvidence(
     val transformed: Boolean? = null,
     val status: String? = null,
     val connectionGeneration: Int? = null,
+    val userRowIds: List<Long>? = null,
 ) {
     val safe: Boolean get() = partial != true && transformed != true && (status == null || status == "complete")
 }
@@ -291,7 +294,7 @@ fun ResponseLedger.acceptInput(
     var ledger = this
     var p = ledger.responses.singleOrNull { it.authority.queued?.attemptUid == attemptUid }?.id ?: provisionalId
     if (disposition == "QUEUED" && (p == null || p == continuationId)) {
-        val fresh = ResponseRecord()
+        val fresh = ResponseRecord(serverFollowUp = continuationId != null && userId != null)
         ledger = ledger.copy(responses = ledger.responses + fresh, requiresCorrelation = true)
         p = fresh.id
     }
@@ -320,12 +323,15 @@ fun ResponseLedger.acceptInput(
                 "guarded-ack"
             },
             observationProcessId,
+            continuationId.takeIf { disposition == "QUEUED" },
         )
     val owner =
         when (disposition) {
             "STEERED", "REDIRECTED" -> continuationId
             else -> p
         }
+    val queuedFollowUp = disposition == "QUEUED" && continuationId != null && userId != null
+    if (queuedFollowUp) ledger = ledger.copy(requiresCorrelation = true)
     ledger =
         ledger.update(owner) { record ->
             var facts = record.authority
@@ -371,7 +377,14 @@ fun ResponseLedger.acceptInput(
                             controls =
                                 (
                                     facts.controls +
-                                        ControlInputEvidence(attemptUid, requestId, disposition, row, submission)
+                                        ControlInputEvidence(
+                                            attemptUid,
+                                            requestId,
+                                            disposition,
+                                            row,
+                                            submission,
+                                            userId,
+                                        )
                                 ).distinct(),
                         )
                 }
@@ -382,6 +395,7 @@ fun ResponseLedger.acceptInput(
             }
             record.copy(
                 authority = facts.validateExhaustiveness(),
+                serverFollowUp = record.serverFollowUp || queuedFollowUp,
                 userIds = (record.userIds + listOfNotNull(userId)).distinct(),
                 userRowIds = (record.userRowIds + listOfNotNull(row)).distinct(),
                 submissionIds = (record.submissionIds + listOfNotNull(submission)).distinct(),

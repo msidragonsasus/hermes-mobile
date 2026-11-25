@@ -2,17 +2,41 @@ package com.m57.hermescontrol.ui.chat
 
 import com.m57.hermescontrol.ui.chat.fullbleed.AgentEntry
 import com.m57.hermescontrol.ui.chat.fullbleed.ChatTurn
+import com.m57.hermescontrol.ui.chat.fullbleed.MAIN_CHAT_WAITING_KEY
 import com.m57.hermescontrol.ui.chat.fullbleed.RenderPlanningCache
 import com.m57.hermescontrol.ui.chat.fullbleed.ReplyLifecycle
-import com.m57.hermescontrol.ui.chat.fullbleed.activeTurnIndexForThinking
 import com.m57.hermescontrol.ui.chat.fullbleed.groupIntoTurns
 import com.m57.hermescontrol.ui.chat.fullbleed.groupIntoTurnsWithStreaming
+import com.m57.hermescontrol.ui.chat.fullbleed.planMainChatTimeline
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BusyTurnIsolationTest {
+    @Test
+    fun waitingStaysAtTailWhenTheQueuedTurnBecomesActive() {
+        val first = user("first", "A")
+        val followUp = user("second", "B")
+        val ledger =
+            ResponseLedger(
+                responses =
+                    listOf(
+                        ResponseRecord(id = "responseA", userIds = listOf(first.id)),
+                        ResponseRecord(id = "responseB", userIds = listOf(followUp.id), serverFollowUp = true),
+                    ),
+            )
+        for (owner in listOf("responseA", "responseB")) {
+            val rows =
+                planMainChatTimeline(
+                    listOf(first, followUp),
+                    null,
+                    ledger.copy(activeId = owner),
+                    waitingForFirstText = true,
+                )
+            assertEquals(listOf(MAIN_CHAT_WAITING_KEY, "user-second", "user-first"), rows.map { it.key })
+        }
+    }
+
     private fun user(
         id: String,
         text: String,
@@ -165,36 +189,5 @@ class BusyTurnIsolationTest {
             listOf(AgentEntry.Prose(bFinal)),
             (turns[3] as ChatTurn.Agent).entries,
         )
-    }
-
-    @Test
-    fun thinkingAnchor_attachesToActiveTurnAAboveB() {
-        val uA = user("uA", "Aの依頼")
-        val uB = user("uB", "別件B")
-        val ledger =
-            ResponseLedger(
-                responses =
-                    listOf(
-                        ResponseRecord(id = "respA", userIds = listOf(uA.id)),
-                        ResponseRecord(id = "respB", userIds = listOf(uB.id), serverFollowUp = true),
-                    ),
-                activeId = "respA",
-                requiresCorrelation = true,
-            )
-        val turns = groupIntoTurns(listOf(uA, uB), ledger)
-        assertEquals(0, activeTurnIndexForThinking(turns, ledger))
-
-        // When B becomes active at the tail, thinking falls back to tail (null inline override).
-        val bActive =
-            ledger.copy(
-                responses =
-                    listOf(
-                        ledger.responses[0].copy(finishedAt = 100L),
-                        ledger.responses[1],
-                    ),
-                activeId = "respB",
-            )
-        assertNull(activeTurnIndexForThinking(turns, bActive))
-        assertTrue(turns.last() is ChatTurn.User)
     }
 }

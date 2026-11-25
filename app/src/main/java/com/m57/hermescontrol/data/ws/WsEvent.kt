@@ -200,6 +200,7 @@ sealed class WsEvent {
         val serverRequestId: String? = null,
         val answers: Map<String, String?> = emptyMap(),
         val lockedAnswers: Map<String, String?> = answers,
+        val executionGeneration: Long? = null,
     ) : WsEvent()
 
     data class ClarifyResolved(
@@ -241,6 +242,7 @@ sealed class WsEvent {
     data class StatusUpdate(
         val status: String?,
         val data: Map<String, Any?>?,
+        val sessionId: String? = null,
     ) : WsEvent()
 
     data class SessionUpdated(
@@ -312,6 +314,7 @@ sealed class WsEvent {
          */
         val smartDenied: Boolean? = null,
         val serverRequestId: String? = null,
+        val executionGeneration: Long? = null,
     ) : WsEvent()
 
     // ── Sudo / secret requests ─────────────────────────────────────────
